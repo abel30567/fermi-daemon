@@ -1,0 +1,24 @@
+{
+	"name": "@fermi/wa-bridge",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=22.18"
+	},
+	"scripts": {
+		"start": "node src/index.ts",
+		"pair": "node src/index.ts pair",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"baileys": "7.0.0-rc14",
+		"pino": "^9",
+		"qrcode": "^1.5.4",
+		"qrcode-terminal": "^0.12"
+	},
+	"devDependencies": {
+		"@types/node": "^22",
+		"@types/qrcode-terminal": "^0.12",
+		"typescript": "^5"
+	}
+}

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent (user session), never a LaunchDaemon: claude auth is Keychain-based. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.fermi.heartbeat</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>-lc</string>
+		<string>__HOME__/fermi-daemon/poll.sh</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<false/>
+	<!-- poll.sh exits immediately after nohup-spawning claude; without this
+	     launchd reaps the abandoned process group and kills the run. -->
+	<key>AbandonProcessGroup</key>
+	<true/>
+	<key>WorkingDirectory</key>
+	<string>__HOME__/fermi-daemon</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/fermi-daemon/logs/launchd.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/fermi-daemon/logs/launchd.log</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__HOME__/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+	</dict>
+</dict>
+</plist>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.macos-mcp.agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/.bun/bin/bun</string>
+		<string>src/index.ts</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__HOME__/Desktop/2026Code/MacOSMCP</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.bun/bin</string>
+		<key>HOME</key>
+		<string>__HOME__</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/.macos-mcp/agent.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/.macos-mcp/agent.err</string>
+</dict>
+</plist>

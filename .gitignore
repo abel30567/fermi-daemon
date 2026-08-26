@@ -1,0 +1,46 @@
+# secrets & auth
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets*.tar.gz
+wa-auth/
+
+# runtime state
+runs/
+logs/
+lanes/
+state/
+last-heartbeat
+session.id
+
+# media & models (large binaries + user PII)
+media/
+models/
+
+# QR / pairing artifacts
+wa-qr.png
+*qr*.png
+wa-bridge/qr.png
+wa-bridge/pair-status.txt
+
+# tooling
+node_modules/
+__pycache__/
+.claude/
+.claude-daemon/
+CLAUDE.md
+plan/
+.DS_Store
+
+# claude-mem URL mirrors
+apps.apple.com/
+bugswiki.com/
+deepwiki.com/
+github.com/
+t3codedocs.com/
+x.com/
+
+# runtime state
+warm-model
