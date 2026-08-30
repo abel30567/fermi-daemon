@@ -139,16 +139,22 @@ if ! pgrep -f 'warm-worker\.mjs' >/dev/null 2>&1; then
 	fi
 fi
 
-# --- 5. Proactive: heartbeat when idle and the interval has elapsed ---------
-if (( live < MAX_CONCURRENT )); then
-	last_heartbeat=0
-	[[ -f last-heartbeat ]] && last_heartbeat=$(stat -f %m last-heartbeat)
-	if (( now - last_heartbeat > HEARTBEAT_SECONDS )); then
-		resume_args=""
-		[[ -s session.id ]] && resume_args="--resume $(cat session.id)"
-		log "heartbeat: spawning check-in"
-		spawn_run heartbeat.md --output-format json $resume_args
-		touch last-heartbeat
+# --- 5. Proactive: heartbeat sweep — ONLY as a fallback when the warm worker
+# is down. When it's up (the normal state) it self-polls every 1s and drains
+# everything, so a periodic heartbeat.md spawn would just be a headless `claude`
+# doing nothing every HEARTBEAT_SECONDS — and each spawn registers a session that
+# clutters the Claude Code app. So skip it entirely while the warm worker runs.
+if ! pgrep -f 'warm-worker\.mjs' >/dev/null 2>&1; then
+	if (( live < MAX_CONCURRENT )); then
+		last_heartbeat=0
+		[[ -f last-heartbeat ]] && last_heartbeat=$(stat -f %m last-heartbeat)
+		if (( now - last_heartbeat > HEARTBEAT_SECONDS )); then
+			resume_args=""
+			[[ -s session.id ]] && resume_args="--resume $(cat session.id)"
+			log "heartbeat: spawning check-in (warm worker down — fallback sweep)"
+			spawn_run heartbeat.md --output-format json $resume_args
+			touch last-heartbeat
+		fi
 	fi
 fi
 exit 0

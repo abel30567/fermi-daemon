@@ -44,3 +44,11 @@ x.com/
 
 # runtime state
 warm-model
+
+# Teams bridge credential (URL contains the flow signature)
+teams-outbound.url
+# sensitive run artifacts / PII (transcripts, browser snapshots, form screenshots)
+notes/
+.playwright-mcp/
+*-form-full.png
+demo/

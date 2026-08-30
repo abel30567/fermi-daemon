@@ -71,6 +71,27 @@ const SYSTEM_PROMPT = readFileSync(join(DAEMON, 'prompts/drain.md'), 'utf8')
 // ahead of any normal queue work. Each is {channel, chat_id}.
 const pendingStops = []
 
+// Inbound Microsoft Teams messages (via Power Automate flow → tunnel →
+// POST /teams/webhook). Each is {sender, text, link}. Processed by the loop
+// like queue work; replies go out via tools/teams-send.sh.
+const pendingTeams = []
+const TEAMS_SECRET = env.TEAMS_WEBHOOK_SECRET || ''
+
+// Teams sends HTML bodies — flatten to plain text for the agent.
+function htmlToText(html) {
+  return String(html)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>\s*<p[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim()
+}
+
 const log = (...a) =>
   console.log(new Date().toISOString(), ...a)
 
@@ -94,7 +115,7 @@ function startClaude() {
       '--model', model,
       '--setting-sources', 'project,local', // skip global user hooks (they block/latency)
       '--append-system-prompt', SYSTEM_PROMPT,
-      '--allowedTools', 'mcp__claude_ai_Fermi,mcp__playwright',
+      '--allowedTools', 'Bash,mcp__claude_ai_Fermi,mcp__playwright',
     ],
     { cwd: DAEMON, stdio: ['pipe', 'pipe', 'pipe'] },
   )
@@ -138,8 +159,12 @@ function startClaude() {
   })
 
   // Warm-up turn: forces init + connector + tool load now, so the first real
-  // drain is already hot.
-  sendTurn('Warm-up. Do not call any tools. Reply with exactly: READY')
+  // drain is already hot. Hold `busy` until it resolves so the loop can't fire a
+  // drain turn that races/supersedes the warm-up (that race leaked a kill-timer).
+  busy = true
+  sendTurn('Warm-up. Do not call any tools. Reply with exactly: READY').then(() => {
+    busy = false
+  })
 }
 
 function handleEvent(j) {
@@ -172,23 +197,34 @@ function sendInterrupt() {
   }
 }
 
+// Only one turn is ever in flight; cancelActiveTurn clears its timer + resolves it
+// if a new turn supersedes it. Without this, a superseded turn's 15-min kill-timer
+// leaked and later SIGKILL'd a healthy claude — causing ~15-min respawn loops
+// (each respawn also registers a new session in the Claude Code app).
+let cancelActiveTurn = null
+
 function sendTurn(text) {
   return new Promise((resolve) => {
     if (!claude || !claude.stdin.writable) return resolve(null)
+    if (cancelActiveTurn) cancelActiveTurn() // supersede any prior in-flight turn
+
     let done = false
     const finish = (v) => {
       if (done) return
       done = true
       clearTimeout(timer)
+      if (cancelActiveTurn === superseder) cancelActiveTurn = null
       resolve(v)
     }
-    // Safety net: a turn that hangs (e.g. connector went stale) gets the whole
-    // claude killed, which triggers a clean respawn+rewarm via the exit handler.
+    const superseder = () => finish(null)
+    // Safety net: a turn that genuinely hangs (connector went stale) gets claude
+    // killed → clean respawn+rewarm via the exit handler.
     const timer = setTimeout(() => {
       log(`turn exceeded ${TURN_TIMEOUT_MS}ms — killing claude to respawn`)
       if (claude) claude.kill('SIGKILL')
       finish(null)
     }, TURN_TIMEOUT_MS)
+    cancelActiveTurn = superseder
     turnResolve = (v) => finish(v)
     const msg = {
       type: 'user',
@@ -262,6 +298,37 @@ function startControlServer() {
       })
       return
     }
+    // POST /teams/webhook — inbound Teams message from the Power Automate flow
+    // (reaches us through the cloudflared tunnel; path-scoped so only /teams/*
+    // is public). Auth: x-teams-bridge-secret header.
+    if (req.method === 'POST' && req.url === '/teams/webhook') {
+      if (!TEAMS_SECRET || req.headers['x-teams-bridge-secret'] !== TEAMS_SECRET) {
+        res.writeHead(401)
+        return res.end('unauthorized')
+      }
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 262144) req.destroy()
+      })
+      req.on('end', () => {
+        let p = {}
+        try {
+          p = JSON.parse(body || '{}')
+        } catch {}
+        const sender = String(p.senderDisplayName || 'Teams user')
+        const text = htmlToText(p.messageBody || '')
+        if (!text) {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          return res.end(JSON.stringify({ ok: true, skipped: 'empty' }))
+        }
+        log(`teams inbound from ${sender}: ${text.slice(0, 80)}`)
+        pendingTeams.push({ sender, text, link: p.linkToMessage || '' })
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      })
+      return
+    }
     if (req.method !== 'POST' || req.url !== '/abort') {
       res.writeHead(404)
       return res.end('not found')
@@ -314,6 +381,29 @@ async function loop() {
         } catch (e) {
           log('stop cleanup error:', String(e))
         }
+      }
+      lastActivity = Date.now()
+      busy = false
+      continue
+    }
+    // Teams messages: not in the Fermi queue — handled as direct warm turns.
+    if (pendingTeams.length) {
+      busy = true
+      const batch = pendingTeams.splice(0, pendingTeams.length)
+      const t0 = Date.now()
+      log(`teams: ${batch.length} message(s) — firing warm turn`)
+      const msgs = batch
+        .map((m) => `- From ${m.sender}: ${m.text}`)
+        .join('\n')
+      try {
+        await sendTurn(
+          `New message(s) from the Microsoft Teams "fermi-bridge" channel (Daniel's-agents test bridge — treat like a normal user chat):\n${msgs}\n\n` +
+            `Reply by running (Bash tool, directly on this Mac — do NOT use mac_shell for this): ~/fermi-daemon/tools/teams-send.sh 'your reply text' — single quotes, escape as needed; keep replies concise (they render as a Teams card). ` +
+            `These messages are NOT queue tasks: do NOT call task_claim or task_complete for them. Use context_bootstrap only if you need user context (channel wa, chat_id 17866630320 is the same person: Claudio).`,
+        )
+        log(`teams turn done in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+      } catch (e) {
+        log('teams turn error:', String(e))
       }
       lastActivity = Date.now()
       busy = false
