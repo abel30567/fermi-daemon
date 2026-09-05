@@ -111,6 +111,9 @@ async function writebackInferenceAuth() {
  *  model tier so subagents cannot silently fall back to a billed account. */
 function harnessEnv() {
 	const env = { ...process.env, HOME: cfg.HOME ?? process.env.HOME ?? '/root' }
+	// The box is a disposable sandbox; this lets the harness accept
+	// --dangerously-skip-permissions under the root systemd unit.
+	env.IS_SANDBOX = '1'
 	if (ROUTE === 'claude') {
 		if (inference.claudeToken) env.CLAUDE_CODE_OAUTH_TOKEN = inference.claudeToken
 		return env
@@ -165,15 +168,24 @@ function runHarness(prompt) {
 		child = spawn(cfg.CLAUDE_BIN ?? 'claude', args, {
 			cwd: WORKDIR,
 			env: harnessEnv(),
-			stdio: ['pipe', 'pipe', 'inherit'],
+			stdio: ['pipe', 'pipe', 'pipe'],
 		})
 		let out = ''
+		let err = ''
 		child.stdout.on('data', (d) => {
 			out += d
 		})
+		child.stderr.on('data', (d) => {
+			err += d
+			process.stderr.write(d)
+		})
+		child.on('error', (e) => {
+			child = null
+			resolvePromise({ code: 127, out: '', err: String(e) })
+		})
 		child.on('close', (code) => {
 			child = null
-			resolvePromise({ code, out })
+			resolvePromise({ code, out, err })
 		})
 		child.stdin.write(prompt)
 		child.stdin.end()
@@ -262,17 +274,19 @@ async function main() {
 			const payload = JSON.parse(poll.task.payload)
 			const followups = pendingFollowups.splice(0)
 			log(`running task ${poll.task.id}`)
-			const { code, out } = await runHarness(buildPrompt(payload, followups))
+			const { code, out, err } = await runHarness(buildPrompt(payload, followups))
 			if (pendingFollowups.length > 0 && !stopping) {
 				// Interrupted mid-run: keep the lease, rerun with the follow-up folded in.
 				log('interrupted; rerunning with follow-up')
 				continue
 			}
 			const status = code === 0 ? 'done' : 'failed'
+			// On failure, surface the stderr tail so orchestrators can debug remotely.
+			const failDetail = `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
 			await api('/box/complete', {
 				task_id: poll.task.id,
 				status,
-				result: extractResult(out) || `harness exited ${code}`,
+				result: code === 0 ? extractResult(out) || failDetail : failDetail,
 			}).catch((e) => log('complete failed:', String(e)))
 			await writebackInferenceAuth()
 			log(`task ${poll.task.id} ${status}`)
