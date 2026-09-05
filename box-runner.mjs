@@ -9,7 +9,7 @@
 // CODEX_MODEL / GROK_MODEL overrides, WORKDIR, RUNNER_SELF_SHUTDOWN=1.
 
 import { spawn, execSync } from 'node:child_process'
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 function loadEnvFile(path) {
@@ -212,6 +212,7 @@ function buildPrompt(payload, followups) {
 	if (payload.repo) parts.push(`\nRepository: ${payload.repo} (base branch: ${payload.branch ?? 'default'}). Clone it into the working directory, work on your own branch, and push a PR when done.`)
 	if (payload.skills?.length) parts.push(`\nLoad these Fermi skills before starting: ${payload.skills.join(', ')}.`)
 	parts.push(`\nPROOF CONTRACT (the work does not count as done without this evidence): ${payload.proof_contract}`)
+	parts.push('\nSave any proof files (screenshots, logs, diffs) into the ./artifacts/ directory — they are uploaded automatically when you finish.')
 	parts.push('\nEnd your final message with a line "RESULT: <one-sentence outcome>".')
 	for (const f of followups) parts.push(`\nFOLLOW-UP FROM ORCHESTRATOR: ${f}`)
 	return parts.join('\n')
@@ -226,6 +227,31 @@ function extractResult(out) {
 	} catch {
 		const line = out.match(/RESULT:\s*(.+)/)
 		return (line ? line[1] : out).slice(0, 2000)
+	}
+}
+
+/** Ship everything the agent left in WORKDIR/artifacts/ up to R2 (10MB cap each). */
+async function uploadArtifacts() {
+	const dir = join(WORKDIR, 'artifacts')
+	if (!existsSync(dir)) return
+	for (const name of readdirSync(dir).slice(0, 50)) {
+		const path = join(dir, name)
+		try {
+			const st = statSync(path)
+			if (!st.isFile() || st.size === 0 || st.size > 10 * 1024 * 1024) continue
+			const res = await fetch(`${FERMI_URL}/box/artifact`, {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${TOKEN}`,
+					'x-artifact-name': name,
+					'content-length': String(st.size),
+				},
+				body: readFileSync(path),
+			})
+			log(`artifact ${name}: ${res.status}`)
+		} catch (e) {
+			log(`artifact ${name} failed:`, String(e))
+		}
 	}
 }
 
@@ -295,6 +321,7 @@ async function main() {
 				log('interrupted; rerunning with follow-up')
 				continue
 			}
+			await uploadArtifacts()
 			const status = code === 0 ? 'done' : 'failed'
 			// On failure, surface the stderr tail so orchestrators can debug remotely.
 			const failDetail = `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
