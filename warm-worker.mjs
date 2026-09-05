@@ -10,6 +10,7 @@
 // Runs as launchd service com.fermi.warm-worker. Respawns claude on death.
 
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, createWriteStream } from 'node:fs'
 import { join } from 'node:path'
 import http from 'node:http'
@@ -65,7 +66,8 @@ const POLL_MS = Number(process.env.WARM_POLL_MS || 1000)
 const TURN_TIMEOUT_MS = Number(process.env.WARM_TURN_TIMEOUT_MS || 900000) // kill+respawn a hung turn (15min — long transcriptions/PoC work are legitimate turns)
 const KEEPALIVE_MS = Number(process.env.WARM_KEEPALIVE_MS || 240000) // no-op turn to keep connector hot
 const CONTROL_PORT = Number(process.env.WARM_CONTROL_PORT || 8791) // localhost emergency-stop endpoint
-const SYSTEM_PROMPT = readFileSync(join(DAEMON, 'prompts/drain.md'), 'utf8')
+const STALENESS_MS = Number(process.env.WARM_STALENESS_MS || 300000) // idle re-check of prompt/server staleness
+const PROMPT_PATH = join(DAEMON, 'prompts/drain.md')
 
 // Emergency stops requested via the control endpoint, drained by the main loop
 // ahead of any normal queue work. Each is {channel, chat_id}.
@@ -101,9 +103,36 @@ let busy = false
 let buf = ''
 let turnResolve = null
 let turnLog = null // write stream for the current drain turn's stream-json (fed to narrator.py)
+// Staleness baselines, captured at each spawn: the child freezes its system
+// prompt + MCP toolset at spawn, so when either source changes we respawn.
+let promptHash = null // sha256 of prompts/drain.md as handed to the child
+let serverVersion = null // `version` from GET /health at spawn (null = not advertised)
+
+// GET /health `version` — the server's capability version. /health does not
+// advertise `version` yet; the worker consumes it once the server does, and a
+// missing field is treated as unchanged.
+async function fetchServerVersion() {
+  try {
+    const res = await fetch(`${FERMI_URL}/health`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return null
+    const j = await res.json()
+    return j.version ?? null
+  } catch {
+    return null
+  }
+}
 
 function startClaude() {
   const model = currentModel()
+  const systemPrompt = readFileSync(PROMPT_PATH, 'utf8')
+  promptHash = createHash('sha256').update(systemPrompt).digest('hex')
+  serverVersion = null
+  fetchServerVersion().then((v) => {
+    if (serverVersion == null) serverVersion = v
+  })
   log(`starting warm claude (model=${model})`)
   claude = spawn(
     CLAUDE,
@@ -114,7 +143,7 @@ function startClaude() {
       '--verbose',
       '--model', model,
       '--setting-sources', 'project,local', // skip global user hooks (they block/latency)
-      '--append-system-prompt', SYSTEM_PROMPT,
+      '--append-system-prompt', systemPrompt,
       '--allowedTools', 'Bash,mcp__claude_ai_Fermi,mcp__playwright',
     ],
     { cwd: DAEMON, stdio: ['pipe', 'pipe', 'pipe'] },
@@ -359,6 +388,35 @@ function startControlServer() {
   )
 }
 
+// ---- staleness self-check ---------------------------------------------------
+// The claude child freezes prompts/drain.md and its Fermi MCP toolset at spawn.
+// Periodically (idle only — never mid-task) re-check both sources; on a change,
+// kill the child and let the exit handler respawn it (same mechanism as the
+// POST /model switch): fresh process = fresh prompt + fresh MCP session.
+async function stalenessCheck() {
+  if (busy || !claude) return
+  try {
+    const h = createHash('sha256').update(readFileSync(PROMPT_PATH)).digest('hex')
+    if (promptHash && h !== promptHash) {
+      log(`staleness respawn: prompt-changed (prompts/drain.md ${promptHash.slice(0, 12)} -> ${h.slice(0, 12)})`)
+      claude.kill()
+      return
+    }
+  } catch (e) {
+    log('staleness prompt check failed (non-fatal):', String(e))
+  }
+  const v = await fetchServerVersion()
+  if (v == null) return // no/unreachable version — treated as unchanged
+  if (serverVersion == null) {
+    serverVersion = v
+    return
+  }
+  if (v !== serverVersion && !busy && claude) {
+    log(`staleness respawn: server-version-changed (${serverVersion} -> ${v})`)
+    claude.kill()
+  }
+}
+
 let lastActivity = Date.now()
 
 async function loop() {
@@ -466,4 +524,5 @@ process.on('SIGTERM', () => {
 
 startClaude()
 startControlServer()
+setInterval(stalenessCheck, STALENESS_MS)
 loop()
