@@ -100,3 +100,25 @@ WantedBy=default.target
 4. Send "stop" mid-task → `ABORT requested` in log, task failed "stopped by user".
 5. Pair WhatsApp (`wa-bridge`, QR or code) → real message round-trip.
 6. Enable the systemd units + timer; reboot; repeat 2.
+
+## Cloud-box runner (Linux)
+
+`box-runner.mjs` is the cloud counterpart of the Mac drain: one agent, one box,
+one queue. It authenticates to the Fermi worker's `/box/*` gateway with the
+per-box token from `/etc/fermi/box.env` (written by the provisioner's
+user-data), polls `/box/poll` for its work task plus control messages
+(follow-up / interrupt / stop), runs `claude -p --dangerously-skip-permissions`
+on the task payload with the proof contract appended, reports via
+`/box/complete`, and powers the machine off.
+
+Bake into the AMI:
+- Node 20+, git, the Claude Code CLI (plus `claude login` state or an
+  inference-proxy route via `CPA_URL`/`CPA_TOKEN` in the environment)
+- Playwright chromium with system deps, and Xvfb for headed runs
+- this file at `/opt/fermi/box-runner.mjs`
+- `systemd/fermi-runner.service.template` at
+  `/etc/systemd/system/fermi-runner.service`, enabled
+
+Shutdown is triple-redundant: the runner powers off after its task (or after
+10 idle minutes), user-data schedules a TTL `shutdown -h`, and the worker-side
+reaper terminates anything that outlives its lease, heartbeat, or budget.
