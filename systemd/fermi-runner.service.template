@@ -5,6 +5,10 @@
 Description=Fermi cloud-box runner
 After=network-online.target
 Wants=network-online.target
+# Skip cleanly (not "fail") until the provisioner's user-data writes the env —
+# prevents a boot race where the unit exhausts restarts before cloud-init runs.
+ConditionPathExists=/etc/fermi/box.env
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -12,8 +16,8 @@ EnvironmentFile=/etc/fermi/box.env
 Environment=RUNNER_SELF_SHUTDOWN=1
 ExecStart=/usr/bin/node /opt/fermi/box-runner.mjs
 Restart=on-failure
-RestartSec=10
-# If the runner gives up for good, take the machine down with it.
+RestartSec=15
+# If the runner dies for good, take the machine down with it.
 ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || shutdown -h +2'
 
 [Install]
