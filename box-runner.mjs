@@ -53,11 +53,22 @@ async function api(path, body = {}) {
 // bound to localhost, talking directly to the provider. No shared proxy host.
 const CPA_DIR = cfg.CPA_DIR ?? '/etc/fermi/cli-proxy-api'
 const CPA_AUTH_FILES = { CPA_AUTH_CODEX: 'codex.json', CPA_AUTH_XAI: 'xai.json' }
-const inference = { claudeToken: null, cpaKey: null, cpaProc: null, seeded: {} }
+const inference = { claudeToken: null, cpaKey: null, cpaProc: null, seeded: {}, githubToken: null }
 
 async function bootstrapInference() {
 	const res = await api('/box/inference-auth')
 	if (!res.ok) throw new Error(`inference auth: ${res.error} missing=${res.missing ?? ''}`)
+	// Repo missions receive GITHUB_TOKEN; wire git so clone/push just work.
+	if (res.secrets.GITHUB_TOKEN) {
+		inference.githubToken = res.secrets.GITHUB_TOKEN
+		const home = cfg.HOME ?? process.env.HOME ?? '/root'
+		writeFileSync(join(home, '.git-credentials'), `https://x-access-token:${inference.githubToken}@github.com\n`, { mode: 0o600 })
+		try {
+			execSync('git config --global credential.helper store && git config --global user.email "fermi-box@users.noreply.github.com" && git config --global user.name "Fermi Cloud Agent"')
+		} catch (e) {
+			log('git config failed:', String(e))
+		}
+	}
 	if (ROUTE === 'claude') {
 		inference.claudeToken = res.secrets.CLAUDE_CODE_OAUTH_TOKEN
 		return
@@ -114,6 +125,10 @@ function harnessEnv() {
 	// The box is a disposable sandbox; this lets the harness accept
 	// --dangerously-skip-permissions under the root systemd unit.
 	env.IS_SANDBOX = '1'
+	if (inference.githubToken) {
+		env.GITHUB_TOKEN = inference.githubToken
+		env.GH_TOKEN = inference.githubToken
+	}
 	if (ROUTE === 'claude') {
 		if (inference.claudeToken) env.CLAUDE_CODE_OAUTH_TOKEN = inference.claudeToken
 		return env
