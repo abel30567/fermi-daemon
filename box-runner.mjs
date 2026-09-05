@@ -9,7 +9,8 @@
 // CODEX_MODEL / GROK_MODEL overrides, WORKDIR, RUNNER_SELF_SHUTDOWN=1.
 
 import { spawn, execSync } from 'node:child_process'
-import { existsSync, readFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 function loadEnvFile(path) {
 	if (!existsSync(path)) return {}
@@ -46,23 +47,85 @@ async function api(path, body = {}) {
 	return res.json()
 }
 
+// Inference bootstrap: credentials come from Fermi secrets via the box
+// gateway. claude → a dedicated long-lived OAuth token (claude setup-token).
+// codex/grok → a CLIProxyAPI OAuth bundle; the proxy runs ON THIS BOX,
+// bound to localhost, talking directly to the provider. No shared proxy host.
+const CPA_DIR = cfg.CPA_DIR ?? '/etc/fermi/cli-proxy-api'
+const CPA_AUTH_FILES = { CPA_AUTH_CODEX: 'codex.json', CPA_AUTH_XAI: 'xai.json' }
+const inference = { claudeToken: null, cpaKey: null, cpaProc: null, seeded: {} }
+
+async function bootstrapInference() {
+	const res = await api('/box/inference-auth')
+	if (!res.ok) throw new Error(`inference auth: ${res.error} missing=${res.missing ?? ''}`)
+	if (ROUTE === 'claude') {
+		inference.claudeToken = res.secrets.CLAUDE_CODE_OAUTH_TOKEN
+		return
+	}
+	mkdirSync(CPA_DIR, { recursive: true, mode: 0o700 })
+	inference.cpaKey = res.secrets.CPA_API_KEY
+	for (const [secretName, file] of Object.entries(CPA_AUTH_FILES)) {
+		if (res.secrets[secretName]) {
+			writeFileSync(join(CPA_DIR, file), res.secrets[secretName], { mode: 0o600 })
+			inference.seeded[secretName] = res.secrets[secretName]
+		}
+	}
+	writeFileSync(
+		join(CPA_DIR, 'config.yaml'),
+		[
+			'host: "127.0.0.1"',
+			'port: 8317',
+			`auth-dir: "${CPA_DIR}"`,
+			'api-keys:',
+			`  - "${inference.cpaKey}"`,
+		].join('\n'),
+	)
+	inference.cpaProc = spawn(cfg.CPA_BIN ?? '/opt/fermi/cliproxyapi', ['-config', join(CPA_DIR, 'config.yaml')], {
+		stdio: ['ignore', 'ignore', 'inherit'],
+	})
+	await new Promise((r) => setTimeout(r, 3000))
+}
+
+/** CLIProxyAPI rewrites its auth files on token refresh; push rotated
+ *  bundles back to Fermi secrets so the next box gets working credentials. */
+async function writebackInferenceAuth() {
+	if (ROUTE === 'claude') return
+	const secrets = {}
+	for (const [secretName, file] of Object.entries(CPA_AUTH_FILES)) {
+		const path = join(CPA_DIR, file)
+		if (!existsSync(path)) continue
+		const current = readFileSync(path, 'utf8')
+		if (current !== inference.seeded[secretName]) {
+			secrets[secretName] = current
+			inference.seeded[secretName] = current
+		}
+	}
+	if (Object.keys(secrets).length > 0) {
+		await api('/box/inference-auth/update', { secrets }).catch((e) =>
+			log('auth writeback failed:', String(e)),
+		)
+	}
+}
+
 /** Model routing, mirroring the cpa-env pattern: proxy routes pin every
  *  model tier so subagents cannot silently fall back to a billed account. */
 function harnessEnv() {
 	const env = { ...process.env, HOME: cfg.HOME ?? process.env.HOME ?? '/root' }
-	if (ROUTE === 'codex' || ROUTE === 'grok') {
-		const model = ROUTE === 'codex' ? (cfg.CODEX_MODEL ?? 'gpt-5.6-sol') : (cfg.GROK_MODEL ?? 'grok-4.6')
-		env.ANTHROPIC_BASE_URL = cfg.CPA_URL
-		env.ANTHROPIC_AUTH_TOKEN = cfg.CPA_TOKEN
-		env.ANTHROPIC_MODEL = model
-		env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model
-		env.ANTHROPIC_DEFAULT_SONNET_MODEL = model
-		env.ANTHROPIC_DEFAULT_OPUS_MODEL = model
-		env.CLAUDE_CODE_SUBAGENT_MODEL = model
-		env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT = '1'
-		delete env.CLAUDE_CODE_OAUTH_TOKEN
-		delete env.ANTHROPIC_API_KEY
+	if (ROUTE === 'claude') {
+		if (inference.claudeToken) env.CLAUDE_CODE_OAUTH_TOKEN = inference.claudeToken
+		return env
 	}
+	const model = ROUTE === 'codex' ? (cfg.CODEX_MODEL ?? 'gpt-5.6-sol') : (cfg.GROK_MODEL ?? 'grok-4.6')
+	env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:8317'
+	env.ANTHROPIC_AUTH_TOKEN = inference.cpaKey
+	env.ANTHROPIC_MODEL = model
+	env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model
+	env.ANTHROPIC_DEFAULT_SONNET_MODEL = model
+	env.ANTHROPIC_DEFAULT_OPUS_MODEL = model
+	env.CLAUDE_CODE_SUBAGENT_MODEL = model
+	env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT = '1'
+	delete env.CLAUDE_CODE_OAUTH_TOKEN
+	delete env.ANTHROPIC_API_KEY
 	return env
 }
 
@@ -130,8 +193,11 @@ async function main() {
 
 	setInterval(() => {
 		api('/box/heartbeat').catch((e) => log('heartbeat failed:', String(e)))
+		writebackInferenceAuth()
 	}, HEARTBEAT_MS)
 	await api('/box/heartbeat')
+	await bootstrapInference()
+	await api('/box/report', { note: `runner up, route=${ROUTE}` }).catch(() => {})
 
 	const pendingFollowups = []
 	let idlePolls = 0
@@ -180,6 +246,7 @@ async function main() {
 				status,
 				result: extractResult(out) || `harness exited ${code}`,
 			}).catch((e) => log('complete failed:', String(e)))
+			await writebackInferenceAuth()
 			log(`task ${poll.task.id} ${status}`)
 			// One agent, one box: after the main task resolves, we are done.
 			powerOff()
