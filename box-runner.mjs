@@ -132,9 +132,36 @@ function harnessEnv() {
 let child = null
 let stopping = false
 
+// The harness reaches Fermi MCP tools through the box-token-authenticated
+// /box/mcp endpoint — no interactive OAuth, which a headless box cannot do.
+function writeMcpConfig() {
+	const path = join(WORKDIR, '.mcp.json')
+	writeFileSync(
+		path,
+		JSON.stringify({
+			mcpServers: {
+				fermi: {
+					type: 'http',
+					url: `${FERMI_URL}/box/mcp`,
+					headers: { Authorization: `Bearer ${TOKEN}` },
+				},
+			},
+		}),
+	)
+	return path
+}
+
 function runHarness(prompt) {
 	return new Promise((resolvePromise) => {
-		const args = ['-p', '--dangerously-skip-permissions', '--output-format', 'json']
+		const args = [
+			'-p',
+			'--dangerously-skip-permissions',
+			'--output-format',
+			'json',
+			'--mcp-config',
+			join(WORKDIR, '.mcp.json'),
+			'--strict-mcp-config',
+		]
 		child = spawn(cfg.CLAUDE_BIN ?? 'claude', args, {
 			cwd: WORKDIR,
 			env: harnessEnv(),
@@ -189,6 +216,7 @@ function powerOff() {
 
 async function main() {
 	mkdirSync(WORKDIR, { recursive: true })
+	writeMcpConfig()
 	log(`box-runner up route=${ROUTE} fermi=${FERMI_URL}`)
 
 	setInterval(() => {
