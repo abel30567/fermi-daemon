@@ -207,8 +207,35 @@ function runHarness(prompt) {
 	})
 }
 
-function buildPrompt(payload, followups) {
+// Lease any web sessions the mission named; write each storageState to a file
+// the harness can pass to Playwright's browser.newContext({ storageState }).
+async function leaseSessions(payload) {
+	const leased = []
+	for (const name of payload.sessions ?? []) {
+		try {
+			const res = await api('/box/session-lease', { name, lease_seconds: 7200 })
+			if (!res.ok) {
+				log(`session lease ${name} failed: ${res.error}`)
+				continue
+			}
+			const file = join(WORKDIR, `session-${name}.json`)
+			writeFileSync(file, res.storage_state, { mode: 0o600 })
+			leased.push({ name, site: res.site, file, lease_id: res.lease_id })
+		} catch (e) {
+			log(`session lease ${name} error:`, String(e))
+		}
+	}
+	return leased
+}
+
+function buildPrompt(payload, followups, sessions = []) {
 	const parts = [payload.prompt]
+	if (sessions.length) {
+		parts.push(
+			`\nLeased logged-in web sessions (inject into Playwright via browser.newContext({ storageState: '<file>' }) — do NOT log in yourself):\n` +
+				sessions.map((s) => `- ${s.site} → storageState file: ${s.file}`).join('\n'),
+		)
+	}
 	if (payload.repo) parts.push(`\nRepository: ${payload.repo} (base branch: ${payload.branch ?? 'default'}). Clone it into the working directory, work on your own branch, and push a PR when done.`)
 	if (payload.skills?.length) parts.push(`\nLoad these Fermi skills before starting: ${payload.skills.join(', ')}.`)
 	parts.push(`\nPROOF CONTRACT (the work does not count as done without this evidence): ${payload.proof_contract}`)
@@ -314,8 +341,9 @@ async function main() {
 			idlePolls = 0
 			const payload = JSON.parse(poll.task.payload)
 			const followups = pendingFollowups.splice(0)
-			log(`running task ${poll.task.id}`)
-			const { code, out, err } = await runHarness(buildPrompt(payload, followups))
+			const sessions = await leaseSessions(payload)
+			log(`running task ${poll.task.id}${sessions.length ? ` (${sessions.length} session(s) leased)` : ''}`)
+			const { code, out, err } = await runHarness(buildPrompt(payload, followups, sessions))
 			if (pendingFollowups.length > 0 && !stopping) {
 				// Interrupted mid-run: keep the lease, rerun with the follow-up folded in.
 				log('interrupted; rerunning with follow-up')
