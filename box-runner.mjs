@@ -351,6 +351,15 @@ async function main() {
 				log('interrupted; rerunning with follow-up')
 				continue
 			}
+			if (code !== 0 && (err || out)) {
+				// Failure diagnostics: full stderr/stdout tail as artifacts, since the
+				// completion result only carries 500 chars.
+				try {
+					mkdirSync(join(WORKDIR, 'artifacts'), { recursive: true })
+					writeFileSync(join(WORKDIR, 'artifacts', 'harness-stderr.txt'), err.slice(-500000))
+					writeFileSync(join(WORKDIR, 'artifacts', 'harness-stdout.txt'), out.slice(-500000))
+				} catch {}
+			}
 			await uploadArtifacts()
 			const status = code === 0 ? 'done' : 'failed'
 			// On failure, surface the stderr tail so orchestrators can debug remotely.
