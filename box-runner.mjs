@@ -133,7 +133,7 @@ function harnessEnv() {
 		if (inference.claudeToken) env.CLAUDE_CODE_OAUTH_TOKEN = inference.claudeToken
 		return env
 	}
-	const model = ROUTE === 'codex' ? (cfg.CODEX_MODEL ?? 'gpt-5.6-sol') : (cfg.GROK_MODEL ?? 'grok-4.6')
+	const model = missionModel ?? (ROUTE === 'codex' ? (cfg.CODEX_MODEL ?? 'gpt-5.6-sol') : (cfg.GROK_MODEL ?? 'grok-4.6'))
 	env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:8317'
 	env.ANTHROPIC_AUTH_TOKEN = inference.cpaKey
 	env.ANTHROPIC_MODEL = model
@@ -149,6 +149,7 @@ function harnessEnv() {
 
 let child = null
 let stopping = false
+let missionModel = null // per-mission model override from the task payload
 
 // The harness reaches Fermi MCP tools through the box-token-authenticated
 // /box/mcp endpoint — no interactive OAuth, which a headless box cannot do.
@@ -340,6 +341,7 @@ async function main() {
 		if (poll.task) {
 			idlePolls = 0
 			const payload = JSON.parse(poll.task.payload)
+			missionModel = payload.model || null
 			const followups = pendingFollowups.splice(0)
 			const sessions = await leaseSessions(payload)
 			log(`running task ${poll.task.id}${sessions.length ? ` (${sessions.length} session(s) leased)` : ''}`)
