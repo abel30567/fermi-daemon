@@ -138,6 +138,16 @@ function harnessEnv() {
 	}
 	if (ROUTE === 'claude') {
 		if (inference.claudeToken) env.CLAUDE_CODE_OAUTH_TOKEN = inference.claudeToken
+		// Model selection: per-mission `model` override > box CLAUDE_MODEL default >
+		// Claude Code's own subscription default. Opus by default (workers get the
+		// strong model); a mission can opt DOWN to sonnet for cheap high-fan-out.
+		const claudeModel = missionModel ?? cfg.CLAUDE_MODEL
+		if (claudeModel) {
+			env.ANTHROPIC_MODEL = claudeModel
+			env.ANTHROPIC_DEFAULT_OPUS_MODEL = claudeModel
+			env.ANTHROPIC_DEFAULT_SONNET_MODEL = claudeModel
+			env.CLAUDE_CODE_SUBAGENT_MODEL = claudeModel
+		}
 		return env
 	}
 	const model = missionModel ?? (ROUTE === 'codex' ? (cfg.CODEX_MODEL ?? 'gpt-5.6-sol') : (cfg.GROK_MODEL ?? 'grok-4.6'))
