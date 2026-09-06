@@ -125,6 +125,13 @@ function harnessEnv() {
 	// The box is a disposable sandbox; this lets the harness accept
 	// --dangerously-skip-permissions under the root systemd unit.
 	env.IS_SANDBOX = '1'
+	// Headless box: kill telemetry, auto-update, and the session-title sidecar
+	// call (the last one hard-fails on proxy models like gpt-5.6-sol/gpt-6-astra
+	// with unrecognized_model and exits the whole harness 1).
+	env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+	env.DISABLE_TELEMETRY = '1'
+	env.DISABLE_AUTOUPDATER = '1'
+	env.DISABLE_ERROR_REPORTING = '1'
 	if (inference.githubToken) {
 		env.GITHUB_TOKEN = inference.githubToken
 		env.GH_TOKEN = inference.githubToken
