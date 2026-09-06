@@ -187,13 +187,21 @@ function writeMcpConfig() {
 	return path
 }
 
+const PROGRESS_MS = Number(cfg.PROGRESS_MS ?? 30_000) // cadence of progress notes
+const STUCK_MS = Number(cfg.STUCK_MS ?? 180_000) // no harness output this long → flag stuck
+
+// Runs the harness in stream-json mode, tails each event to (a) post periodic
+// progress notes via /box/report so an orchestrator can watch a run, and
+// (b) emit an explicit "possibly stuck" note when output stalls, so a hung
+// agent is visible long before its TTL instead of a 60-min black box.
 function runHarness(prompt) {
 	return new Promise((resolvePromise) => {
 		const args = [
 			'-p',
 			'--dangerously-skip-permissions',
 			'--output-format',
-			'json',
+			'stream-json',
+			'--verbose',
 			'--mcp-config',
 			join(WORKDIR, '.mcp.json'),
 			'--strict-mcp-config',
@@ -203,23 +211,59 @@ function runHarness(prompt) {
 			env: harnessEnv(),
 			stdio: ['pipe', 'pipe', 'pipe'],
 		})
-		let out = ''
 		let err = ''
+		let buf = ''
+		let resultEvent = null
+		let turns = 0
+		let lastTool = 'starting'
+		let lastActivity = Date.now()
+		let stuckNoted = false
+
 		child.stdout.on('data', (d) => {
-			out += d
+			buf += d
+			let nl
+			// biome-ignore lint/suspicious/noAssignInExpressions: line splitter
+			while ((nl = buf.indexOf('\n')) >= 0) {
+				const line = buf.slice(0, nl).trim()
+				buf = buf.slice(nl + 1)
+				if (!line) continue
+				lastActivity = Date.now()
+				stuckNoted = false
+				try {
+					const ev = JSON.parse(line)
+					if (ev.type === 'assistant' || ev.type === 'user') turns++
+					const tool = ev.message?.content?.find?.((c) => c.type === 'tool_use')?.name
+					if (tool) lastTool = tool
+					if (ev.type === 'result') resultEvent = ev
+				} catch {}
+			}
 		})
 		child.stderr.on('data', (d) => {
 			err += d
 			process.stderr.write(d)
 		})
-		child.on('error', (e) => {
+
+		// Progress / stuck reporter — best-effort, never blocks the run.
+		const reporter = setInterval(() => {
+			const idle = Math.round((Date.now() - lastActivity) / 1000)
+			if (idle * 1000 >= STUCK_MS) {
+				if (stuckNoted) return // one stuck note per stall, not every tick
+				stuckNoted = true
+				api('/box/report', {
+					note: `⚠️ possibly stuck: no harness output for ${idle}s (turns=${turns}, last tool=${lastTool})`,
+				}).catch(() => {})
+			} else {
+				api('/box/report', { note: `working: turns=${turns}, last tool=${lastTool}` }).catch(() => {})
+			}
+		}, PROGRESS_MS)
+
+		const finish = (payload) => {
+			clearInterval(reporter)
 			child = null
-			resolvePromise({ code: 127, out: '', err: String(e) })
-		})
-		child.on('close', (code) => {
-			child = null
-			resolvePromise({ code, out, err })
-		})
+			resolvePromise(payload)
+		}
+		child.on('error', (e) => finish({ code: 127, resultEvent: null, err: String(e) }))
+		child.on('close', (code) => finish({ code, resultEvent, err }))
 		child.stdin.write(prompt)
 		child.stdin.end()
 	})
@@ -263,16 +307,10 @@ function buildPrompt(payload, followups, sessions = []) {
 	return parts.join('\n')
 }
 
-function extractResult(out) {
-	try {
-		const parsed = JSON.parse(out)
-		const text = parsed.result ?? parsed.content ?? out
-		const line = String(text).match(/RESULT:\s*(.+)/)
-		return (line ? line[1] : String(text)).slice(0, 2000)
-	} catch {
-		const line = out.match(/RESULT:\s*(.+)/)
-		return (line ? line[1] : out).slice(0, 2000)
-	}
+function extractResult(resultEvent) {
+	const text = resultEvent?.result ?? ''
+	const line = String(text).match(/RESULT:\s*(.+)/)
+	return (line ? line[1] : String(text)).slice(0, 2000)
 }
 
 /** Ship everything the agent left in WORKDIR/artifacts/ up to R2 (10MB cap each). */
@@ -362,32 +400,34 @@ async function main() {
 			const followups = pendingFollowups.splice(0)
 			const sessions = await leaseSessions(payload)
 			log(`running task ${poll.task.id}${sessions.length ? ` (${sessions.length} session(s) leased)` : ''}`)
-			const { code, out, err } = await runHarness(buildPrompt(payload, followups, sessions))
+			const { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions))
 			if (pendingFollowups.length > 0 && !stopping) {
 				// Interrupted mid-run: keep the lease, rerun with the follow-up folded in.
 				log('interrupted; rerunning with follow-up')
 				continue
 			}
-			if (code !== 0 && (err || out)) {
-				// Failure diagnostics: full stderr/stdout tail as artifacts, since the
-				// completion result only carries 500 chars.
+			if (code !== 0 && (err || resultEvent)) {
+				// Failure diagnostics: full stderr + final result event as artifacts,
+				// since the completion result only carries 500 chars.
 				try {
 					mkdirSync(join(WORKDIR, 'artifacts'), { recursive: true })
 					writeFileSync(join(WORKDIR, 'artifacts', 'harness-stderr.txt'), err.slice(-500000))
-					writeFileSync(join(WORKDIR, 'artifacts', 'harness-stdout.txt'), out.slice(-500000))
+					writeFileSync(
+						join(WORKDIR, 'artifacts', 'harness-result.json'),
+						JSON.stringify(resultEvent ?? {}, null, 2),
+					)
 				} catch {}
 			}
 			await uploadArtifacts()
-			// Parse harness inference cost (claude/CPA -p JSON includes total_cost_usd).
-			let inferenceCost = 0
-			try { inferenceCost = JSON.parse(out).total_cost_usd || 0 } catch {}
+			// Inference cost from the stream-json result event (total_cost_usd).
+			const inferenceCost = Number(resultEvent?.total_cost_usd) || 0
 			const status = code === 0 ? 'done' : 'failed'
 			// On failure, surface the stderr tail so orchestrators can debug remotely.
 			const failDetail = `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
 			await api('/box/complete', {
 				task_id: poll.task.id,
 				status,
-				result: code === 0 ? extractResult(out) || failDetail : failDetail,
+				result: code === 0 ? extractResult(resultEvent) || failDetail : failDetail,
 				inference_cost_usd: inferenceCost,
 			}).catch((e) => log('complete failed:', String(e)))
 			await writebackInferenceAuth()
