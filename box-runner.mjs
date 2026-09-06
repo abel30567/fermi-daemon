@@ -378,6 +378,9 @@ async function main() {
 				} catch {}
 			}
 			await uploadArtifacts()
+			// Parse harness inference cost (claude/CPA -p JSON includes total_cost_usd).
+			let inferenceCost = 0
+			try { inferenceCost = JSON.parse(out).total_cost_usd || 0 } catch {}
 			const status = code === 0 ? 'done' : 'failed'
 			// On failure, surface the stderr tail so orchestrators can debug remotely.
 			const failDetail = `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
@@ -385,6 +388,7 @@ async function main() {
 				task_id: poll.task.id,
 				status,
 				result: code === 0 ? extractResult(out) || failDetail : failDetail,
+				inference_cost_usd: inferenceCost,
 			}).catch((e) => log('complete failed:', String(e)))
 			await writebackInferenceAuth()
 			log(`task ${poll.task.id} ${status}`)
