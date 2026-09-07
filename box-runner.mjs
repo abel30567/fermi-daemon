@@ -300,11 +300,44 @@ function buildPrompt(payload, followups, sessions = []) {
 	}
 	if (payload.repo) parts.push(`\nRepository: ${payload.repo} (base branch: ${payload.branch ?? 'default'}). Clone it into the working directory, work on your own branch, and push a PR when done.`)
 	if (payload.skills?.length) parts.push(`\nLoad these Fermi skills before starting: ${payload.skills.join(', ')}.`)
-	parts.push(`\nPROOF CONTRACT (the work does not count as done without this evidence): ${payload.proof_contract}`)
+	parts.push(`\nPROOF CONTRACT (JSON, checked MECHANICALLY — completion is refused if it fails; text claims count for nothing): ${payload.proof_contract}`)
 	parts.push('\nSave any proof files (screenshots, logs, diffs) into the ./artifacts/ directory — they are uploaded automatically when you finish.')
 	parts.push('\nEnd your final message with a line "RESULT: <one-sentence outcome>".')
 	for (const f of followups) parts.push(`\nFOLLOW-UP FROM ORCHESTRATOR: ${f}`)
 	return parts.join('\n')
+}
+
+/**
+ * Pre-submit self-check of the structured proof contract (#36): same semantics
+ * as the worker's checker at /box/complete, evaluated locally so an honest
+ * agent gets one corrective rerun instead of a server-side refusal. Returns
+ * null when the contract passes or is not checkable here.
+ */
+function localProofFailure(payload) {
+	let contract
+	try {
+		contract = JSON.parse(payload.proof_contract)
+	} catch {
+		return null // legacy free-text contract — server grandfathers it
+	}
+	if (contract?.kind === 'artifact') {
+		const file = join(WORKDIR, 'artifacts', contract.name)
+		if (!existsSync(file)) return `required artifact ./artifacts/${contract.name} is missing`
+		const size = statSync(file).size
+		if (size === 0) return `required artifact ./artifacts/${contract.name} is empty`
+		if (contract.min_bytes && size < contract.min_bytes)
+			return `artifact ./artifacts/${contract.name} is ${size} bytes; contract requires >= ${contract.min_bytes}`
+	}
+	if (contract?.kind === 'test') {
+		try {
+			execSync(contract.cmd, { cwd: WORKDIR, timeout: 10 * 60_000, stdio: 'pipe' })
+			if ((contract.expect_exit ?? 0) !== 0) return `'${contract.cmd}' exited 0, contract expects ${contract.expect_exit}`
+		} catch (e) {
+			if ((contract.expect_exit ?? 0) === 0)
+				return `proof command '${contract.cmd}' failed: ${String(e.message ?? e).slice(0, 300)}`
+		}
+	}
+	return null // http checked by the worker; dom replays via fleetctl
 }
 
 function extractResult(resultEvent) {
@@ -400,7 +433,27 @@ async function main() {
 			const followups = pendingFollowups.splice(0)
 			const sessions = await leaseSessions(payload)
 			log(`running task ${poll.task.id}${sessions.length ? ` (${sessions.length} session(s) leased)` : ''}`)
-			const { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions))
+			let { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions))
+			// One corrective rerun when the harness claims success but the proof
+			// contract mechanically fails locally — honest agents self-correct
+			// here instead of being refused at /box/complete.
+			if (code === 0) {
+				const proofFail = localProofFailure(payload)
+				if (proofFail) {
+					log(`proof self-check failed (${proofFail}); corrective rerun`)
+					const rerun = await runHarness(
+						buildPrompt(payload, [...followups, `Your previous attempt did not satisfy the proof contract: ${proofFail}. Fix the work so the contract passes, then finish.`], sessions),
+					)
+					code = rerun.code
+					resultEvent = rerun.resultEvent
+					err = rerun.err
+					const stillFailing = code === 0 ? localProofFailure(payload) : null
+					if (stillFailing) {
+						code = 1
+						err = `proof contract unsatisfied after corrective rerun: ${stillFailing}`
+					}
+				}
+			}
 			if (pendingFollowups.length > 0 && !stopping) {
 				// Interrupted mid-run: keep the lease, rerun with the follow-up folded in.
 				log('interrupted; rerunning with follow-up')
@@ -424,12 +477,24 @@ async function main() {
 			const status = code === 0 ? 'done' : 'failed'
 			// On failure, surface the stderr tail so orchestrators can debug remotely.
 			const failDetail = `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
-			await api('/box/complete', {
+			const completion = await api('/box/complete', {
 				task_id: poll.task.id,
 				status,
 				result: code === 0 ? extractResult(resultEvent) || failDetail : failDetail,
 				inference_cost_usd: inferenceCost,
-			}).catch((e) => log('complete failed:', String(e)))
+			}).catch((e) => (log('complete failed:', String(e)), null))
+			if (completion?.error === 'proof_unverified') {
+				// The worker's mechanical check refused our `done` (e.g. an http
+				// contract target is down). We already had our corrective rerun —
+				// fail honestly rather than looping until TTL.
+				log(`server refused done: ${completion.detail ?? 'proof_unverified'}`)
+				await api('/box/complete', {
+					task_id: poll.task.id,
+					status: 'failed',
+					result: `proof_unverified: ${completion.detail ?? ''}`.slice(0, 500),
+					inference_cost_usd: 0,
+				}).catch((e) => log('failed-complete failed:', String(e)))
+			}
 			await writebackInferenceAuth()
 			log(`task ${poll.task.id} ${status}`)
 			// One agent, one box: after the main task resolves, we are done.
