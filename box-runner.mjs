@@ -280,22 +280,46 @@ async function leaseSessions(payload) {
 				log(`session lease ${name} failed: ${res.error}`)
 				continue
 			}
-			const file = join(WORKDIR, `session-${name}.json`)
-			writeFileSync(file, res.storage_state, { mode: 0o600 })
-			leased.push({ name, site: res.site, file, lease_id: res.lease_id })
+			// Broker mode (#32): the box receives a handle, not cookies. Cookies
+			// stay in the control plane; the box drives the session by RPC through
+			// the ./fermi-browser helper written below.
+			leased.push({ name, site: res.site, lease_id: res.lease_id, mode: res.mode ?? 'broker' })
 		} catch (e) {
 			log(`session lease ${name} error:`, String(e))
 		}
 	}
+	if (leased.length) writeBrowserHelper()
 	return leased
+}
+
+// A tiny CLI the agent shells out to for leased-session browsing. It never sees
+// cookies: it POSTs an op to /box/browser-rpc and polls /box/browser-rpc/wait;
+// the Mac executor runs the actual Playwright against the real session.
+function writeBrowserHelper() {
+	const helper = `#!/usr/bin/env node
+// Usage: fermi-browser <session> <goto|click|fill|extract|screenshot> [--url U] [--selector S] [--value V]
+const [session, op, ...rest] = process.argv.slice(2)
+const flags = {}
+for (let i = 0; i < rest.length; i++) if (rest[i].startsWith('--')) flags[rest[i].slice(2)] = rest[++i]
+const URL = ${JSON.stringify(FERMI_URL)}, TOKEN = ${JSON.stringify(TOKEN)}
+const post = (p, b) => fetch(URL + p, { method: 'POST', headers: { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json())
+const sub = await post('/box/browser-rpc', { session, op, args: flags })
+if (!sub.ok) { console.error(JSON.stringify(sub)); process.exit(1) }
+const res = await post('/box/browser-rpc/wait', { op_id: sub.op_id, timeout_seconds: 90 })
+console.log(JSON.stringify(res))
+process.exit(res.ok ? 0 : 1)
+`
+	const file = join(WORKDIR, 'fermi-browser')
+	writeFileSync(file, helper, { mode: 0o755 })
 }
 
 function buildPrompt(payload, followups, sessions = []) {
 	const parts = [payload.prompt]
 	if (sessions.length) {
 		parts.push(
-			`\nLeased logged-in web sessions (inject into Playwright via browser.newContext({ storageState: '<file>' }) — do NOT log in yourself):\n` +
-				sessions.map((s) => `- ${s.site} → storageState file: ${s.file}`).join('\n'),
+			`\nLeased logged-in web sessions. You do NOT have the cookies and cannot log in yourself — drive each session through the ./fermi-browser helper, which runs the browser on the trusted control plane:\n` +
+				sessions.map((s) => `- ${s.name} → ${s.site}`).join('\n') +
+				`\nExamples: ./fermi-browser <session> goto --url <url-on-that-site> ; ./fermi-browser <session> extract --url <url> --selector <css> ; ./fermi-browser <session> click --selector <css>. Each prints JSON {ok,status,result}. Navigation is restricted to the session's own site.`,
 		)
 	}
 	if (payload.repo) parts.push(`\nRepository: ${payload.repo} (base branch: ${payload.branch ?? 'default'}). Clone it into the working directory, work on your own branch, and push a PR when done.`)
