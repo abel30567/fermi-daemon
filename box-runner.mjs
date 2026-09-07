@@ -64,7 +64,13 @@ async function bootstrapInference() {
 		const home = cfg.HOME ?? process.env.HOME ?? '/root'
 		writeFileSync(join(home, '.git-credentials'), `https://x-access-token:${inference.githubToken}@github.com\n`, { mode: 0o600 })
 		try {
-			execSync('git config --global credential.helper store && git config --global user.email "fermi-box@users.noreply.github.com" && git config --global user.name "Fermi Cloud Agent"')
+			// Pass the SAME HOME the harness uses (harnessEnv), or the --global
+			// config lands in a different .gitconfig than the harness's git reads
+			// and commits fall back to root@hostname. Identity is also enforced via
+			// GIT_* env vars in harnessEnv() as the authoritative override.
+			execSync('git config --global credential.helper store && git config --global user.email "fermi-box@users.noreply.github.com" && git config --global user.name "Fermi Cloud Agent"', {
+				env: { ...process.env, HOME: home },
+			})
 		} catch (e) {
 			log('git config failed:', String(e))
 		}
@@ -135,6 +141,13 @@ function harnessEnv() {
 	if (inference.githubToken) {
 		env.GITHUB_TOKEN = inference.githubToken
 		env.GH_TOKEN = inference.githubToken
+		// Authoritative commit identity: GIT_* env vars override any gitconfig, so
+		// commits are attributed to the fleet bot regardless of HOME/.gitconfig
+		// state (otherwise git falls back to root@<ec2-hostname>).
+		env.GIT_AUTHOR_NAME = 'Fermi Cloud Agent'
+		env.GIT_AUTHOR_EMAIL = 'fermi-box@users.noreply.github.com'
+		env.GIT_COMMITTER_NAME = 'Fermi Cloud Agent'
+		env.GIT_COMMITTER_EMAIL = 'fermi-box@users.noreply.github.com'
 	}
 	if (ROUTE === 'claude') {
 		if (inference.claudeToken) env.CLAUDE_CODE_OAUTH_TOKEN = inference.claudeToken
