@@ -350,6 +350,46 @@ function buildPrompt(payload, followups, sessions = []) {
  * agent gets one corrective rerun instead of a server-side refusal. Returns
  * null when the contract passes or is not checkable here.
  */
+/**
+ * Repo missions: generate artifacts/out.diff mechanically instead of trusting
+ * the agent to remember. In the 100-agent run (2026-09-07) 4 of 6 failures
+ * were green code that skipped this one step — the runner can just do it.
+ * No-op if the agent already produced a non-empty out.diff.
+ */
+function ensureRepoDiffArtifact(payload) {
+	if (!payload.repo) return
+	const artifact = join(WORKDIR, 'artifacts', 'out.diff')
+	try {
+		if (existsSync(artifact) && statSync(artifact).size > 0) return
+	} catch {}
+	// The agent clones wherever it likes: WORKDIR itself or a child directory.
+	let repoDir = existsSync(join(WORKDIR, '.git')) ? WORKDIR : null
+	if (!repoDir) {
+		for (const d of readdirSync(WORKDIR)) {
+			try {
+				const p = join(WORKDIR, d)
+				if (statSync(p).isDirectory() && existsSync(join(p, '.git'))) { repoDir = p; break }
+			} catch {}
+		}
+	}
+	if (!repoDir) return
+	const base = payload.branch ?? 'main'
+	try {
+		const diff = execSync(`git diff origin/${base}...HEAD`, {
+			cwd: repoDir,
+			maxBuffer: 32 * 1024 * 1024,
+			env: harnessEnv(),
+		})
+		if (diff.length > 0) {
+			mkdirSync(join(WORKDIR, 'artifacts'), { recursive: true })
+			writeFileSync(artifact, diff)
+			log(`auto-generated out.diff (${diff.length} bytes)`)
+		}
+	} catch (e) {
+		log('auto out.diff failed:', String(e.message ?? e).slice(0, 120))
+	}
+}
+
 function localProofFailure(payload) {
 	let contract
 	try {
@@ -475,6 +515,7 @@ async function main() {
 			// contract mechanically fails locally — honest agents self-correct
 			// here instead of being refused at /box/complete.
 			if (code === 0) {
+				ensureRepoDiffArtifact(payload)
 				const proofFail = localProofFailure(payload)
 				if (proofFail) {
 					log(`proof self-check failed (${proofFail}); corrective rerun`)
@@ -484,6 +525,7 @@ async function main() {
 					code = rerun.code
 					resultEvent = rerun.resultEvent
 					err = rerun.err
+					if (code === 0) ensureRepoDiffArtifact(payload)
 					const stillFailing = code === 0 ? localProofFailure(payload) : null
 					if (stillFailing) {
 						code = 1
