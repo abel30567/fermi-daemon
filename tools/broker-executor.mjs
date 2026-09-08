@@ -50,48 +50,71 @@ async function contextFor(session) {
 	const res = await admin(`/admin/session/state?name=${encodeURIComponent(session)}`)
 	if (!res.ok) throw new Error(`session_state_${res.status}`)
 	const { storage_state } = await res.json()
-	const browser = await chromium.launch()
+	// Headful: chatgpt.com (and friends) serve Cloudflare challenges to headless
+	// fingerprints. This executor lives on a desktop Mac; a visible window is fine.
+	const browser = await chromium.launch({ headless: process.env.BROKER_HEADLESS === '1' })
 	const context = await browser.newContext({ storageState: JSON.parse(storage_state) })
 	const entry = { browser, context }
 	contexts.set(session, entry)
 	return entry
 }
 
+// One PERSISTENT page per (session, agent): multi-step UI flows (modals,
+// conversations) survive across ops, and N agents on one login each get their
+// own tab instead of clobbering a shared page. Pages live until the executor
+// exits or their context is dropped on error.
+const pages = new Map() // `${session}:${agent_id}` -> page
+
+async function pageFor(p) {
+	const key = `${p.session}:${p.agent_id ?? 'shared'}`
+	let page = pages.get(key)
+	if (page && !page.isClosed()) return page
+	const { context } = await contextFor(p.session)
+	page = await context.newPage()
+	pages.set(key, page)
+	return page
+}
+
 async function runOp(op) {
 	const p = JSON.parse(op.payload)
-	const { context } = await contextFor(p.session)
-	const page = await context.newPage()
-	try {
-		switch (p.op) {
-			case 'goto':
-				await page.goto(p.args.url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-				return { url: page.url(), title: await page.title() }
-			case 'click':
-				if (p.args.url) await page.goto(p.args.url, { waitUntil: 'domcontentloaded' })
-				await page.locator(p.args.selector).first().click({ timeout: 15_000 })
-				return { url: page.url() }
-			case 'fill':
-				if (p.args.url) await page.goto(p.args.url, { waitUntil: 'domcontentloaded' })
-				await page.locator(p.args.selector).first().fill(p.args.value ?? '', { timeout: 15_000 })
-				return { url: page.url() }
-			case 'extract': {
-				if (p.args.url) await page.goto(p.args.url, { waitUntil: 'domcontentloaded' })
-				const loc = page.locator(p.args.selector ?? 'body')
-				const n = await loc.count()
-				const rows = []
-				for (let i = 0; i < Math.min(n, 50); i++) rows.push((await loc.nth(i).textContent())?.trim())
-				return { rows }
-			}
-			case 'screenshot': {
-				if (p.args.url) await page.goto(p.args.url, { waitUntil: 'domcontentloaded' })
-				const buf = await page.screenshot({ fullPage: false })
-				return { screenshot_base64: buf.toString('base64') }
-			}
-			default:
-				throw new Error(`unknown_op_${p.op}`)
+	const page = await pageFor(p)
+	// Optional per-op pacing: SPAs (streamed replies, modals) need settle time.
+	const wait = Math.min(Number(p.args.wait_ms) || 0, 60_000)
+	if (p.args.url && p.op !== 'goto') await page.goto(p.args.url, { waitUntil: 'domcontentloaded' })
+	switch (p.op) {
+		case 'goto': {
+			await page.goto(p.args.url, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+			if (wait) await page.waitForTimeout(wait)
+			return { url: page.url(), title: await page.title() }
 		}
-	} finally {
-		await page.close()
+		case 'click':
+			await page.locator(p.args.selector).first().click({ timeout: 20_000 })
+			if (wait) await page.waitForTimeout(wait)
+			return { url: page.url() }
+		case 'fill': {
+			const loc = page.locator(p.args.selector).first()
+			await loc.fill(p.args.value ?? '', { timeout: 20_000 })
+			// enter: submit after filling (composers, search boxes) — avoids
+			// needing a separate brittle send-button click.
+			if (p.args.enter) await loc.press('Enter')
+			if (wait) await page.waitForTimeout(wait)
+			return { url: page.url() }
+		}
+		case 'extract': {
+			if (wait) await page.waitForTimeout(wait)
+			const loc = page.locator(p.args.selector ?? 'body')
+			const n = await loc.count()
+			const rows = []
+			for (let i = 0; i < Math.min(n, 50); i++) rows.push((await loc.nth(i).textContent())?.trim())
+			return { url: page.url(), rows }
+		}
+		case 'screenshot': {
+			if (wait) await page.waitForTimeout(wait)
+			const buf = await page.screenshot({ fullPage: false })
+			return { screenshot_base64: buf.toString('base64') }
+		}
+		default:
+			throw new Error(`unknown_op_${p.op}`)
 	}
 }
 
