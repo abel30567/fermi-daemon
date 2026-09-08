@@ -45,16 +45,38 @@ const log = (...a) => console.log(new Date().toISOString(), ...a)
 // ops on the same session reuse the login. Re-fetched if the session rotates.
 const contexts = new Map() // session -> { browser, context }
 
+// Sessions whose site is behind aggressive bot-protection (Cloudflare Turnstile
+// on chatgpt.com) can't use a fresh injected-cookie context: the cf_clearance
+// cookie is bound to the browser fingerprint that earned it, so a fresh
+// automated context gets re-challenged. For these we drive a PERSISTENT profile
+// directory (seeded once from a real headful login via seed-broker-profile.mjs),
+// which carries the fingerprint + clearance exactly like a normal browser.
+// Map: session name -> profile dir. Everything else uses injected storageState.
+const PROFILE_DIRS = {
+	chatgpt: `${env.HOME}/.macos-mcp/browser-profiles/chatgpt-capture`,
+}
+
 async function contextFor(session) {
 	if (contexts.has(session)) return contexts.get(session)
+	const headless = process.env.BROKER_HEADLESS === '1'
+	const profileDir = PROFILE_DIRS[session]
+	if (profileDir && existsSync(profileDir)) {
+		// Persistent profile: no cookie injection — the profile already holds the
+		// login AND the Cloudflare clearance from its headful capture.
+		const context = await chromium.launchPersistentContext(profileDir, {
+			headless,
+			viewport: { width: 1280, height: 900 },
+		})
+		const entry = { browser: context.browser(), context, persistent: true }
+		contexts.set(session, entry)
+		return entry
+	}
 	const res = await admin(`/admin/session/state?name=${encodeURIComponent(session)}`)
 	if (!res.ok) throw new Error(`session_state_${res.status}`)
 	const { storage_state } = await res.json()
-	// Headful: chatgpt.com (and friends) serve Cloudflare challenges to headless
-	// fingerprints. This executor lives on a desktop Mac; a visible window is fine.
-	const browser = await chromium.launch({ headless: process.env.BROKER_HEADLESS === '1' })
+	const browser = await chromium.launch({ headless })
 	const context = await browser.newContext({ storageState: JSON.parse(storage_state) })
-	const entry = { browser, context }
+	const entry = { browser, context, persistent: false }
 	contexts.set(session, entry)
 	return entry
 }
