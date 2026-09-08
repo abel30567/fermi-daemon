@@ -163,16 +163,30 @@ async function loop() {
 				body: JSON.stringify({ op_id: op.id, ok: true, data }),
 			})
 		} catch (e) {
-			log(`op ${op.id} failed:`, String(e))
-			// Session may have rotated/invalidated — drop the cached context.
-			const ctx = contexts.get(p.session)
-			if (ctx) {
-				await ctx.browser.close().catch(() => {})
-				contexts.delete(p.session)
+			const msg = String(e?.message ?? e)
+			log(`op ${op.id} failed:`, msg)
+			// Close ONLY this agent's page so its next op starts fresh — never the
+			// shared context (persistent profile serves all 15 fan-out agents; one
+			// op's selector timeout must not nuke everyone's tabs).
+			const key = `${p.session}:${p.agent_id ?? 'shared'}`
+			const pg = pages.get(key)
+			if (pg) {
+				await pg.close().catch(() => {})
+				pages.delete(key)
+			}
+			// Only tear the context down if the context/browser itself is dead
+			// (e.g. crashed or the session was invalidated), then let contextFor
+			// rebuild it on the next op.
+			if (/context or browser has been closed|Target.*closed|crash/i.test(msg)) {
+				const ctx = contexts.get(p.session)
+				if (ctx) {
+					await ctx.context.close().catch(() => {})
+					contexts.delete(p.session)
+				}
 			}
 			await admin('/admin/broker/complete', {
 				method: 'POST',
-				body: JSON.stringify({ op_id: op.id, ok: false, error: String(e.message ?? e) }),
+				body: JSON.stringify({ op_id: op.id, ok: false, error: msg }),
 			})
 		}
 	}
