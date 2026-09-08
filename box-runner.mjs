@@ -47,6 +47,24 @@ async function api(path, body = {}) {
 	return res.json()
 }
 
+// Crashes before the harness runs were invisible (box died silently after
+// "runner up", agent spun to TTL, 2026-09-08). Surface any fatal error to the
+// orchestrator via /box/report, best-effort, before the process exits.
+for (const sig of ['unhandledRejection', 'uncaughtException']) {
+	process.on(sig, async (err) => {
+		const msg = `FATAL ${sig}: ${String(err?.stack || err?.message || err).slice(0, 400)}`
+		try {
+			await fetch(`${FERMI_URL}/box/report`, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+				body: JSON.stringify({ note: msg }),
+			})
+		} catch {}
+		console.error(msg)
+		process.exit(1)
+	})
+}
+
 // Inference bootstrap: credentials come from Fermi secrets via the box
 // gateway. claude → a dedicated long-lived OAuth token (claude setup-token).
 // codex/grok → a CLIProxyAPI OAuth bundle; the proxy runs ON THIS BOX,
