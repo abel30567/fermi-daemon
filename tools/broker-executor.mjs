@@ -170,21 +170,24 @@ async function loop() {
 		} catch (e) {
 			const msg = String(e?.message ?? e)
 			log(`op ${op.id} failed:`, msg)
-			// Close ONLY this agent's page so its next op starts fresh — never the
-			// shared context (persistent profile serves all 15 fan-out agents; one
-			// op's selector timeout must not nuke everyone's tabs).
+			// Do NOT close the page on ordinary op failures (e.g. a selector
+			// timeout): the agent needs its page to KEEP its navigation/dialog
+			// state so it can screenshot and retry a different selector on the same
+			// page. Closing it wiped open dialogs mid-flow and reset to about:blank
+			// (the ChatGPT connector-create dialog vanished before submit,
+			// 2026-09-08). Only drop the page/context when they are ACTUALLY dead.
 			const key = `${p.session}:${p.agent_id ?? 'shared'}`
-			const pg = pages.get(key)
-			if (pg) {
-				await pg.close().catch(() => {})
-				pages.delete(key)
-			}
-			// Only tear the context down if the context/browser itself is dead
-			// (e.g. crashed or the session was invalidated), then let contextFor
-			// rebuild it on the next op.
-			if (/context or browser has been closed|Target.*closed|crash/i.test(msg)) {
+			const dead = /context or browser has been closed|Target.*closed|crash|page has been closed/i.test(
+				msg,
+			)
+			if (dead) {
+				const pg = pages.get(key)
+				if (pg) {
+					await pg.close().catch(() => {})
+					pages.delete(key)
+				}
 				const ctx = contexts.get(p.session)
-				if (ctx) {
+				if (ctx && /browser has been closed|crash/i.test(msg)) {
 					await ctx.context.close().catch(() => {})
 					contexts.delete(p.session)
 				}
