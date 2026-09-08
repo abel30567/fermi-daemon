@@ -516,7 +516,9 @@ async function main() {
 			const payload = JSON.parse(poll.task.payload)
 			missionModel = payload.model || null
 			const followups = pendingFollowups.splice(0)
+			await api('/box/report', { note: `claimed ${poll.task.id}; leasing ${(payload.sessions ?? []).length} session(s)` }).catch(() => {})
 			const sessions = await leaseSessions(payload)
+			await api('/box/report', { note: `leased ${sessions.length}: ${sessions.map((s) => s.name).join(',') || 'none'}; helper=${sessions.length ? existsSync(join(WORKDIR, 'fermi-browser')) : 'n/a'}; spawning` }).catch(() => {})
 			log(`running task ${poll.task.id}${sessions.length ? ` (${sessions.length} session(s) leased)` : ''}`)
 			let { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions))
 			// One corrective rerun when the harness claims success but the proof
