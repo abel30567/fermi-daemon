@@ -309,18 +309,26 @@ async function leaseSessions(payload) {
 // cookies: it POSTs an op to /box/browser-rpc and polls /box/browser-rpc/wait;
 // the Mac executor runs the actual Playwright against the real session.
 function writeBrowserHelper() {
+	// Wrapped in an async IIFE: this file has NO extension, so node parses it as
+	// CommonJS where top-level await is a SyntaxError (that bug made every call
+	// fail silently and agents spin to TTL, 2026-09-08). Flags pass through as
+	// strings; the executor coerces (--wait_ms 8000, --enter true).
 	const helper = `#!/usr/bin/env node
-// Usage: fermi-browser <session> <goto|click|fill|extract|screenshot> [--url U] [--selector S] [--value V]
-const [session, op, ...rest] = process.argv.slice(2)
-const flags = {}
-for (let i = 0; i < rest.length; i++) if (rest[i].startsWith('--')) flags[rest[i].slice(2)] = rest[++i]
-const URL = ${JSON.stringify(FERMI_URL)}, TOKEN = ${JSON.stringify(TOKEN)}
-const post = (p, b) => fetch(URL + p, { method: 'POST', headers: { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json())
-const sub = await post('/box/browser-rpc', { session, op, args: flags })
-if (!sub.ok) { console.error(JSON.stringify(sub)); process.exit(1) }
-const res = await post('/box/browser-rpc/wait', { op_id: sub.op_id, timeout_seconds: 90 })
-console.log(JSON.stringify(res))
-process.exit(res.ok ? 0 : 1)
+// Usage: fermi-browser <session> <goto|click|fill|extract|screenshot> [--url U] [--selector S] [--value V] [--enter true] [--wait_ms N]
+;(async () => {
+  const [session, op, ...rest] = process.argv.slice(2)
+  const flags = {}
+  for (let i = 0; i < rest.length; i++) if (rest[i].startsWith('--')) flags[rest[i].slice(2)] = rest[++i]
+  const URL = ${JSON.stringify(FERMI_URL)}, TOKEN = ${JSON.stringify(TOKEN)}
+  const post = (p, b) => fetch(URL + p, { method: 'POST', headers: { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json())
+  try {
+    const sub = await post('/box/browser-rpc', { session, op, args: flags })
+    if (!sub.ok) { console.error(JSON.stringify(sub)); process.exit(1) }
+    const res = await post('/box/browser-rpc/wait', { op_id: sub.op_id, timeout_seconds: 120 })
+    console.log(JSON.stringify(res))
+    process.exit(res.ok ? 0 : 1)
+  } catch (e) { console.error(JSON.stringify({ ok: false, error: String(e) })); process.exit(1) }
+})()
 `
 	const file = join(WORKDIR, 'fermi-browser')
 	writeFileSync(file, helper, { mode: 0o755 })
