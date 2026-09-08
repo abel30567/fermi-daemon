@@ -100,6 +100,11 @@ async function pageFor(p) {
 async function runOp(op) {
 	const p = JSON.parse(op.payload)
 	const page = await pageFor(p)
+	// Foreground the tab before every op: ChatGPT's SPA (and other React apps)
+	// throttle/defer rendering in a backgrounded Playwright tab, so a non-active
+	// page sits on skeleton placeholders forever (chatgpt.com/plugins, 2026-09-08).
+	// bringToFront makes it the active tab so content actually paints.
+	await page.bringToFront().catch(() => {})
 	// Optional per-op pacing: SPAs (streamed replies, modals) need settle time.
 	const wait = Math.min(Number(p.args.wait_ms) || 0, 60_000)
 	if (p.args.url && p.op !== 'goto') await page.goto(p.args.url, { waitUntil: 'domcontentloaded' })
