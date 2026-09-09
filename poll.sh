@@ -24,7 +24,7 @@ MAX_TURNS="${MAX_TURNS:-50}"
 MODEL="${MODEL:-claude-opus-4-6[1m]}"        # model for daemon claude -p runs (1M-context Opus 4.6)
 # Server-level grants: all Fermi tools via the claude.ai connector (no local
 # MCP config or OAuth) + all Playwright tools (user-scope MCP, local browser).
-ALLOWED_TOOLS="${ALLOWED_TOOLS:-mcp__claude_ai_Fermi,mcp__playwright}"
+ALLOWED_TOOLS="${ALLOWED_TOOLS:-mcp__claude_ai_Fermi,mcp__playwright,mcp__claude_ai_Google_Calendar}"
 LANE_DIR="$DAEMON_HOME/lanes"
 mkdir -p "$LANE_DIR"
 rm -f "$DAEMON_HOME/run.lock" 2>/dev/null # legacy single-lock cleanup
