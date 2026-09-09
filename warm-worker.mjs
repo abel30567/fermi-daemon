@@ -144,7 +144,7 @@ function startClaude() {
       '--model', model,
       '--setting-sources', 'project,local', // skip global user hooks (they block/latency)
       '--append-system-prompt', systemPrompt,
-      '--allowedTools', 'Bash,mcp__claude_ai_Fermi,mcp__playwright',
+      '--allowedTools', 'Bash,mcp__claude_ai_Fermi,mcp__playwright,mcp__claude_ai_Google_Calendar',
     ],
     { cwd: DAEMON, stdio: ['pipe', 'pipe', 'pipe'] },
   )
