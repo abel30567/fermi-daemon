@@ -2,7 +2,7 @@
 
 A local macOS LaunchAgent drain loop that lets a Cloudflare Worker MCP agent —
 **Fermi** — run tasks on, and control, your Mac. You message Fermi from
-WhatsApp or Discord; the daemon on your Mac claims those tasks, runs a
+WhatsApp, Discord, or Slack; the daemon on your Mac claims those tasks, runs a
 `claude` session to do the work (shell, files, browser, AppleScript, etc.), and
 replies back into the chat.
 
@@ -27,10 +27,11 @@ cloudflared tunnel.
   it is running, `poll.sh` defers to it and only cold-spawns as a fallback.
   Exposes a localhost control endpoint (`:8791`) for model switching and
   emergency-stop.
-- **`wa-bridge/`** and **`dc-bridge/`** — the WhatsApp (Baileys) and Discord
-  bridges. Each turns an inbound chat message into a queued Fermi task and pokes
-  the drain loop. WhatsApp device auth lives in `wa-auth/` (not committed;
-  re-pairable).
+- **`wa-bridge/`**, **`dc-bridge/`**, and **`sl-bridge/`** — the WhatsApp (Baileys),
+  Discord, and Slack (Socket Mode) bridges. Each turns an inbound chat message
+  into a queued Fermi task and pokes the drain loop. WhatsApp device auth lives
+  in `wa-auth/` (not committed; re-pairable). Slack needs `SLACK_BOT_TOKEN` +
+  `SLACK_APP_TOKEN` in `.env` (see `sl-bridge/README.md`).
 - **`narrator.py`** — tails a lane's stream-json output and posts short
   natural-language progress updates back to the originating chat, so long tasks
   don't go silent.
