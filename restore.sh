@@ -26,6 +26,7 @@ mkdir -p logs runs lanes state "$HOME/.macos-mcp"
 chmod +x poll.sh
 (cd dc-bridge && npm install --silent)
 (cd wa-bridge && npm install --silent)
+(cd sl-bridge && npm install --silent)
 (cd "$MCP_HOME" && "$HOME/.bun/bin/bun" install --silent)
 
 for p in launchd/*.plist.template; do

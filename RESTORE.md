@@ -8,6 +8,7 @@ they need the Keychain-based `claude` login and the GUI session).
 |---|---|---|---|
 | Drain agent | `poll.sh` fires every 60s, curls Fermi's task queue, spawns up to 5 `claude -p` lanes with `prompts/drain.md` to claim + work tasks | `com.fermi.heartbeat` | this repo (`~/fermi-daemon`) |
 | Discord bridge | Discord bot → Fermi channel queue, pokes `poll.sh` on message | `com.fermi.dc-bridge` | `dc-bridge/` |
+| Slack bridge | Slack Socket Mode bot → Fermi channel queue, pokes `poll.sh` on message | `com.fermi.sl-bridge` | `sl-bridge/` |
 | WhatsApp bridge | Baileys WA client → Fermi channel queue | `com.fermi.wa-bridge` | `wa-bridge/` (auth in `wa-auth/`, not in git) |
 | MacOSMCP | MCP server on `127.0.0.1:3847` exposing the `mac_*` tools (shell, AppleScript, files, screenshots, browser) | `com.macos-mcp.agent` | `~/Desktop/2026Code/MacOSMCP` (github.com/<your-github>/MacOSMCP) |
 | Tunnel | cloudflared tunnel `macos-mcp` → `https://mac.<your-domain>` → `:3847` | `com.macos-mcp.tunnel` | `~/.cloudflared/config-macos-mcp.yml` |
@@ -20,7 +21,7 @@ config, not machine config, so nothing local to restore for it. Never set
 
 ## What is NOT in git (must come from a secrets bundle)
 
-- `~/fermi-daemon/.env` — `FERMI_URL`, `FERMI_BEARER_TOKEN`, `WA_WEBHOOK_SECRET`, `DISCORD_BRIDGE_SECRET`, `DISCORD_BOT_TOKEN`, `TUNNEL_URL` (see `.env.example`)
+- `~/fermi-daemon/.env` — `FERMI_URL`, `FERMI_BEARER_TOKEN`, `WA_WEBHOOK_SECRET`, `DISCORD_BRIDGE_SECRET`, `DISCORD_BOT_TOKEN`, `SLACK_BRIDGE_SECRET`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TUNNEL_URL` (see `.env.example`)
 - `~/Desktop/2026Code/MacOSMCP/.env` — `AGENT_TOKEN`, `PORT`, `ALLOWED_PATHS`, `LOG_DIR`
 - `~/.cloudflared/` — `config-macos-mcp.yml`, `cert.pem`, `<tunnel-id>.json`
 - `~/fermi-daemon/wa-auth/` — WhatsApp device session (re-pairable; not backed up)
