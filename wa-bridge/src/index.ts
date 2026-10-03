@@ -1,6 +1,7 @@
 import { loadConfig } from './config.ts'
 import { makeInboundHandler } from './inbound.ts'
-import { log } from './log.ts'
+import { log, setDebug } from './log.ts'
+import { MentionDirectory } from './mentions.ts'
 import { runOutboxLoop } from './outbox.ts'
 import { createSocket } from './socket.ts'
 
@@ -32,13 +33,15 @@ function parsePairNumber(raw: string | undefined): string {
 
 async function main(): Promise<void> {
 	const config = loadConfig()
+	setDebug(config.DEBUG)
+	const directory = new MentionDirectory(config.STATE_DIR)
 	const [mode, ...rest] = process.argv.slice(2)
 
 	if (mode === 'pair') {
 		const number = parsePairNumber(rest[0])
 		log(`pairing mode for +${number} — watch for the pairing code below.`)
 		// No outbox loop in pair mode; stay alive so creds.update can persist.
-		await createSocket(config, { onTextMessage: async () => {} }, number)
+		await createSocket(config, { onTextMessage: async () => {} }, directory, number)
 		log('waiting for pairing to complete… once you see "connected as …", press Ctrl-C,')
 		log(
 			'then start the LaunchAgent: launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.fermi.wa-bridge.plist',
@@ -48,8 +51,8 @@ async function main(): Promise<void> {
 
 	log('starting wa-bridge (run mode)')
 	const handler = makeInboundHandler(config)
-	const socketState = await createSocket(config, { onTextMessage: handler })
-	await runOutboxLoop(config, socketState)
+	const socketState = await createSocket(config, { onTextMessage: handler }, directory)
+	await runOutboxLoop(config, socketState, directory)
 }
 
 main().catch((err) => {

@@ -9,6 +9,11 @@ export type Config = {
 	POLL_MS: number
 	DAEMON_HOME: string
 	AUTH_DIR: string
+	STATE_DIR: string
+	// Which jid family to use in group mentions: follow the group's addressing
+	// mode ('auto', default), or force '@lid' / '@s.whatsapp.net'.
+	MENTION_JID_MODE: 'auto' | 'lid' | 'pn'
+	DEBUG: boolean
 }
 
 // Parse KEY=VALUE lines from ~/fermi-daemon/.env, ignoring comments and blanks.
@@ -71,6 +76,11 @@ export function loadConfig(): Config {
 		throw new Error(`invalid POLL_MS: ${pollRaw}`)
 	}
 
+	const modeRaw = get('WA_MENTION_JID_MODE') ?? 'auto'
+	if (modeRaw !== 'auto' && modeRaw !== 'lid' && modeRaw !== 'pn') {
+		throw new Error(`invalid WA_MENTION_JID_MODE: ${modeRaw} (expected auto|lid|pn)`)
+	}
+
 	return {
 		FERMI_URL: values.FERMI_URL.replace(/\/+$/, ''),
 		FERMI_BEARER_TOKEN: values.FERMI_BEARER_TOKEN,
@@ -78,5 +88,8 @@ export function loadConfig(): Config {
 		POLL_MS,
 		DAEMON_HOME,
 		AUTH_DIR: join(DAEMON_HOME, 'wa-auth'),
+		STATE_DIR: join(DAEMON_HOME, 'wa-bridge', 'state'),
+		MENTION_JID_MODE: modeRaw,
+		DEBUG: get('WA_BRIDGE_DEBUG') === '1',
 	}
 }
