@@ -8,7 +8,9 @@
 	"scripts": {
 		"start": "node src/index.ts",
 		"pair": "node src/index.ts pair",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"test": "node --test test/*.test.ts",
+		"mention-test": "node src/mention-test.ts"
 	},
 	"dependencies": {
 		"baileys": "7.0.0-rc14",

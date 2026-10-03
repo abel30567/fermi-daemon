@@ -5,6 +5,7 @@ import pino from 'pino'
 import qrcodeTerminal from 'qrcode-terminal'
 import type { Config } from './config.ts'
 import { log } from './log.ts'
+import type { MentionDirectory } from './mentions.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
 
@@ -118,6 +119,17 @@ function resolveSender(m: any, jid: string): { sender: string; chatId: string } 
 	return { sender, chatId: sender }
 }
 
+// Remember who's who in a group so outbound "@Nombre" can become a real mention.
+function recordParticipant(directory: MentionDirectory, groupJid: string, m: any): void {
+	const { participant, participantAlt } = m.key as { participant?: string; participantAlt?: string }
+	const ids = [participant, participantAlt].filter((x): x is string => typeof x === 'string')
+	directory.record(groupJid, {
+		pn: ids.find((x) => x.endsWith('@s.whatsapp.net')),
+		lid: ids.find((x) => x.endsWith('@lid')),
+		name: typeof m.pushName === 'string' ? m.pushName : undefined,
+	})
+}
+
 export type Handlers = {
 	onTextMessage(sender: string, chatId: string, text: string): Promise<void>
 }
@@ -156,6 +168,7 @@ function printPairingCode(code: string): void {
 export async function createSocket(
 	config: Config,
 	handlers: Handlers,
+	directory: MentionDirectory,
 	pairNumber?: string,
 ): Promise<SocketState> {
 	if (existsSync(markerPath(config))) {
@@ -207,6 +220,7 @@ export async function createSocket(
 			if (!m.message || m.key.fromMe) return
 			const jid = m.key.remoteJid
 			if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return
+			if (jid.endsWith('@g.us')) recordParticipant(directory, jid, m)
 			const resolved = resolveSender(m, jid)
 			if (!resolved) {
 				log(`inbound skipped: jid=${jid} sender unresolved`)
