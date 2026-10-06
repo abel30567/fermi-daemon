@@ -15,7 +15,17 @@ npm run typecheck
 
 Outbound group messages containing `@Nombre` are turned into real WhatsApp
 mentions (blue, notifying) before `sock.sendMessage`. The outbox contract is
-unchanged: the server still hands us `{chat_id, body}`.
+`{chat_id, body, media?}` — see below for `media`.
+
+## Outbound attachments
+
+An outbox row may carry `media: { kind: image|document|audio|video, path?, url?,
+mimetype?, caption?, file_name? }`. The bridge sends it through Baileys as a real
+attachment with `caption` (else `body`). A local `path` is only accepted when its
+real path (symlinks followed) is a regular file inside `~/fermi-daemon/media/out/`
+and under 64 MB; anything else gets a one-line "Couldn't send the attachment"
+reply and is acked so it does not loop. The guardrail and the shared poll loop
+live in `../bridge-lib/outbound-media.ts` (also used by dc-bridge / sl-bridge).
 
 **How a name is resolved** (first hit wins):
 

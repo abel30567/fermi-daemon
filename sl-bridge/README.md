@@ -23,7 +23,8 @@ build step. Files are `.ts`, ESM, with `.ts` import specifiers.
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create an app.
 2. **OAuth & Permissions** → Bot Token Scopes: `chat:write`, `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
-   `im:write`, `mpim:history`, `mpim:read`, `users:read`. Install the app to the
+   `im:write`, `mpim:history`, `mpim:read`, `users:read`, `files:write` (outbound
+   attachments). Install the app to the
    workspace and copy the **Bot User OAuth Token** (`xoxb-`). This is
    `SLACK_BOT_TOKEN` — put it in `~/fermi-daemon/.env` and as a Worker secret.
 3. **Socket Mode** → enable it.
@@ -47,7 +48,8 @@ Unapproved workspaces get silence.
 - Node **≥ 22.12** (`node --version`).
 - The base Fermi daemon installed first — `daemon/install.sh` — which creates
   `~/fermi-daemon/.env` with `FERMI_URL`.
-- `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in `~/fermi-daemon/.env`.
+- `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, and `FERMI_BEARER_TOKEN` (outbox polling
+  for outbound attachments) in `~/fermi-daemon/.env`.
 - The Worker deployed with matching `SLACK_BRIDGE_SECRET` and `SLACK_BOT_TOKEN`
   Wrangler secrets (the installer generates the bridge secret and prints the
   `wrangler secret put` commands).
