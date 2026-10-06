@@ -1,16 +1,17 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import {
+	type OutboxMessage,
+	SendAttempts,
+	ensureMediaOutDir,
+	failureNotice,
+	parseOutboxMessages,
+} from '../../bridge-lib/outbound-media.ts'
 import type { Config } from './config.ts'
 import { log, logDebug } from './log.ts'
+import { buildWaMediaContent } from './media.ts'
 import { chunkText, type JidMode, type MentionDirectory, mentionsIn } from './mentions.ts'
 import type { SocketState } from './socket.ts'
-
-type OutboxMessage = {
-	id: string
-	chat_id: string
-	body: string
-	created_at: number
-}
 
 type WASocket = NonNullable<ReturnType<SocketState['currentSocket']>>
 
@@ -90,6 +91,14 @@ async function sendBody(
 	}
 }
 
+// Send one attachment (image/video/audio/document) with its caption.
+async function sendMedia(config: Config, sock: WASocket, jid: string, msg: OutboxMessage): Promise<void> {
+	const { content, followUpText } = buildWaMediaContent(msg, config.DAEMON_HOME)
+	await sleep(2000 + Math.random() * 3000)
+	await sock.sendMessage(jid, content)
+	if (followUpText) await sock.sendMessage(jid, { text: followUpText })
+}
+
 // Group chat_ids arrive as full jids (contain '@g.us'); DMs are bare numbers.
 function toJid(chatId: string): string {
 	return chatId.includes('@') ? chatId : `${chatId}@s.whatsapp.net`
@@ -119,6 +128,8 @@ export async function runOutboxLoop(
 	directory: MentionDirectory,
 ): Promise<void> {
 	const outboxUrl = `${config.FERMI_URL}/wa/outbox`
+	const attempts = new SendAttempts()
+	ensureMediaOutDir(config.DAEMON_HOME)
 	while (true) {
 		if (!socketState.isOpen()) {
 			await sleep(config.POLL_MS)
@@ -138,8 +149,7 @@ export async function runOutboxLoop(
 				await sleep(config.POLL_MS)
 				continue
 			}
-			const data = (await res.json()) as { messages?: OutboxMessage[] }
-			messages = data.messages ?? []
+			messages = parseOutboxMessages(await res.json())
 		} catch (err) {
 			log(`outbox fetch error: ${String(err)}`)
 			await sleep(config.POLL_MS)
@@ -149,11 +159,30 @@ export async function runOutboxLoop(
 		for (const msg of messages) {
 			const sock = socketState.currentSocket()
 			if (!sock || !socketState.isOpen()) break
-			try {
-				await sendBody(config, sock, directory, toJid(msg.chat_id), msg.body)
-			} catch (err) {
-				log(`send failed for message ${msg.id} (chat ${msg.chat_id}): ${String(err)}`)
-				continue
+			const jid = toJid(msg.chat_id)
+			if (msg.media) {
+				try {
+					await sendMedia(config, sock, jid, msg)
+					attempts.clear(msg.id)
+				} catch (err) {
+					log(`media send failed for message ${msg.id} (chat ${msg.chat_id}): ${String(err)}`)
+					// Transient errors retry on the next poll; a rejected file or
+					// repeated failure tells the chat and is acked so it stops looping.
+					if (!attempts.fail(msg.id, err)) continue
+					attempts.clear(msg.id)
+					try {
+						await sendBody(config, sock, directory, jid, failureNotice(err))
+					} catch (e) {
+						log(`failure notice failed for ${msg.id}: ${String(e)}`)
+					}
+				}
+			} else {
+				try {
+					await sendBody(config, sock, directory, jid, msg.body)
+				} catch (err) {
+					log(`send failed for message ${msg.id} (chat ${msg.chat_id}): ${String(err)}`)
+					continue
+				}
 			}
 			// Ack per-message: a crash between send and ack may re-send this one.
 			await ack(config, [msg.id])
