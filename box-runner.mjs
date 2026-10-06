@@ -142,10 +142,39 @@ async function writebackInferenceAuth() {
 	}
 }
 
+/** Box RAM in MiB from /proc/meminfo (null off-Linux). */
+function memTotalMb() {
+	try {
+		const m = readFileSync('/proc/meminfo', 'utf8').match(/^MemTotal:\s+(\d+) kB/m)
+		return m ? Math.floor(Number(m[1]) / 1024) : null
+	} catch {
+		return null
+	}
+}
+
+/** One-line memory summary for restart events (`free -m` row). */
+function memSummary() {
+	try {
+		const line = execSync('free -m', { stdio: 'pipe' }).toString().split('\n').find((l) => l.startsWith('Mem:'))
+		return line ? line.replace(/\s+/g, ' ').trim() : 'free -m unavailable'
+	} catch {
+		return 'free -m unavailable'
+	}
+}
+
 /** Model routing, mirroring the cpa-env pattern: proxy routes pin every
  *  model tier so subagents cannot silently fall back to a billed account. */
 function harnessEnv() {
 	const env = { ...process.env, HOME: cfg.HOME ?? process.env.HOME ?? '/root' }
+	// Heap guard (fermi-daemon#7): on 2026-10-06 the kernel OOM-killed `node`
+	// mid-task on t3.small boxes, systemd restarted the runner, and the agent
+	// idled until TTL. Capping V8's old space at ~75% of RAM turns that into an
+	// in-process heap error the harness (and its tsc/jest children, which
+	// inherit NODE_OPTIONS) can see and report, instead of a silent box reset.
+	if (!/max-old-space-size/.test(env.NODE_OPTIONS ?? '')) {
+		const mb = Number(cfg.HEAP_LIMIT_MB) || (memTotalMb() ? Math.floor(memTotalMb() * 0.75) : 0)
+		if (mb > 0) env.NODE_OPTIONS = `${env.NODE_OPTIONS ?? ''} --max-old-space-size=${mb}`.trim()
+	}
 	// The box is a disposable sandbox; this lets the harness accept
 	// --dangerously-skip-permissions under the root systemd unit.
 	env.IS_SANDBOX = '1'
@@ -352,8 +381,13 @@ function writeBrowserHelper() {
 	writeFileSync(file, helper, { mode: 0o755 })
 }
 
-function buildPrompt(payload, followups, sessions = []) {
+function buildPrompt(payload, followups, sessions = [], resumed = false) {
 	const parts = [payload.prompt]
+	if (resumed) {
+		parts.push(
+			`\nRESUME NOTICE: a previous attempt at this task on this machine was interrupted (the runner process restarted, most likely out of memory). The working directory ${WORKDIR} may already contain a clone, commits, stashes or uncommitted edits from that attempt. Before doing anything else, inspect it (\`git status\`, \`git log --oneline -10\`, \`git stash list\`, \`ls\`) and CONTINUE from where it left off rather than starting over. Keep memory-heavy steps (type-aware lint, full test suites, CDK synth) sequential, not parallel. Push work-in-progress to your branch at least every 15 minutes.`,
+		)
+	}
 	if (sessions.length) {
 		parts.push(
 			`\nLeased logged-in web sessions. You do NOT have the cookies and cannot log in yourself — drive each session through the ./fermi-browser helper, which runs the browser on the trusted control plane:\n` +
@@ -497,10 +531,15 @@ async function main() {
 	}, HEARTBEAT_MS)
 	await api('/box/heartbeat')
 	await bootstrapInference()
-	await api('/box/report', { note: `runner up, route=${ROUTE}` }).catch(() => {})
 
 	const pendingFollowups = []
 	let idlePolls = 0
+	// The boot announcement waits for the first poll: if the worker hands back
+	// a task this box already held, this process is a restart mid-task and says
+	// so explicitly (fermi-daemon#7) — the worker counts it, and does not mistake
+	// it for a fresh boot that abandoned work (fermi#42).
+	let announced = false
+	let ranTask = false // an interrupt rerun re-polls its own task: that is not a restart
 
 	for (;;) {
 		let poll
@@ -528,17 +567,27 @@ async function main() {
 			log('stop requested')
 			powerOff()
 		}
+		if (!announced) {
+			announced = true
+			const note = poll.resumed
+				? `runner restarted; resuming ${poll.task?.id}, route=${ROUTE}; ${memSummary()}`
+				: `runner up, route=${ROUTE}`
+			log(note)
+			await api('/box/report', { note }).catch(() => {})
+		}
 
 		if (poll.task) {
 			idlePolls = 0
 			const payload = JSON.parse(poll.task.payload)
 			missionModel = payload.model || null
 			const followups = pendingFollowups.splice(0)
-			await api('/box/report', { note: `claimed ${poll.task.id}; leasing ${(payload.sessions ?? []).length} session(s)` }).catch(() => {})
+			const resumed = poll.resumed === true && !ranTask
+			ranTask = true
+			await api('/box/report', { note: `${resumed ? 'resumed' : 'claimed'} ${poll.task.id}; leasing ${(payload.sessions ?? []).length} session(s)` }).catch(() => {})
 			const sessions = await leaseSessions(payload)
 			await api('/box/report', { note: `leased ${sessions.length}: ${sessions.map((s) => s.name).join(',') || 'none'}; helper=${sessions.length ? existsSync(join(WORKDIR, 'fermi-browser')) : 'n/a'}; spawning` }).catch(() => {})
 			log(`running task ${poll.task.id}${sessions.length ? ` (${sessions.length} session(s) leased)` : ''}`)
-			let { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions))
+			let { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions, resumed))
 			// One corrective rerun when the harness claims success but the proof
 			// contract mechanically fails locally — honest agents self-correct
 			// here instead of being refused at /box/complete.
@@ -548,7 +597,7 @@ async function main() {
 				if (proofFail) {
 					log(`proof self-check failed (${proofFail}); corrective rerun`)
 					const rerun = await runHarness(
-						buildPrompt(payload, [...followups, `Your previous attempt did not satisfy the proof contract: ${proofFail}. Fix the work so the contract passes, then finish.`], sessions),
+						buildPrompt(payload, [...followups, `Your previous attempt did not satisfy the proof contract: ${proofFail}. Fix the work so the contract passes, then finish.`], sessions, resumed),
 					)
 					code = rerun.code
 					resultEvent = rerun.resultEvent

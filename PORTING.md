@@ -122,3 +122,15 @@ Bake into the AMI:
 Shutdown is triple-redundant: the runner powers off after its task (or after
 10 idle minutes), user-data schedules a TTL `shutdown -h`, and the worker-side
 reaper terminates anything that outlives its lease, heartbeat, or budget.
+
+Restarts (issue #7): if the runner process dies mid-task (observed: kernel
+OOM-kill of `node` on a 2 GiB t3.small during CDK/TypeScript tooling) systemd
+restarts it, and `/box/poll` hands back the task this box already holds with
+`resumed: true`. The runner then reports `runner restarted; resuming <task>`
+(with a `free -m` line) instead of `runner up`, and re-spawns the harness with a
+resume preamble telling it to inspect `git status` / `git stash list` in
+`WORKDIR` and continue. The harness also runs with
+`NODE_OPTIONS=--max-old-space-size` at ~75% of box RAM (override with
+`HEAP_LIMIT_MB`) so a heap blow-up becomes a reportable error rather than a
+machine reset. Boxes that need the Node toolchain should launch with
+`instance_type: "t3.medium"` (4 GiB) or larger.
