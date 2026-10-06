@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { Client, Events, GatewayIntentBits, Partials } from 'discord.js'
 import { type Config, loadConfig } from './config.ts'
 import { log } from './log.ts'
+import { startOutboxLoop } from './outbox.ts'
 
 process.on('unhandledRejection', (reason) => {
 	log(`FATAL unhandledRejection: ${String(reason)}`)
@@ -89,6 +90,7 @@ async function main(): Promise<void> {
 
 	client.once(Events.ClientReady, (c) => {
 		log(`connected as ${c.user.tag} (${c.user.id})`)
+		startOutboxLoop(config, client)
 	})
 
 	client.on(Events.MessageCreate, (message) => {
