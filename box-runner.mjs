@@ -477,6 +477,18 @@ function localProofFailure(payload) {
 	return null // http checked by the worker; dom replays via fleetctl
 }
 
+// exit_reason for a failed run: `harness api_error <status>: <result head>` when
+// the result event flags an API error, else `harness exited <code>: <stderr tail>`.
+function harnessFailureDetail(code, resultEvent, err) {
+	const apiStatus = resultEvent?.api_error_status
+	if (resultEvent?.is_error || apiStatus != null) {
+		const head = String(resultEvent?.result ?? '').replace(/\s+/g, ' ').trim().slice(0, 120)
+		const tail = err ? ` | stderr: ${err.replace(/\s+/g, ' ').trim().slice(-200)}` : ''
+		return `harness api_error ${apiStatus ?? 'unknown'}: ${head || 'no result text'}${tail}`
+	}
+	return `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
+}
+
 function extractResult(resultEvent) {
 	const text = resultEvent?.result ?? ''
 	const line = String(text).match(/RESULT:\s*(.+)/)
@@ -632,7 +644,9 @@ async function main() {
 			const inferenceCost = Number(resultEvent?.total_cost_usd) || 0
 			const status = code === 0 ? 'done' : 'failed'
 			// On failure, surface the stderr tail so orchestrators can debug remotely.
-			const failDetail = `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
+			// An API error (spend cap, 429, auth) is reported first and verbatim so
+			// exit_reason says *why* instead of a bare "harness exited 1" (fermi#47).
+			const failDetail = harnessFailureDetail(code, resultEvent, err)
 			const completion = await api('/box/complete', {
 				task_id: poll.task.id,
 				status,
