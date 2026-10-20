@@ -1,0 +1,5 @@
+{
+	"name": "@fermi/bridge-lib",
+	"private": true,
+	"type": "module"
+}
