@@ -6,6 +6,8 @@ export type Config = {
 	FERMI_URL: string
 	DISCORD_BRIDGE_SECRET: string
 	DISCORD_BOT_TOKEN: string
+	FERMI_BEARER_TOKEN: string
+	POLL_MS: number
 	DAEMON_HOME: string
 }
 
@@ -46,7 +48,7 @@ export function loadConfig(): Config {
 	// Process env overrides the .env file.
 	const get = (key: string): string | undefined => process.env[key] ?? fileEnv[key]
 
-	const required = ['FERMI_URL', 'DISCORD_BRIDGE_SECRET', 'DISCORD_BOT_TOKEN'] as const
+	const required = ['FERMI_URL', 'DISCORD_BRIDGE_SECRET', 'DISCORD_BOT_TOKEN', 'FERMI_BEARER_TOKEN'] as const
 	const missing: string[] = []
 	const values: Record<string, string> = {}
 	for (const key of required) {
@@ -63,10 +65,18 @@ export function loadConfig(): Config {
 		)
 	}
 
+	const pollRaw = get('POLL_MS')
+	const POLL_MS = pollRaw !== undefined && pollRaw !== '' ? Number(pollRaw) : 3000
+	if (!Number.isFinite(POLL_MS) || POLL_MS <= 0) {
+		throw new Error(`invalid POLL_MS: ${pollRaw}`)
+	}
+
 	return {
 		FERMI_URL: values.FERMI_URL.replace(/\/+$/, ''),
 		DISCORD_BRIDGE_SECRET: values.DISCORD_BRIDGE_SECRET,
 		DISCORD_BOT_TOKEN: values.DISCORD_BOT_TOKEN,
+		FERMI_BEARER_TOKEN: values.FERMI_BEARER_TOKEN,
+		POLL_MS,
 		DAEMON_HOME,
 	}
 }

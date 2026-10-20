@@ -4,6 +4,7 @@ import { SocketModeClient } from '@slack/socket-mode'
 import { WebClient } from '@slack/web-api'
 import { type Config, loadConfig } from './config.ts'
 import { log } from './log.ts'
+import { startOutboxLoop } from './outbox.ts'
 
 process.on('unhandledRejection', (reason) => {
 	log(`FATAL unhandledRejection: ${String(reason)}`)
@@ -131,10 +132,13 @@ async function main(): Promise<void> {
 
 	const socket = new SocketModeClient({ appToken: config.SLACK_APP_TOKEN })
 
+	let connected = false
 	socket.on('connected', () => {
+		connected = true
 		log('socket mode connected')
 	})
 	socket.on('disconnected', () => {
+		connected = false
 		log('socket mode disconnected — client will reconnect')
 	})
 	socket.on('error', (err: unknown) => {
@@ -176,6 +180,10 @@ async function main(): Promise<void> {
 		log(`FATAL socket start failed: ${String(err)}`)
 		process.exit(1)
 	}
+	// Outbound attachments: the worker queues them for this bridge because the
+	// files live on this Mac. Web API calls work regardless of Socket Mode, but
+	// gate on it so a disconnected bridge does not keep draining.
+	startOutboxLoop(config, web, () => connected)
 }
 
 main().catch((err) => {

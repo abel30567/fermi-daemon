@@ -7,6 +7,8 @@ export type Config = {
 	SLACK_BRIDGE_SECRET: string
 	SLACK_BOT_TOKEN: string
 	SLACK_APP_TOKEN: string
+	FERMI_BEARER_TOKEN: string
+	POLL_MS: number
 	DAEMON_HOME: string
 }
 
@@ -50,6 +52,7 @@ export function loadConfig(): Config {
 		'SLACK_BRIDGE_SECRET',
 		'SLACK_BOT_TOKEN',
 		'SLACK_APP_TOKEN',
+		'FERMI_BEARER_TOKEN',
 	] as const
 	const missing: string[] = []
 	const values: Record<string, string> = {}
@@ -67,11 +70,19 @@ export function loadConfig(): Config {
 		)
 	}
 
+	const pollRaw = get('POLL_MS')
+	const POLL_MS = pollRaw !== undefined && pollRaw !== '' ? Number(pollRaw) : 3000
+	if (!Number.isFinite(POLL_MS) || POLL_MS <= 0) {
+		throw new Error(`invalid POLL_MS: ${pollRaw}`)
+	}
+
 	return {
 		FERMI_URL: values.FERMI_URL.replace(/\/+$/, ''),
 		SLACK_BRIDGE_SECRET: values.SLACK_BRIDGE_SECRET,
 		SLACK_BOT_TOKEN: values.SLACK_BOT_TOKEN,
 		SLACK_APP_TOKEN: values.SLACK_APP_TOKEN,
+		FERMI_BEARER_TOKEN: values.FERMI_BEARER_TOKEN,
+		POLL_MS,
 		DAEMON_HOME,
 	}
 }
