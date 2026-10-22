@@ -10,6 +10,7 @@ import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
 import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
+import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
@@ -56,19 +57,24 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
 
     const t0 = Date.now()
     const hook = webhookRequest(scenario.inbound, EVAL_SECRETS)
-    const res = await fetch(target.url + hook.path, { method: 'POST', headers: hook.headers, body: JSON.stringify(hook.body) })
-    if (!res.ok) throw new Error(`webhook ${hook.path} → HTTP ${res.status}`)
+    if (hook) {
+      const res = await fetch(target.url + hook.path, { method: 'POST', headers: hook.headers, body: JSON.stringify(hook.body) })
+      if (!res.ok) throw new Error(`webhook ${hook.path} → HTTP ${res.status}`)
+    }
     fakes.setPhase('drain')
 
-    const run = harness.runOnce({
-      prompt: readFileSync(DRAIN_PROMPT, 'utf8'),
+    const drainPrompt = readFileSync(DRAIN_PROMPT, 'utf8')
+    const harnessOpts = {
       model,
       cwd: dir,
       mcpConfig: mcpConfigFile,
       allowedTools: ['mcp__fermi__*'],
       env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }, // no claude.ai connectors (the production Fermi) next to the eval server
-      script: scenario.fake?.script, // the fake harness's script; real adapters ignore it
-    })
+    }
+    // A `session` scenario runs warm-worker turns in one session with drain.md as the system prompt (session.mjs).
+    const run = scenario.session
+      ? runSession(harness, { ...harnessOpts, systemPrompt: drainPrompt, script: scenario.fake?.turns }, { turns: scenario.session, inbound: scenario.inbound })
+      : harness.runOnce({ ...harnessOpts, prompt: drainPrompt, script: scenario.fake?.script }) // the fake harness's script; real adapters ignore it
     run.events.on('event', (ev) => {
       trace.push(ev)
       appendFileSync(join(dir, 'trace.jsonl'), JSON.stringify(ev) + '\n')
@@ -101,7 +107,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   if (errorKinds.has('timeout')) failed.push({ assertion: null, message: `harness timed out after ${timeoutMs} ms` })
   for (const ev of trace) {
     if (ev.type === 'tool_result' && !ev.ok) errorKinds.add('tool_error')
-    if (ev.type === 'turn_end' && !ev.ok) {
+    if (ev.type === 'turn_end' && !ev.ok && !ev.interrupted) {
       errorKinds.add(ev.kind)
       failed.push({ assertion: null, message: `harness turn ended with ${ev.kind}: ${ev.detail}` })
     }
