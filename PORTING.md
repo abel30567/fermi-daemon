@@ -109,7 +109,12 @@ per-box token from `/etc/fermi/box.env` (written by the provisioner's
 user-data), polls `/box/poll` for its work task plus control messages
 (follow-up / interrupt / stop), runs `claude -p --dangerously-skip-permissions`
 on the task payload with the proof contract appended, reports via
-`/box/complete`, and powers the machine off.
+`/box/complete`, and powers the machine off. A failed run's result says why:
+`harness api_error <status>` when the API returned an error status, else
+`harness api_error <kind>` for a spend cap, rate limit, auth or API error (all
+match the worker's route-health regex `^harness api_error`), `harness <kind>`
+for another error result (`context_overflow`, `unknown_error`), else
+`harness exited <code>` with the stderr tail.
 
 Bake into the AMI:
 - Node 20+, git, the Claude Code CLI (plus `claude login` state or an
