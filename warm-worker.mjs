@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import http from 'node:http'
 import { Backoff, chatFromEvent } from './lib/turn-outcome.mjs'
 import { loadHarness } from './harness/index.mjs'
+import { ALLOWED_TOOLS } from './lib/run-policy.mjs'
 
 const HOME = process.env.HOME
 const DAEMON = join(HOME, 'fermi-daemon')
@@ -148,7 +149,7 @@ function startClaude() {
     model,
     systemPrompt,
     cwd: DAEMON,
-    allowedTools: 'Bash,mcp__claude_ai_Fermi,mcp__playwright,mcp__claude_ai_Google_Calendar',
+    allowedTools: ALLOWED_TOOLS,
   })
   busy = false
 

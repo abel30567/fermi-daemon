@@ -6,7 +6,8 @@
 //   configDir           → CLAUDE_CONFIG_DIR
 //   tokenFd             → CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR; the fd is passed to the child as-is
 //   scrubSubprocessEnv  → CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
-//   runOnce only: skipPermissions (--dangerously-skip-permissions), maxTurns (--max-turns)
+//   runOnce only: skipPermissions (--dangerously-skip-permissions), maxTurns (--max-turns),
+//                 settingSources (--setting-sources), resume (--resume <session id>)
 
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
@@ -30,13 +31,15 @@ export function sessionArgs({ model, systemPrompt, allowedTools, mcpConfig }) {
 }
 
 // One-shot flags, prompt on stdin (box-runner's shape).
-export function oneShotArgs({ model, systemPrompt, allowedTools, mcpConfig, skipPermissions, maxTurns }) {
+export function oneShotArgs({ model, systemPrompt, allowedTools, mcpConfig, skipPermissions, maxTurns, settingSources, resume }) {
   const a = ['-p']
   if (skipPermissions) a.push('--dangerously-skip-permissions')
   a.push('--output-format', 'stream-json', '--verbose')
   if (mcpConfig) a.push('--mcp-config', mcpConfig, '--strict-mcp-config')
   if (model) a.push('--model', model)
   if (maxTurns != null) a.push('--max-turns', String(maxTurns))
+  if (settingSources) a.push('--setting-sources', settingSources)
+  if (resume) a.push('--resume', resume)
   if (allowedTools) a.push('--allowedTools', toolList(allowedTools))
   if (systemPrompt != null) a.push('--append-system-prompt', systemPrompt)
   return a
