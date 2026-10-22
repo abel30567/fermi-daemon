@@ -1,0 +1,27 @@
+{
+  "name": "queue-isolation",
+  "description": "The drain claims only the default queue: a pending grok-bot task stays untouched and task_claim never names a queue.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tasks": [
+      { "id": "eval-grok-1", "channel": "sl", "sender": "U0EVALOWNER", "chat_id": "D0GROK", "payload": "Grok Bot: summarize the inbox", "queue": "grok-bot" }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Ping" },
+  "expect": [
+    { "argsMatch": { "tool": "task_claim", "every": true, "args": { "queue": null } } },
+    { "task.status": { "queue": "grok-bot", "is": "pending" } },
+    { "task.status": "done" },
+    { "outbox.count": { "eq": 0, "chat_id": "D0GROK" } },
+    { "outbox.count": 1 }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Pong." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "ponged" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}
