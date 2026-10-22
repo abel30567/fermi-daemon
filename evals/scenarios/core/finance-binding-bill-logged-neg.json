@@ -1,0 +1,118 @@
+{
+  "name": "finance-binding-bill-logged-neg",
+  "description": "Negative control for finance-binding-bill-logged: The drain loads a different skill slug instead of household-finance.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      },
+      {
+        "channel": "sl",
+        "sender_id": "T0EVAL",
+        "note": "workspace"
+      }
+    ],
+    "skills": [
+      {
+        "slug": "household-finance",
+        "body": "---\nname: Household finance\ndescription: Eval stub for the household finance channel.\nkeywords: [budget, bills, finance]\n---\nEval stub. Answer budget and bill questions from memory; never move money.\n"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "display_name": "Eval Owner",
+    "team": "T0EVAL",
+    "chat": "C0FINANCE",
+    "text": "Paid the electric bill, $120."
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "skill_load",
+        "every": true,
+        "args": {
+          "slug": "household-finance"
+        }
+      }
+    },
+    {
+      "order": [
+        "skill_load",
+        "memory_write",
+        "channel_send",
+        "task_complete"
+      ]
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "every": true,
+        "args": {
+          "chat_id": "C0FINANCE"
+        }
+      }
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "skill_load",
+        "args": {
+          "slug": "finance"
+        }
+      },
+      {
+        "tool": "memory_write",
+        "args": {
+          "kind": "event",
+          "body": "Paid the electric bill: $120."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Logged: electric bill, $120."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "logged bill"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

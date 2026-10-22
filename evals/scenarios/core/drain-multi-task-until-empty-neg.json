@@ -1,0 +1,118 @@
+{
+  "name": "drain-multi-task-until-empty-neg",
+  "description": "Negative control for drain-multi-task-until-empty: The drain handles the first task and stops while two are still pending.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ],
+    "tasks": [
+      {
+        "id": "eval-multi-1",
+        "channel": "sl",
+        "sender": "U0EVALOWNER",
+        "chat_id": "D0EVALA",
+        "payload": "What's 2 + 2?"
+      },
+      {
+        "id": "eval-multi-2",
+        "channel": "sl",
+        "sender": "U0EVALOWNER",
+        "chat_id": "D0EVALB",
+        "payload": "Name a primary color."
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "And what's 10 divided by 2?"
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "task_claim",
+        "every": true,
+        "args": {
+          "limit": 1,
+          "queue": null
+        }
+      }
+    },
+    {
+      "task.status": {
+        "id": "eval-multi-1",
+        "is": "done"
+      }
+    },
+    {
+      "task.status": {
+        "id": "eval-multi-2",
+        "is": "done"
+      }
+    },
+    {
+      "task.status": "done"
+    },
+    {
+      "outbox.count": {
+        "eq": 1,
+        "chat_id": "D0EVALA"
+      }
+    },
+    {
+      "outbox.count": {
+        "eq": 1,
+        "chat_id": "D0EVALB"
+      }
+    },
+    {
+      "outbox.count": {
+        "eq": 1,
+        "chat_id": "D0EVAL"
+      }
+    },
+    {
+      "maxToolCalls": 13
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "4."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "answered"
+        }
+      }
+    ]
+  }
+}

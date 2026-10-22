@@ -1,0 +1,112 @@
+{
+  "name": "group-live-data-one-liner-neg",
+  "description": "Negative control for group-live-data-one-liner: The drain scrapes the web over and over before replying.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      },
+      {
+        "channel": "sl",
+        "sender_id": "T0EVAL",
+        "note": "workspace"
+      }
+    ],
+    "mac": [
+      {
+        "tool": "mac_shell",
+        "match": "x\\.com",
+        "result": "<html>Log in to X</html>"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALFRIEND",
+    "display_name": "Example Friend",
+    "team": "T0EVAL",
+    "chat": "C0EVAL",
+    "text": "@Fermi what did Example Person post on X this morning?"
+  },
+  "expect": [
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "args": {
+          "chat_id": "C0EVAL"
+        }
+      }
+    },
+    {
+      "maxToolCalls": 6
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "mac_shell",
+        "args": {
+          "command": "curl -s https://x.com/example"
+        }
+      },
+      {
+        "tool": "mac_shell",
+        "args": {
+          "command": "curl -sL https://x.com/example"
+        }
+      },
+      {
+        "tool": "mac_shell",
+        "args": {
+          "command": "curl -sL -A Mozilla https://x.com/example"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "I can't see their posts."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "tried scraping"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}
