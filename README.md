@@ -41,7 +41,10 @@ cloudflared tunnel.
   natural-language progress updates back to the originating chat, so long tasks
   don't go silent.
 - **`prompts/`** — `drain.md` (the worker system prompt / tool policy) and
-  `heartbeat.md` (the idle check-in prompt).
+  `heartbeat.md` (the idle check-in prompt). `npm test` runs
+  `scripts/prompt-lint.mjs`, which fails if a prompt names a Fermi tool missing
+  from fermi-mcp's `tool-surface.json` (vendored in `test/fixtures/`; refresh
+  with `node scripts/prompt-lint.mjs --refresh`; fetched live when `CI` is set).
 - **`tools/`** — local speech-to-text helpers (`transcribe.sh` via whisper.cpp,
   `transcribe.swift` via the macOS Speech framework) for voice-note tasks.
 - **MacOSMCP + cloudflared tunnel** — run separately (see `RESTORE.md`). Fermi
