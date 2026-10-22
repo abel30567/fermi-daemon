@@ -116,6 +116,7 @@ function pipeEvents(child, events, since) {
   })
   child.stderr.on('data', (d) => events.emit('stderr', d.toString()))
   child.on('exit', (code) => events.emit('exit', code))
+  child.on('error', (e) => events.emit('error', e))
 }
 
 export function startSession(o) {
