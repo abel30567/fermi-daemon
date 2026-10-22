@@ -40,6 +40,8 @@ function parseArgs(argv) {
   if (!o.harness) throw new Error('--harness is required')
   if (!o.scenarios.length) throw new Error('--scenarios is required')
   if (!(Number.isInteger(o.k) && o.k > 0)) throw new Error('-k must be a positive integer')
+  // Only the fake harness may run against the in-process fake target; real grades need the eval worker.
+  if (o.harness !== 'fake' && !o.worker) throw new Error(`--harness ${o.harness} needs --worker <fermi-mcp checkout>`)
   return o
 }
 
@@ -57,7 +59,13 @@ async function main() {
     console.error(`evals: no scenario files match ${opts.scenarios.join(' ')}`)
     return 2
   }
-  const scenarios = files.map(loadScenario)
+  let scenarios
+  try {
+    scenarios = files.map(loadScenario)
+  } catch (err) {
+    console.error(`evals: ${err.message}`)
+    return 2
+  }
   const harness = opts.harness === 'fake' ? await import('./harness/fake.mjs') : await loadHarness(opts.harness)
   const out = opts.out ?? join('runs', `evals-${new Date().toISOString().replace(/[:.]/g, '-')}`)
   mkdirSync(out, { recursive: true })

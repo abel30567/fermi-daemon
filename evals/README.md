@@ -29,8 +29,8 @@ error or a non-localhost URL. `--out` defaults to `runs/evals-<timestamp>`.
      `--persist-to` dir, so state is fresh on every attempt. It is seeded with
      `scripts/eval-seed.mjs` and dumped with `scripts/eval-dump.mjs`.
    - without it: `lib/fake-target.mjs`, an in-memory stand-in with the same
-     webhook, core tools and dump shape. It exists to test the runner. Only the
-     real target gives grades that mean anything.
+     webhook, core tools and dump shape. It exists to test the runner, so only
+     `--harness fake` may use it; any other harness without `--worker` exits 2.
 3. Starts a fault-injecting MCP proxy in front of the target's `/mcp`. The
    harness gets an MCP config with that proxy as the only server, `fermi`, so
    its tools are `mcp__fermi__*`, plus `ENABLE_CLAUDEAI_MCP_SERVERS=false`.
@@ -38,6 +38,8 @@ error or a non-localhost URL. `--out` defaults to `runs/evals-<timestamp>`.
 5. Runs one drain through the adapter (`runOnce`, `prompts/drain.md` as the
    prompt) until it ends or `--timeout-ms` passes.
 6. Dumps state, adds what the fakes recorded (`state.fakes`), and evaluates `expect`.
+   A timeout or a `turn_end` with `ok: false` adds a failed assertion, so such an
+   attempt never passes.
 
 Per attempt, `<out>/<scenario>/<n>/` holds `trace.jsonl` (normalized events),
 `raw.log` (native harness output), `state.json`, `mcp.json` and, with

@@ -25,7 +25,12 @@ export function expandScenarios(patterns) {
 }
 
 export function loadScenario(file) {
-  const s = JSON.parse(readFileSync(file, 'utf8'))
+  let s
+  try {
+    s = JSON.parse(readFileSync(file, 'utf8'))
+  } catch (err) {
+    throw new Error(`${file}: ${err.message}`)
+  }
   s.name ??= basename(file, '.json')
   const errs = []
   const inb = s.inbound
