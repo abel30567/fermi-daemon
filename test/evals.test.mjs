@@ -140,6 +140,25 @@ describe('AC3: results.json matches evals/schema/results.schema.json', () => {
   })
 })
 
+describe('usage errors exit 2', () => {
+  test('F2: a non-fake harness without --worker is refused instead of grading against the fake target', () => {
+    const out = tmp()
+    const r = runCli(['--harness', 'claude-code', '--scenarios', `${EXAMPLES}/*`, '--out', out])
+    assert.equal(r.status, 2, r.stdout + r.stderr)
+    assert.match(r.stderr, /--harness claude-code needs --worker/)
+    assert.equal(existsSync(join(out, 'results.json')), false)
+  })
+
+  test('F3: malformed scenario JSON is a clear error, not a stack trace', () => {
+    const f = join(tmp(), 'x.json')
+    writeFileSync(f, '{bad')
+    const r = runCli(['--harness', 'fake', '--scenarios', f, '--out', tmp()])
+    assert.equal(r.status, 2, r.stdout + r.stderr)
+    assert.ok(r.stderr.startsWith(`evals: ${f}: `), r.stderr)
+    assert.doesNotMatch(r.stderr, /\n\s+at /)
+  })
+})
+
 describe('AC4: refuses non-localhost URLs', () => {
   for (const [k, v] of [
     ['FERMI_URL', 'https://fermi.example.workers.dev'],
@@ -191,6 +210,19 @@ describe('driver: faults, fakes and state', () => {
     const r = await attempt(scenario({ faults: { context_bootstrap: { latencyMs: 2000 } } }), { timeoutMs: 200 })
     assert.ok(r.errorKinds.includes('timeout'), JSON.stringify(r))
     assert.ok(r.latencyMs < 1500, String(r.latencyMs))
+  })
+
+  test('F1: a timed-out attempt fails even when its assertions hold on the partial trace', async () => {
+    const r = await attempt(scenario({ faults: { task_claim: { latencyMs: 2000 } }, expect: [{ notCalled: 'phone_call_start' }] }), { timeoutMs: 200 })
+    assert.equal(r.pass, false, JSON.stringify(r))
+    assert.ok(r.failed.some((f) => f.assertion === null && /timed out after 200 ms/.test(f.message)), JSON.stringify(r.failed))
+  })
+
+  test('F1: a turn_end with ok:false fails the attempt', async () => {
+    const r = await attempt(scenario({ fake: {}, expect: [{ notCalled: 'phone_call_start' }] })) // no script → unknown_error
+    assert.equal(r.pass, false, JSON.stringify(r))
+    assert.ok(r.errorKinds.includes('unknown_error'))
+    assert.ok(r.failed.some((f) => /harness turn ended with unknown_error: .*no script/.test(f.message)), JSON.stringify(r.failed))
   })
 
   test('the fake Mac bridge answers the model-switch curl and canned commands, and records them', async () => {

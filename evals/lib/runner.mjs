@@ -97,9 +97,14 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     for (const close of closers.reverse()) await close().catch(() => {})
   }
 
+  // A run that never finished cleanly is never graded green, whatever its trace.
+  if (errorKinds.has('timeout')) failed.push({ assertion: null, message: `harness timed out after ${timeoutMs} ms` })
   for (const ev of trace) {
     if (ev.type === 'tool_result' && !ev.ok) errorKinds.add('tool_error')
-    if (ev.type === 'turn_end' && !ev.ok) errorKinds.add(ev.kind)
+    if (ev.type === 'turn_end' && !ev.ok) {
+      errorKinds.add(ev.kind)
+      failed.push({ assertion: null, message: `harness turn ended with ${ev.kind}: ${ev.detail}` })
+    }
   }
   const ends = trace.filter((e) => e.type === 'turn_end')
   const sum = (k) => (ends.some((e) => e[k] != null) ? ends.reduce((a, e) => a + (e[k] ?? 0), 0) : null)
