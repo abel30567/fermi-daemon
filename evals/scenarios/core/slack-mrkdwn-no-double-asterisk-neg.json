@@ -1,0 +1,78 @@
+{
+  "name": "slack-mrkdwn-no-double-asterisk-neg",
+  "description": "Negative control for slack-mrkdwn-no-double-asterisk: The reply uses **double-asterisk** bold.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "What is the one thing I must not forget for a camping trip? Make it stand out."
+  },
+  "expect": [
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "every": true,
+        "args": {
+          "text": "/^(?![\\s\\S]*\\*\\*)/"
+        }
+      }
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "**Water.** Bring more than you think you need."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "answered"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

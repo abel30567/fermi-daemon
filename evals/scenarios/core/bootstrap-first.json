@@ -1,0 +1,96 @@
+{
+  "name": "bootstrap-first",
+  "description": "context_bootstrap for the task's chat is the first call after the claim, before any other lookup.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ],
+    "memories": [
+      {
+        "kind": "preference",
+        "body": "The eval owner likes Example Earl Grey tea.",
+        "pinned": false
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "What tea do I like?"
+  },
+  "expect": [
+    {
+      "order": [
+        "task_claim",
+        "context_bootstrap",
+        "memory_recall",
+        "channel_send",
+        "task_complete"
+      ]
+    },
+    {
+      "argsMatch": {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "sl",
+          "chat_id": "D0EVAL"
+        }
+      }
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "memory_recall",
+        "args": {
+          "query": "tea"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Example Earl Grey."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "answered"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}
