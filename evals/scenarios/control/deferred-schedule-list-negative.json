@@ -1,0 +1,25 @@
+{
+  "name": "deferred-schedule-list-negative",
+  "description": "Negative control: the scripted drain never reaches schedule_list and answers that it cannot see schedules, so the discovery assertions must fail.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}]
+  },
+  "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What scheduled jobs do I have?"},
+  "expect": [
+    {"order": ["task_claim", "context_bootstrap", "schedule_list", "channel_send", "task_complete"]},
+    {"notCalled": "schedule_create"},
+    {"notCalled": "schedule_delete"},
+    {"exactlyOnce": "channel_send"},
+    {"task.status": "done"}
+  ],
+  "fake": {
+    "script": [
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+      {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "I don't have a way to see your scheduled jobs."}},
+      {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "could not list schedules"}},
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}}
+    ]
+  }
+}
