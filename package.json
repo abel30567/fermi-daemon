@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node scripts/prompt-lint.mjs && node --test test/*.test.mjs"
   },
   "dependencies": {
     "playwright": "^1.63.0"
