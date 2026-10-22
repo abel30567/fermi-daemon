@@ -26,7 +26,13 @@ cloudflared tunnel.
   land in seconds instead of paying the cold-start cost on every message. When
   it is running, `poll.sh` defers to it and only cold-spawns as a fallback.
   Exposes a localhost control endpoint (`:8791`) for model switching and
-  emergency-stop.
+  emergency-stop. It drives the harness through `harness/` (env `HARNESS`,
+  default `claude-code`; `CLAUDE_BIN` overrides the `claude` binary) and writes
+  each drain turn to `runs/warm-*.log` (raw stream-json) and
+  `runs/warm-*.events.jsonl` (normalized events).
+- **`harness/`** — the harness adapter seam: `index.mjs` documents the
+  contract and the normalized event stream; `claude-code.mjs` is the Claude
+  Code adapter.
 - **`wa-bridge/`**, **`dc-bridge/`**, and **`sl-bridge/`** — the WhatsApp (Baileys),
   Discord, and Slack (Socket Mode) bridges. Each turns an inbound chat message
   into a queued Fermi task and pokes the drain loop, and polls the Worker's
@@ -37,9 +43,10 @@ cloudflared tunnel.
   lives in `wa-auth/` (not committed; re-pairable). Slack needs
   `SLACK_BOT_TOKEN` (with `files:write`) + `SLACK_APP_TOKEN` in `.env` (see
   `sl-bridge/README.md`).
-- **`narrator.py`** — tails a lane's stream-json output and posts short
-  natural-language progress updates back to the originating chat, so long tasks
-  don't go silent.
+- **`narrator.py`** — tails a lane's stream-json output (or the normalized
+  `.events.jsonl` next to it, when present) and posts short natural-language
+  progress updates back to the originating chat, so long tasks don't go silent
+  (at most one per `NARRATOR_MIN_INTERVAL`, default 4 s).
 - **`prompts/`** — `drain.md` (the worker system prompt / tool policy) and
   `heartbeat.md` (the idle check-in prompt).
 - **`tools/`** — local speech-to-text helpers (`transcribe.sh` via whisper.cpp,

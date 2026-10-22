@@ -11,14 +11,16 @@
 
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, createWriteStream } from 'node:fs'
+import { readFileSync, writeFileSync, createWriteStream, openSync } from 'node:fs'
 import { join } from 'node:path'
 import http from 'node:http'
-import { classifyResult, Backoff, chatFromEvent } from './lib/turn-outcome.mjs'
+import { Backoff, chatFromEvent } from './lib/turn-outcome.mjs'
+import { loadHarness } from './harness/index.mjs'
 
 const HOME = process.env.HOME
 const DAEMON = join(HOME, 'fermi-daemon')
-const CLAUDE = join(HOME, '.local/bin/claude')
+// Harness adapter (env HARNESS, default claude-code); the worker only sees its normalized events.
+const harness = await loadHarness()
 
 // ---- config from .env ------------------------------------------------------
 const env = Object.fromEntries(
@@ -106,11 +108,11 @@ const log = (...a) =>
   console.log(new Date().toISOString(), ...a)
 
 // ---- persistent claude process ---------------------------------------------
-let claude = null
+let session = null // harness session (harness/index.mjs contract)
 let busy = false
-let buf = ''
 let turnResolve = null
-let turnLog = null // write stream for the current drain turn's stream-json (fed to narrator.py)
+let turnLog = null // write stream for the current drain turn's raw stream-json
+let eventsLog = null // the same turn's normalized events, JSON lines (narrator.py prefers this)
 // Staleness baselines, captured at each spawn: the child freezes its system
 // prompt + MCP toolset at spawn, so when either source changes we respawn.
 let promptHash = null // sha256 of prompts/drain.md as handed to the child
@@ -142,56 +144,40 @@ function startClaude() {
     if (serverVersion == null) serverVersion = v
   })
   log(`starting warm claude (model=${model})`)
-  claude = spawn(
-    CLAUDE,
-    [
-      '-p',
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--model', model,
-      '--setting-sources', 'project,local', // skip global user hooks (they block/latency)
-      '--append-system-prompt', systemPrompt,
-      '--allowedTools', 'Bash,mcp__claude_ai_Fermi,mcp__playwright,mcp__claude_ai_Google_Calendar',
-    ],
-    { cwd: DAEMON, stdio: ['pipe', 'pipe', 'pipe'] },
-  )
-  buf = ''
+  session = harness.startSession({
+    model,
+    systemPrompt,
+    cwd: DAEMON,
+    allowedTools: 'Bash,mcp__claude_ai_Fermi,mcp__playwright,mcp__claude_ai_Google_Calendar',
+  })
   busy = false
 
-  claude.stdout.on('data', (d) => {
-    buf += d.toString()
-    let i
-    while ((i = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, i)
-      buf = buf.slice(i + 1)
-      if (!line.trim()) continue
-      // Tee the drain turn's stream to its log so narrator.py can post progress.
-      if (turnLog) {
-        try {
-          turnLog.write(line + '\n')
-        } catch {}
-      }
-      let j
+  // Tee the drain turn's stream to its logs so narrator.py can post progress.
+  session.events.on('raw', (line) => {
+    if (turnLog) {
       try {
-        j = JSON.parse(line)
-      } catch {
-        continue
-      }
-      handleEvent(j)
+        turnLog.write(line + '\n')
+      } catch {}
     }
   })
-  claude.stderr.on('data', (d) => {
-    const s = d.toString()
+  session.events.on('event', (ev) => {
+    if (eventsLog) {
+      try {
+        eventsLog.write(JSON.stringify(ev) + '\n')
+      } catch {}
+    }
+    handleEvent(ev)
+  })
+  session.events.on('stderr', (s) => {
     if (/error|block|denied/i.test(s)) log('claude stderr:', s.slice(0, 200))
   })
-  claude.on('exit', (code) => {
+  session.events.on('exit', (code) => {
     log(`claude exited (${code}) — respawning in 2s`)
     if (turnResolve) {
       turnResolve()
       turnResolve = null
     }
-    claude = null
+    session = null
     setTimeout(startClaude, 2000)
   })
 
@@ -204,16 +190,13 @@ function startClaude() {
   })
 }
 
-function handleEvent(j) {
-  const chat = chatFromEvent(j)
+function handleEvent(ev) {
+  const chat = chatFromEvent(ev)
   if (chat) turnChat = chat
-  // turn completion: the result event (type:result, or has num_turns+is_error)
-  if (j.type === 'result' || (j.num_turns !== undefined && j.is_error !== undefined)) {
-    if (turnResolve) {
-      const r = turnResolve
-      turnResolve = null
-      r(j)
-    }
+  if (ev.type === 'turn_end' && turnResolve) {
+    const r = turnResolve
+    turnResolve = null
+    r(ev)
   }
 }
 
@@ -221,15 +204,9 @@ function handleEvent(j) {
 // alive (keeps ownership of its claimed task) so it can mark it failed. Verified
 // that claude honors this control message and the session survives.
 function sendInterrupt() {
-  if (!claude || !claude.stdin.writable) return
+  if (!session?.alive) return
   try {
-    claude.stdin.write(
-      JSON.stringify({
-        type: 'control_request',
-        request_id: 'stop_' + Date.now(),
-        request: { subtype: 'interrupt' },
-      }) + '\n',
-    )
+    session.interrupt()
     log('sent interrupt to claude')
   } catch (e) {
     log('interrupt write failed:', String(e))
@@ -244,7 +221,7 @@ let cancelActiveTurn = null
 
 function sendTurn(text) {
   return new Promise((resolve) => {
-    if (!claude || !claude.stdin.writable) return resolve(null)
+    if (!session?.alive) return resolve(null)
     if (cancelActiveTurn) cancelActiveTurn() // supersede any prior in-flight turn
 
     let done = false
@@ -260,16 +237,12 @@ function sendTurn(text) {
     // killed → clean respawn+rewarm via the exit handler.
     const timer = setTimeout(() => {
       log(`turn exceeded ${TURN_TIMEOUT_MS}ms — killing claude to respawn`)
-      if (claude) claude.kill('SIGKILL')
+      if (session) session.close('SIGKILL')
       finish(null)
     }, TURN_TIMEOUT_MS)
     cancelActiveTurn = superseder
     turnResolve = (v) => finish(v)
-    const msg = {
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text }] },
-    }
-    claude.stdin.write(JSON.stringify(msg) + '\n')
+    session.send(text)
   })
 }
 
@@ -277,8 +250,8 @@ function sendTurn(text) {
 // A `result` with is_error (spend/rate limit, context overflow, API error) used
 // to count as a finished turn, so pending work re-fired a drain every few
 // seconds for as long as the error lasted. Back off instead.
-function onDrainResult(r) {
-  const c = classifyResult(r)
+// `c` is the turn_end event (classifyResult's ok/kind/detail/retryAfterMs).
+function onDrainResult(c) {
   if (c.ok) {
     if (backoff.failures) log(`drain recovered after ${backoff.failures} error turn(s) — backoff reset`)
     backoff.reset()
@@ -291,9 +264,9 @@ function onDrainResult(r) {
     alerted = true
     alertOwner(turnChat, c, wait)
   }
-  if (c.kind === 'context_overflow' && claude) {
+  if (c.kind === 'context_overflow' && session) {
     log('context overflow — respawning claude for a fresh session')
-    claude.kill()
+    session.close()
   }
 }
 
@@ -370,7 +343,7 @@ function startControlServer() {
         // Respawn: exit handler restarts claude, which reads the new model.
         // If a turn is mid-flight this kills it — model switches are explicit
         // user requests, so that is the expected behavior.
-        if (claude) claude.kill()
+        if (session) session.close()
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, model: resolved, previous: prev }))
       })
@@ -433,7 +406,7 @@ function startControlServer() {
   })
   server.on('error', (e) => log('control server error:', String(e)))
   server.listen(CONTROL_PORT, '127.0.0.1', () =>
-    log(`control endpoint on 127.0.0.1:${CONTROL_PORT}/abort`),
+    log(`control endpoint on 127.0.0.1:${server.address().port}/abort`),
   )
 }
 
@@ -443,12 +416,12 @@ function startControlServer() {
 // kill the child and let the exit handler respawn it (same mechanism as the
 // POST /model switch): fresh process = fresh prompt + fresh MCP session.
 async function stalenessCheck() {
-  if (busy || !claude) return
+  if (busy || !session) return
   try {
     const h = createHash('sha256').update(readFileSync(PROMPT_PATH)).digest('hex')
     if (promptHash && h !== promptHash) {
       log(`staleness respawn: prompt-changed (prompts/drain.md ${promptHash.slice(0, 12)} -> ${h.slice(0, 12)})`)
-      claude.kill()
+      session.close()
       return
     }
   } catch (e) {
@@ -460,9 +433,9 @@ async function stalenessCheck() {
     serverVersion = v
     return
   }
-  if (v !== serverVersion && !busy && claude) {
+  if (v !== serverVersion && !busy && session) {
     log(`staleness respawn: server-version-changed (${serverVersion} -> ${v})`)
-    claude.kill()
+    session.close()
   }
 }
 
@@ -471,7 +444,7 @@ let lastActivity = Date.now()
 async function loop() {
   for (;;) {
     await new Promise((r) => setTimeout(r, POLL_MS))
-    if (busy || !claude) continue
+    if (busy || !session) continue
     // Emergency stops take priority over any normal queue work.
     if (pendingStops.length) {
       busy = true
@@ -537,6 +510,8 @@ async function loop() {
     const logPath = join(DAEMON, `runs/warm-${t0}.log`)
     let narrator = null
     try {
+      // Opened synchronously so it exists before the narrator looks for it.
+      eventsLog = createWriteStream(null, { fd: openSync(join(DAEMON, `runs/warm-${t0}.events.jsonl`), 'w') })
       turnLog = createWriteStream(logPath)
       narrator = spawn('python3', [join(DAEMON, 'narrator.py'), logPath], {
         cwd: DAEMON,
@@ -558,12 +533,12 @@ async function loop() {
     } catch (e) {
       log('drain turn error:', String(e))
     } finally {
-      if (turnLog) {
+      for (const w of [turnLog, eventsLog]) {
         try {
-          turnLog.end()
+          w?.end()
         } catch {}
-        turnLog = null
       }
+      turnLog = eventsLog = null
     }
     lastActivity = Date.now()
     busy = false
@@ -571,7 +546,7 @@ async function loop() {
 }
 
 process.on('SIGTERM', () => {
-  if (claude) claude.kill()
+  if (session) session.close()
   process.exit(0)
 })
 
