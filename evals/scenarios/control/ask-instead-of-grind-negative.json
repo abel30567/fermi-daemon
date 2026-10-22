@@ -1,0 +1,32 @@
+{
+  "name": "ask-instead-of-grind-negative",
+  "description": "Negative control: the scripted drain grinds through searches and sends a guessed file without asking, so the clarifying-question assertions must fail.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}]
+  },
+  "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Send the file to Ori"},
+  "expect": [
+    {"exactlyOnce": "channel_send"},
+    {"argsMatch": {"tool": "channel_send", "args": {"chat_id": "D0EVAL", "text": "/\\?/"}}},
+    {"notCalled": "mac_shell"},
+    {"notCalled": "phone_call_start"},
+    {"maxToolCalls": 7},
+    {"task.status": "done"}
+  ],
+  "fake": {
+    "script": [
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+      {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "memory_recall", "args": {"query": "Ori"}},
+      {"tool": "memory_recall", "args": {"query": "file"}},
+      {"tool": "conversation_history", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "mac_shell", "args": {"command": "find ~ -iname '*ori*'"}},
+      {"tool": "mac_shell", "args": {"command": "ls -t ~/Downloads | head"}},
+      {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "🔧 Still looking for the file."}},
+      {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Sent report.pdf to Ori."}},
+      {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "sent a guessed file"}},
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}}
+    ]
+  }
+}
