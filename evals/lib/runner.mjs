@@ -147,6 +147,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   const outputTokens = sum('outputTokens')
   return {
     scenario: scenario.name,
+    ...(scenario.category != null && { category: String(scenario.category) }),
     attempt,
     pass: failed.length === 0,
     expectedOutcome: scenario.expectOutcome ?? 'pass',
