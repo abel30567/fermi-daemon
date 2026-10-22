@@ -29,7 +29,10 @@ error or a non-localhost URL. `--out` defaults to `runs/evals-<timestamp>`.
      `--persist-to` dir, so state is fresh on every attempt. It is seeded with
      `scripts/eval-seed.mjs` and dumped with `scripts/eval-dump.mjs`.
    - without it: `lib/fake-target.mjs`, an in-memory stand-in with the same
-     webhook, core tools and dump shape. It exists to test the runner, so only
+     webhook, core tools and dump shape. `lib/fake-target-tools.mjs` adds
+     `skill_load`, `profile_update`, `memory_write` and `schedule_*`, with the
+     worker's validation and `{ ok: false, error }` results (`over_budget`,
+     `every_minutes_out_of_range`, …). It exists to test the runner, so only
      `--harness fake` may use it; any other harness without `--worker` exits 2.
 3. Starts a fault-injecting MCP proxy in front of the target's `/mcp`. The
    harness gets an MCP config with that proxy as the only server, `fermi`, so
@@ -121,6 +124,17 @@ normalized events a real adapter does. A step is `{ "tool", "args" }`,
 non-empty `task_claim`. The runner tests in `test/evals.test.mjs` use only this
 harness and the fake target. They run under a preload that blocks every
 non-loopback connection.
+
+## Scenario packs
+
+`scenarios/core/` (DMN-12): the reply contract, bootstrap first, the Slack
+finance channel binding, Slack mrkdwn, group replies, the job architect and the
+flush rule. Every `<name>.json` has a `<name>-neg.json` negative control: same
+fixtures, faults, inbound and expect, a misbehaving `fake.script`, and
+`expectOutcome: "fail"`. `test/evals-core.test.mjs` checks the pairing and runs
+the pack. Scheduled-run scenarios send their inbound from a sender that is not
+allowlisted, so the webhook drops it and the drain sees only the seeded
+`schedule:` task.
 
 ## Reporting: judge and compare
 

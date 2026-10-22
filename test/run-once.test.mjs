@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ROOT, runWorker } from './run-worker.mjs'
@@ -179,5 +179,70 @@ describe('DMN-23: the prompt is rendered with prompts/local.json', () => {
     assert.equal(r.code, 2)
     assert.equal(r.spawns.length, 0)
     assert.match(r.log, /refusing to start: .*cannot read prompt overlay .*local\.json/)
+  })
+})
+
+// Runs poll.sh in a fake $HOME with the warm worker down (fake pgrep) and an
+// unreachable queue (fake curl), so it goes straight to the heartbeat spawn.
+// Fake nodes answer -v with their version and record any other argv.
+function pollSh({ env = {}, pathNode } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'dmn7-poll-'))
+  const daemon = join(home, 'fermi-daemon')
+  const bin = join(home, 'bin')
+  for (const d of ['logs', 'runs', 'prompts']) mkdirSync(join(daemon, d), { recursive: true })
+  mkdirSync(bin)
+  writeFileSync(join(daemon, '.env'), 'FERMI_URL=http://127.0.0.1:9\nFERMI_BEARER_TOKEN=t\n')
+  const fake = (path, body) => (writeFileSync(path, `#!/bin/sh\n${body}\n`), chmodSync(path, 0o755), path)
+  fake(join(bin, 'pgrep'), 'exit 1')
+  fake(join(bin, 'curl'), 'exit 7')
+  const node = (name, version) =>
+    fake(join(home, name), `[ "$1" = -v ] && { echo ${version}; exit 0; }\nprintf '%s\\n' "$@" > "$FAKE_DIR/${name}.argv"\necho "${name} stderr" >&2`)
+  const nodes = { old: node('node14', 'v14.15.1'), new: node('node22', 'v22.3.0') }
+  if (pathNode) fake(join(bin, 'node'), `exec "${nodes[pathNode]}" "$@"`)
+  const r = spawnSync('/bin/zsh', [join(ROOT, 'poll.sh')], {
+    env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: home, ...(typeof env === 'function' ? env(nodes) : env) },
+    encoding: 'utf8',
+  })
+  const pollLog = existsSync(join(daemon, 'logs/poll.log')) ? readFileSync(join(daemon, 'logs/poll.log'), 'utf8') : ''
+  return { ...r, home, daemon, pollLog, lanes: readdirSync(join(daemon, 'lanes')) }
+}
+
+async function waitFor(path) {
+  for (const t0 = Date.now(); !existsSync(path); await new Promise((res) => setTimeout(res, 20)))
+    if (Date.now() - t0 > 5000) throw new Error(`${path} never appeared`)
+  await new Promise((res) => setTimeout(res, 50))
+  return readFileSync(path, 'utf8')
+}
+
+describe('poll.sh node resolution for the cold path', () => {
+  test('NODE_BIN pointing at node 14: one error line in poll.log, exit 1, no lane, no spawn', () => {
+    const r = pollSh({ env: (n) => ({ NODE_BIN: n.old }) })
+    assert.equal(r.status, 1, r.stderr)
+    assert.match(r.pollLog, /ERROR: node '.*node14' is v14\.15\.1; bin\/run-once\.mjs needs node >= 22 \(set NODE_BIN in \.env\) — not spawning heartbeat\.md/)
+    assert.doesNotMatch(r.pollLog, /spawned/)
+    assert.deepEqual(r.lanes, [])
+    assert.ok(!existsSync(join(r.home, 'node14.argv')))
+    assert.deepEqual(readdirSync(join(r.daemon, 'runs')), [])
+  })
+
+  test('without NODE_BIN, an old node on PATH is refused the same way', () => {
+    const r = pollSh({ pathNode: 'old' })
+    assert.equal(r.status, 1, r.stderr)
+    assert.match(r.pollLog, /ERROR: node '.*\/bin\/node' is v14\.15\.1;/)
+    assert.deepEqual(r.lanes, [])
+  })
+
+  test('NODE_BIN is honoured over PATH, and run-once stdout/stderr land in the run log', async () => {
+    const r = pollSh({ pathNode: 'old', env: (n) => ({ NODE_BIN: n.new }) })
+    assert.equal(r.status, 0, r.stderr)
+    const argv = (await waitFor(join(r.home, 'node22.argv'))).trim().split('\n')
+    assert.equal(argv[0], join(r.daemon, 'bin/run-once.mjs'))
+    assert.equal(argv[argv.indexOf('--prompt') + 1], 'prompts/heartbeat.md')
+    assert.equal(argv[argv.indexOf('--session') + 1], 'session.id')
+    assert.ok(!existsSync(join(r.home, 'node14.argv')), 'PATH node not used')
+    assert.match(r.pollLog, /spawned heartbeat\.md in lane 1/)
+    assert.deepEqual(r.lanes, ['1'])
+    const log = argv[argv.indexOf('--log') + 1]
+    assert.match(await waitFor(join(r.daemon, log)), /node22 stderr/)
   })
 })
