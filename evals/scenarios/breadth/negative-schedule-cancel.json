@@ -1,0 +1,38 @@
+{
+  "name": "negative-schedule-cancel",
+  "description": "Negative control for schedule-cancel: the cancellation is confirmed without deleting anything.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [
+      {
+        "tool": "schedule_list",
+        "result": {
+          "schedules": [
+            { "id": "sch-eval-7", "cron": "0 8 * * 1-5", "prompt": "Weather summary for Austin", "chat_id": "D0EVAL" },
+            { "id": "sch-eval-8", "cron": "0 18 * * 5", "prompt": "Weekly status reminder", "chat_id": "D0EVAL" }
+          ]
+        }
+      },
+      { "tool": "schedule_delete", "match": "sch-eval-7", "result": { "ok": true, "id": "sch-eval-7" } }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Cancel my morning weather reminder." },
+  "expect": [
+    { "order": ["schedule_list", "schedule_delete", "channel_send"] },
+    { "argsMatch": { "tool": "schedule_delete", "every": true, "args": { "id": "sch-eval-7" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "schedule_list", "args": {  } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Cancelled." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "cancelled" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

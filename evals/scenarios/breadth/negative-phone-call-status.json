@@ -1,0 +1,35 @@
+{
+  "name": "negative-phone-call-status",
+  "description": "Negative control for phone-call-status: a new call is placed instead of checking the old one.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "memories": [{ "kind": "fact", "body": "Called Dr. Example's office on 2026-10-21 to book a cleaning; call_id CA-eval-0001.", "pinned": true }],
+    "tools": [
+      {
+        "tool": "phone_call_status",
+        "match": "CA-eval-0001",
+        "result": { "call_id": "CA-eval-0001", "status": "completed", "duration_s": 94, "summary": "Booked a cleaning for Tuesday at 10am (placeholder)." }
+      }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Did yesterday's call to the dentist go through?" },
+  "expect": [
+    { "argsMatch": { "tool": "phone_call_status", "args": { "call_id": "CA-eval-0001" } } },
+    { "notCalled": "phone_call_start" },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/Tuesday/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "phone_call_start", "args": { "to": "+15555550100", "purpose": "Confirm the cleaning booking" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "I'm calling them again to check." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "placed a call" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "web-search-current-fact",
+  "description": "A question about a current fact is answered from search results, not from training data.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [
+      {
+        "tool": "search",
+        "result": {
+          "results": [
+            {
+              "title": "Node.js releases",
+              "url": "https://nodejs.org/en/about/previous-releases",
+              "snippet": "Node.js v99 (eval placeholder) is the active LTS line."
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's the current LTS release of Node.js?" },
+  "expect": [
+    { "argsMatch": { "tool": "search", "args": { "query": "/node/i" } } },
+    { "order": ["search", "channel_send"] },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/v99/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "search", "args": { "query": "Node.js current LTS release" } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "The active Node.js LTS line is v99 (per nodejs.org)." }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered from search" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "negative-skill-load-weekly-status",
+  "description": "Negative control for skill-load-weekly-status: a generic draft is sent without loading the skill.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "skills": [
+      {
+        "slug": "weekly-status",
+        "body": "---\nname: weekly-status\ndescription: Draft the owner's weekly status update\n---\nThree sections in this order: Shipped, In progress, Blocked. At most 5 bullets each."
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Draft my weekly status update: I shipped the eval runner and I'm still working on the soak tests."
+  },
+  "expect": [
+    { "order": ["skill_search", "skill_load", "channel_send"] },
+    { "argsMatch": { "tool": "skill_load", "args": { "slug": "weekly-status" } } },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/Shipped[\\s\\S]*In progress[\\s\\S]*Blocked/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "This week I shipped the eval runner and kept working on soak tests." }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "drafted status" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

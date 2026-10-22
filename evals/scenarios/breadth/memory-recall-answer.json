@@ -1,0 +1,30 @@
+{
+  "name": "memory-recall-answer",
+  "description": "A question about a stored fact is answered from memory_recall, not guessed.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "memories": [{ "kind": "fact", "body": "The owner's gym locker combination is 00-11-22 (placeholder).", "pinned": false }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's my gym locker combination?" },
+  "expect": [
+    { "argsMatch": { "tool": "memory_recall", "args": { "query": "/locker|gym/i" } } },
+    { "order": ["memory_recall", "channel_send"] },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/00-11-22/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "memory_recall", "args": { "query": "gym locker combination" } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Your gym locker combination is 00-11-22." }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered from memory" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}
