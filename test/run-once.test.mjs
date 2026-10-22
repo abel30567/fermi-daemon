@@ -1,10 +1,10 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ROOT, runWorker } from './run-worker.mjs'
+import { ROOT, runWorker, assertFakeHarness } from './run-worker.mjs'
 
 const RUN_ONCE = join(ROOT, 'bin/run-once.mjs')
 const FAKE_ONCE = join(ROOT, 'test/fixtures/fake-claude-once.mjs')
@@ -29,10 +29,12 @@ async function runOnceCli({ args = [], env = {}, act } = {}) {
   const bin = join(dir, 'claude')
   writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_ONCE}" "$@"\n`)
   chmodSync(bin, 0o755)
+  const childEnv = { PATH: process.env.PATH, HOME: dir, CLAUDE_BIN: bin, FAKE_DIR: dir, ...env }
+  assertFakeHarness(childEnv.CLAUDE_BIN || join(childEnv.HOME, '.local/bin/claude'))
   const child = spawn(
     process.execPath,
     [RUN_ONCE, '--prompt', 'prompts/drain.md', '--log', 'runs/r.log', '--lane', join(dir, 'lanes/1'), ...args],
-    { cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLAUDE_BIN: bin, FAKE_DIR: dir, ...env }, stdio: 'ignore' },
+    { cwd: dir, env: childEnv, stdio: 'ignore' },
   )
   writeFileSync(join(dir, 'lanes/1/pid'), String(child.pid))
   const exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })))
@@ -104,6 +106,18 @@ describe('AC1: cold argv has the warm worker\'s settings surface', () => {
     assert.notEqual(r.code, 0)
     assert.match(r.log, /^run-once: spawn error: spawn \/nope ENOENT$/m)
     assert.ok(r.laneGone)
+  })
+})
+
+describe('test guard: no test spawns a real harness', () => {
+  test('a harness outside the temp dir and test/fixtures throws', async () => {
+    assert.throws(() => assertFakeHarness('/usr/bin/true'), /would spawn a real harness: \/usr\/bin\/true/)
+    assert.throws(() => assertFakeHarness('claude'), /from PATH/)
+    const link = join(mkdtempSync(join(tmpdir(), 'dmn20-')), 'claude')
+    symlinkSync('/usr/bin/true', link)
+    assert.throws(() => assertFakeHarness(link), /-> \/usr\/bin\/true/)
+    await assert.rejects(runOnceCli({ env: { CLAUDE_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
+    await assert.rejects(runWorker({ result: SUCCESS, durationMs: 0, env: { CLAUDE_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
   })
 })
 

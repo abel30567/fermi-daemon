@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, exist
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import http from 'node:http'
-import { ROOT } from './run-worker.mjs'
+import { ROOT, assertFakeHarness } from './run-worker.mjs'
 import { classifyResult } from '../lib/turn-outcome.mjs'
 
 const FAKE = join(ROOT, 'test/fixtures/fake-claude-once.mjs')
@@ -22,6 +22,7 @@ async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-run
   const bin = join(home, 'claude')
   writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`)
   chmodSync(bin, 0o755)
+  assertFakeHarness({ CLAUDE_BIN: bin, ...env }.CLAUDE_BIN) // box-runner falls back to `claude` on PATH
   const calls = []
   let polls = 0
   const server = http.createServer((req, res) => {
