@@ -74,11 +74,19 @@ describe('Backoff', () => {
   test('a reset time later than the backoff wins; reset() clears it', () => {
     let clock = 0
     const b = new Backoff({ now: () => clock })
-    assert.equal(b.fail(3_600_000), 3_600_000)
+    assert.equal(b.fail(600_000), 600_000)
     assert.equal(b.fail(1000), 60_000)
     b.reset()
     assert.equal(b.ready(), true)
     assert.equal(b.fail(), 30_000)
+  })
+
+  test('a 10 h reset time is capped at 30 min', () => {
+    let clock = 0
+    const b = new Backoff({ now: () => clock })
+    const wait = b.fail(10 * 3_600_000)
+    assert.ok(wait <= 30 * 60_000, `wait ${wait}`)
+    assert.equal(b.until, 30 * 60_000)
   })
 })
 
