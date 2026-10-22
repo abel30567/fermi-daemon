@@ -65,7 +65,7 @@ WantedBy=default.target
   Fresh box alternative: re-pair (`npm run pair -- <E164>`; QR fallback in socket.ts).
 - `warm-model` — persisted model choice (optional; defaults to sonnet)
 - `models/` — whisper models (optional; auto-redownload)
-- `prompts/`, `tools/`, `narrator.py`, `poll.sh`, `warm-worker.mjs` — code
+- `prompts/`, `tools/`, `narrator.py`, `poll.sh`, `warm-worker.mjs` (+ `lib/`, `harness/`) — code
 - claude CLI auth: `claude login` on the box (interactive, one-time)
 
 ## Mac-isms to fix in the port (the honest list)

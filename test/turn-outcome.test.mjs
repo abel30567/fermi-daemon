@@ -1,14 +1,10 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import http from 'node:http'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { classifyResult, parseResetMs, Backoff, chatFromEvent } from '../lib/turn-outcome.mjs'
+import { ROOT, runWorker, sim } from './run-worker.mjs'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const FIXTURE = join(ROOT, 'test/fixtures/blocking-limit-result.json')
 const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8'))
 const SUCCESS = { type: 'result', subtype: 'success', is_error: false, num_turns: 3, result: 'Done.', terminal_reason: 'completed', api_error_status: null }
@@ -91,71 +87,6 @@ describe('Backoff', () => {
 })
 
 // ---- integration: real warm-worker.mjs against a fake harness ---------------
-// Time is scaled 60x: 10 simulated minutes = 10 s, 30 s base backoff = 500 ms.
-const SCALE = 60
-const sim = (ms) => Math.round(ms / SCALE)
-
-export async function runWorker({ result, errors, claim, durationMs, worker = join(ROOT, 'warm-worker.mjs') }) {
-  const home = mkdtempSync(join(tmpdir(), 'dmn2-'))
-  const daemon = join(home, 'fermi-daemon')
-  mkdirSync(join(daemon, 'prompts'), { recursive: true })
-  mkdirSync(join(daemon, 'runs'))
-  mkdirSync(join(home, '.local/bin'), { recursive: true })
-  writeFileSync(join(daemon, 'prompts/drain.md'), 'test prompt\n')
-  const resultFile = join(home, 'result.json')
-  writeFileSync(resultFile, JSON.stringify(result))
-  const claudeBin = join(home, '.local/bin/claude')
-  writeFileSync(claudeBin, `#!/bin/sh\nexec "${process.execPath}" "${join(ROOT, 'test/fixtures/fake-claude.mjs')}" "$@"\n`)
-  chmodSync(claudeBin, 0o755)
-
-  const narrations = []
-  const server = http.createServer((req, res) => {
-    if (req.url === '/admin/tasks/pending') return res.end(JSON.stringify({ pending: 1 }))
-    if (req.url === '/admin/narrate') {
-      let body = ''
-      req.on('data', (c) => (body += c))
-      req.on('end', () => {
-        narrations.push(JSON.parse(body))
-        res.end('{}')
-      })
-      return
-    }
-    res.writeHead(404).end()
-  })
-  await new Promise((r) => server.listen(0, '127.0.0.1', r))
-  writeFileSync(join(daemon, '.env'), `FERMI_URL=http://127.0.0.1:${server.address().port}\nFERMI_BEARER_TOKEN=test\n`)
-
-  const child = spawn(process.execPath, [worker], {
-    env: {
-      PATH: process.env.PATH,
-      HOME: home,
-      WARM_POLL_MS: String(sim(1000)),
-      WARM_CONTROL_PORT: '0',
-      WARM_BACKOFF_BASE_MS: String(sim(30_000)),
-      WARM_BACKOFF_MAX_MS: String(sim(1_800_000)),
-      FAKE_DIR: home,
-      FAKE_RESULT: resultFile,
-      FAKE_DELAY_MS: String(sim(3000)), // the incident's turns took ~4 s end to end
-      ...(errors != null && { FAKE_ERRORS: String(errors) }),
-      ...(claim && { FAKE_CLAIM: '1' }),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  let log = ''
-  child.stdout.on('data', (d) => (log += d))
-  child.stderr.on('data', (d) => (log += d))
-  await new Promise((r) => setTimeout(r, durationMs))
-  child.kill('SIGTERM')
-  await new Promise((r) => child.on('exit', r))
-  server.close()
-  const turnsLog = join(home, 'turns.log')
-  const events = existsSync(turnsLog)
-    ? readFileSync(turnsLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    : []
-  rmSync(home, { recursive: true, force: true })
-  return { events, drains: events.filter((e) => e.drain), narrations, log }
-}
-
 const noResetTime = { ...fixture, result: fixture.result.replace(/ · your weekly limit resets.*$/, '') }
 
 describe('warm-worker with a failing harness', { concurrency: true }, () => {
