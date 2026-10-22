@@ -1,19 +1,23 @@
 #!/usr/bin/env node
 // Checks that every Fermi tool named in prompts/*.md exists in fermi-mcp's tool surface,
 // so a worker-side rename fails the gates instead of silently breaking the agent.
+// Each prompt is linted as rendered with the example overlay (lib/prompt.mjs), so a
+// placeholder with no key in prompts/local.example.json fails too.
 //
 //   node scripts/prompt-lint.mjs                    lint against test/fixtures/tool-surface.json
 //                                                   (fetched from fermi-mcp master when CI is set)
 //   node scripts/prompt-lint.mjs --refresh          re-vendor the fixture from fermi-mcp master
-//   node scripts/prompt-lint.mjs --prompts DIR --surface FILE
+//   node scripts/prompt-lint.mjs --prompts DIR --surface FILE --overlay FILE
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { renderPrompt } from '../lib/prompt.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SURFACE_URL = 'https://raw.githubusercontent.com/abel30567/fermi-mcp/master/packages/worker/tool-surface.json'
 const FIXTURE = join(ROOT, 'test/fixtures/tool-surface.json')
+const EXAMPLE_OVERLAY = join(ROOT, 'prompts/local.example.json')
 
 // A tool-name shape: a whole backticked snake_case identifier, e.g. `task_claim`.
 const TOOL_SHAPE = /`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g
@@ -32,10 +36,10 @@ async function fetchSurface() {
 
 const toolNames = (surface) => new Set(surface.map((t) => t.name))
 
-export function lint(promptsDir, tools) {
+export function lint(promptsDir, tools, overlay) {
   const problems = []
   for (const file of readdirSync(promptsDir).filter((f) => f.endsWith('.md')).sort()) {
-    const lines = readFileSync(join(promptsDir, file), 'utf8').split('\n')
+    const lines = renderPrompt(readFileSync(join(promptsDir, file), 'utf8'), overlay, join(promptsDir, file)).split('\n')
     lines.forEach((text, i) => {
       for (const [, name] of text.matchAll(TOOL_SHAPE)) {
         if (!tools.has(name) && !IGNORE.has(name)) problems.push({ file: join(promptsDir, file), line: i + 1, name })
@@ -51,6 +55,7 @@ async function main() {
       refresh: { type: 'boolean' },
       prompts: { type: 'string', default: join(ROOT, 'prompts') },
       surface: { type: 'string' },
+      overlay: { type: 'string', default: EXAMPLE_OVERLAY },
     },
   })
 
@@ -65,7 +70,7 @@ async function main() {
   const surface = values.surface
     ? JSON.parse(readFileSync(values.surface, 'utf8'))
     : process.env.CI ? await fetchSurface() : JSON.parse(readFileSync(FIXTURE, 'utf8'))
-  const problems = lint(values.prompts, toolNames(surface))
+  const problems = lint(values.prompts, toolNames(surface), JSON.parse(readFileSync(values.overlay, 'utf8')))
   for (const p of problems) {
     const rel = relative(process.cwd(), p.file)
     console.error(`${rel.startsWith('..') ? p.file : rel}:${p.line}: unknown tool \`${p.name}\``)
