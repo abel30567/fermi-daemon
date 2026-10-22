@@ -1,0 +1,120 @@
+{
+  "name": "finance-binding-loads-skill-neg",
+  "description": "Negative control for finance-binding-loads-skill: The drain answers from memory without loading household-finance.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      },
+      {
+        "channel": "sl",
+        "sender_id": "T0EVAL",
+        "note": "workspace"
+      }
+    ],
+    "skills": [
+      {
+        "slug": "household-finance",
+        "body": "---\nname: Household finance\ndescription: Eval stub for the household finance channel.\nkeywords: [budget, bills, finance]\n---\nEval stub. Answer budget and bill questions from memory; never move money.\n"
+      }
+    ],
+    "memories": [
+      {
+        "kind": "fact",
+        "body": "Groceries budget this month: $600, spent $412.",
+        "pinned": false
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "display_name": "Eval Owner",
+    "team": "T0EVAL",
+    "chat": "C0FINANCE",
+    "text": "How much is left in the groceries budget this month?"
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "skill_load",
+        "args": {
+          "slug": "household-finance"
+        }
+      }
+    },
+    {
+      "order": [
+        "context_bootstrap",
+        "skill_load",
+        "channel_send",
+        "task_complete"
+      ]
+    },
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "every": true,
+        "args": {
+          "chat_id": "C0FINANCE"
+        }
+      }
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "memory_recall",
+        "args": {
+          "query": "groceries budget"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "$188 left of the $600 groceries budget."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "answered"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}
