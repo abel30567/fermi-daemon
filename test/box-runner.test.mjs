@@ -2,12 +2,13 @@
 // and a fake one-shot harness (test/fixtures/fake-claude-once.mjs).
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import http from 'node:http'
 import { ROOT } from './run-worker.mjs'
+import { classifyResult } from '../lib/turn-outcome.mjs'
 
 const FAKE = join(ROOT, 'test/fixtures/fake-claude-once.mjs')
 
@@ -63,7 +64,7 @@ async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-run
   return { code, out, work, bin, spawns, completes, notes }
 }
 
-describe('AC1: exit reasons and results from the fake harness', { concurrency: true }, () => {
+describe('AC1: exit reasons and results from the fake harness', () => {
   test('success → done with the RESULT: line and the cost', async () => {
     const r = await runBox()
     assert.equal(r.code, 0, r.out)
@@ -83,10 +84,45 @@ describe('AC1: exit reasons and results from the fake harness', { concurrency: t
     assert.equal(inference_cost_usd, 0)
   })
 
-  test('spend limit with no status → `harness spend_limit`', async () => {
+  test('spend limit with no status → `harness api_error spend_limit`', async () => {
     const r = await runBox({ mode: 'spend' })
     assert.equal(r.completes[0].status, 'failed', r.out)
-    assert.match(r.completes[0].result, /^harness spend_limit: You've hit your monthly spend limit/)
+    assert.match(r.completes[0].result, /^harness api_error spend_limit: You've hit your monthly spend limit/)
+  })
+
+  const failed = async (ev) => {
+    const r = await runBox({ mode: 'result', env: { FAKE_ONCE_RESULT: JSON.stringify(ev) } })
+    assert.equal(r.completes.length, 1, r.out)
+    assert.equal(r.completes[0].status, 'failed', r.out)
+    return r.completes[0].result
+  }
+  const errorResult = (result, extra = {}) => ({ type: 'result', subtype: 'success', is_error: true, api_error_status: null, result, ...extra })
+
+  test('real spend cap blocking compaction (blocking-limit fixture) → `harness api_error spend_limit`', async () => {
+    const ev = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/blocking-limit-result.json'), 'utf8'))
+    assert.match(await failed(ev), /^harness api_error spend_limit: Prompt is too long · automatic compaction failed/)
+  })
+
+  test('rate limit with no status → `harness api_error rate_limit`', async () => {
+    assert.match(await failed(errorResult('Claude AI usage limit reached|1760000000')), /^harness api_error rate_limit: Claude AI usage limit reached/)
+  })
+
+  test('auth error with no status → `harness api_error auth`', async () => {
+    assert.match(await failed(errorResult('Invalid API key · Please run /login')), /^harness api_error auth: Invalid API key/)
+  })
+
+  test('auth error with a status → `harness api_error 401`', async () => {
+    assert.match(await failed(errorResult('API Error: 401 OAuth token has expired', { api_error_status: 401 })), /^harness api_error 401: API Error: 401/)
+  })
+
+  test('API error with no status → `harness api_error api_error`', async () => {
+    assert.match(await failed(errorResult('API Error: Overloaded')), /^harness api_error api_error: API Error: Overloaded/)
+  })
+
+  test('context overflow is not a route error → `harness context_overflow`', async () => {
+    const result = await failed(errorResult('Prompt is too long'))
+    assert.match(result, /^harness context_overflow: Prompt is too long/)
+    assert.doesNotMatch(result, /^harness api_error/)
   })
 
   test('crash → failed with `harness exited <code>` and the stderr tail', async () => {
@@ -142,4 +178,47 @@ describe('progress and stuck notes', () => {
     assert.equal(stuck.length, 1, r.notes.join('\n'))
     assert.match(stuck[0], /^⚠️ possibly stuck: no harness output for \d+s \(turns=2, last tool=Bash\)$/)
   })
+})
+
+// Every `result` event the fixtures in test/fixtures/ hold or emit: JSON and
+// JSONL files as stored, the fake harnesses by running each of their result paths.
+function fixtureResults() {
+  const dir = join(ROOT, 'test/fixtures')
+  const found = []
+  const collect = (v) => {
+    if (Array.isArray(v)) v.forEach(collect)
+    else if (v?.type === 'result') found.push(v)
+  }
+  const lines = (text) => text.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  for (const f of readdirSync(dir)) {
+    if (f.endsWith('.json')) collect(JSON.parse(readFileSync(join(dir, f), 'utf8')))
+    else if (f.endsWith('.jsonl')) collect(lines(readFileSync(join(dir, f), 'utf8')))
+  }
+  const run = (script, env, input = '') => {
+    const fakeDir = mkdtempSync(join(tmpdir(), 'dmn8-fx-'))
+    writeFileSync(join(fakeDir, 'turns.log'), '')
+    const r = spawnSync(process.execPath, [join(dir, script)], { input, env: { PATH: process.env.PATH, FAKE_DIR: fakeDir, ...env } })
+    collect(lines(String(r.stdout)))
+  }
+  for (const mode of ['success', '429', 'spend']) run('fake-claude-once.mjs', { FAKE_ONCE: mode })
+  const drain = JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'pending tasks' }] } })
+  const interrupt = JSON.stringify({ type: 'control_request', request_id: 'r1', request: { subtype: 'interrupt' } })
+  const FAKE_RESULT = join(dir, 'blocking-limit-result.json')
+  run('fake-claude.mjs', { FAKE_RESULT, FAKE_ERRORS: '0' }, `${drain}\n`)
+  run('fake-claude.mjs', { FAKE_RESULT, FAKE_DELAY_MS: '60000' }, `${drain}\n${interrupt}\n`)
+  return found
+}
+
+test("box-runner's inline classifyResult agrees with lib/turn-outcome.mjs on every result fixture", () => {
+  const src = readFileSync(join(ROOT, 'box-runner.mjs'), 'utf8').match(/^function classifyResult\(ev\) \{\n[\s\S]*?\n\}$/m)
+  assert.ok(src, 'box-runner.mjs defines function classifyResult(ev)')
+  const inline = new Function(`${src[0]}\nreturn classifyResult`)()
+  const results = fixtureResults()
+  const kinds = new Set(results.map((ev) => classifyResult(ev).kind))
+  assert.ok(results.length >= 7, `found ${results.length} result fixtures`)
+  for (const k of ['ok', 'spend_limit', 'rate_limit', 'unknown_error']) assert.ok(kinds.has(k), `fixtures cover ${k}: ${[...kinds]}`)
+  for (const ev of results) {
+    const { retryAfterMs, ...lib } = classifyResult(ev)
+    assert.deepEqual(inline(ev), lib, JSON.stringify(ev).slice(0, 300))
+  }
 })
