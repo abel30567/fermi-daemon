@@ -1,0 +1,10 @@
+<!-- project-rules.md — pasted into EVERY worker prompt; the verifier uses it as a checklist. -->
+- This repository is PUBLIC. Never commit secrets, tokens, account or resource IDs (Cloudflare account/D1/KV/R2 ids), real phone numbers, emails, personal names, absolute home paths (`/Users/...`) or the production worker URL. Use placeholders (`fermi.example.workers.dev`, `+15555550100`, `owner@example.com`). Before every push run `git diff origin/BASE --stat` and `git grep -nE "workers\.dev|/Users/|@gmail|\+1[0-9]{10}"` on your changes and remove any hit that is not a placeholder.
+- Never touch production: no `wrangler deploy`/`secret`/`--remote`, no requests to the production Fermi URL, no `launchctl`, nothing under `~/fermi-daemon` (the live daemon) or `~/git/` (private repos). Work only inside your worktree; use your assigned `$PORT` for any local server.
+- Tests never use the network or real credentials: mock outbound HTTP, use fixtures and fake harness binaries. Never run a real agent harness (`claude`, `pi`, `codex`, hbar) against a real account from tests or gates; live inference is orchestrator-only.
+- Every behaviour change ships with a test that fails without the change.
+- Do not add dependencies unless the task says so. Do not edit CI, deploy or infrastructure config unless the task is about it.
+- Stay inside the task scope. If the task conflicts with the code you find, post `[BUILDER] BLOCKED` instead of widening scope.
+- Runtime is Node >= 22 with type stripping (no build step); tests use `node:test` + `node:assert/strict`. `poll.sh` is zsh; `narrator.py` is python3 stdlib only.
+- The daemon's contract with Fermi is MCP tool calls (`task_claim`, `context_bootstrap`, `channel_send`, `task_complete`, ...). Do not change prompt semantics in `prompts/` unless the task says so.
+- Behaviour of the live Claude Code path must stay byte-for-byte compatible unless the task says otherwise (same flags, same stream-json handling); new harness behaviour goes behind an explicit option.
