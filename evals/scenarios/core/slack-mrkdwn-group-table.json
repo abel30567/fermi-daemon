@@ -1,0 +1,94 @@
+{
+  "name": "slack-mrkdwn-group-table",
+  "description": "In a Slack channel, a table request is still answered without a pipe table or # header.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      },
+      {
+        "channel": "sl",
+        "sender_id": "T0EVAL",
+        "note": "workspace"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALFRIEND",
+    "display_name": "Example Friend",
+    "team": "T0EVAL",
+    "chat": "C0EVAL",
+    "text": "@Fermi can you lay out the three example shifts with their hours?"
+  },
+  "expect": [
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "every": true,
+        "args": {
+          "chat_id": "C0EVAL",
+          "text": "/^(?![\\s\\S]*(^|\\n)[ \\t]*\\|)/"
+        }
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "every": true,
+        "args": {
+          "text": "/^(?![\\s\\S]*(^|\\n)[ \\t]*#{1,6}[ \\t])/"
+        }
+      }
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "*Morning*: 6am–2pm\n*Evening*: 2pm–10pm\n*Night*: 10pm–6am"
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "listed shifts"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

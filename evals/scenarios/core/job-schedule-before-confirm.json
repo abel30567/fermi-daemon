@@ -1,0 +1,96 @@
+{
+  "name": "job-schedule-before-confirm",
+  "description": "A recurring request is registered with schedule_create for the requester's chat before the confirmation.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Remind me every morning to take my vitamins."
+  },
+  "expect": [
+    {
+      "called": "schedule_create"
+    },
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "channel": "sl",
+          "chat_id": "D0EVAL"
+        }
+      }
+    },
+    {
+      "order": [
+        "schedule_create",
+        "channel_send",
+        "task_complete"
+      ]
+    },
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "schedule_create",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "every_minutes": 1440,
+          "prompt": "Goal: remind the owner to take their vitamins. Steps: send one short reminder with channel_send. Delivery: always message."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Set up: a vitamin reminder every 24 hours. Ask me to \"delete schedule <id>\" to cancel."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "scheduled vitamin reminder"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

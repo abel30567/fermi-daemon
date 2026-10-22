@@ -1,0 +1,90 @@
+{
+  "name": "job-cadence-min-5",
+  "description": "A \"check every minute\" request is scheduled at the 5-minute minimum, not faster.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Check https://status.example.com every minute and tell me when it goes down."
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "every": true,
+        "args": {
+          "every_minutes": "/^([5-9]|[1-9]\\d+)$/"
+        }
+      }
+    },
+    {
+      "order": [
+        "schedule_create",
+        "channel_send",
+        "task_complete"
+      ]
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "schedule_create",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "every_minutes": 5,
+          "prompt": "Goal: tell the owner when https://status.example.com changes state. Steps: memory_recall sched:example-status:last-seen; run mac_shell `curl -s https://status.example.com/api`; memory_write the new state if it changed. Delivery: only message the owner when the state differs from last-seen; otherwise stay silent."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Watching status.example.com every 5 minutes (the fastest cadence). I only message you when it changes."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "scheduled status watch"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}
