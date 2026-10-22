@@ -4,6 +4,7 @@
 //   success  init, a Bash tool call and its result, then a result with RESULT: and cost
 //   429      an API-error result (api_error_status 429), exit 1
 //   spend    a spend-limit result with no status, exit 1
+//   result   the result event in FAKE_ONCE_RESULT (JSON), exit 1
 //   crash    stderr only, no result, exit 3
 //   slow     like success, but stalls FAKE_STALL_MS before the result
 import { appendFileSync } from 'node:fs'
@@ -32,6 +33,10 @@ process.stdin.on('end', async () => {
   out({ type: 'system', subtype: 'init', session_id: 'fake', model: 'fake', tools: ['Bash'] })
   if (mode === '429') {
     out({ type: 'result', subtype: 'success', is_error: true, num_turns: 1, api_error_status: 429, result: 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}' })
+    process.exit(1)
+  }
+  if (mode === 'result') {
+    out(JSON.parse(process.env.FAKE_ONCE_RESULT))
     process.exit(1)
   }
   if (mode === 'spend') {

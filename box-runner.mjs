@@ -6,13 +6,11 @@
 // Configuration comes from /etc/fermi/box.env (written by the provisioner's
 // user-data) or the process environment. Required: FERMI_URL, FERMI_BOX_TOKEN.
 // Optional: ROUTE (claude|codex|grok), CPA_URL + CPA_TOKEN for proxy routes,
-// CODEX_MODEL / GROK_MODEL overrides, WORKDIR, RUNNER_SELF_SHUTDOWN=1,
-// HARNESS (adapter in harness/, default claude-code).
+// CODEX_MODEL / GROK_MODEL overrides, WORKDIR, RUNNER_SELF_SHUTDOWN=1.
 
 import { spawn, execSync } from 'node:child_process'
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { loadHarness } from './harness/index.mjs'
 
 function loadEnvFile(path) {
 	if (!existsSync(path)) return {}
@@ -36,8 +34,6 @@ if (!FERMI_URL || !TOKEN) {
 	console.error('box-runner: FERMI_URL and FERMI_BOX_TOKEN are required')
 	process.exit(1)
 }
-
-const harness = await loadHarness(cfg.HARNESS)
 
 const log = (...args) => console.log(new Date().toISOString(), ...args)
 
@@ -254,57 +250,83 @@ function writeMcpConfig() {
 const PROGRESS_MS = Number(cfg.PROGRESS_MS ?? 30_000) // cadence of progress notes
 const STUCK_MS = Number(cfg.STUCK_MS ?? 180_000) // no harness output this long → flag stuck
 
-// Runs the harness once (harness/ adapter runOnce), tails its normalized events
-// to (a) post periodic progress notes via /box/report so an orchestrator can
-// watch a run, and (b) emit an explicit "possibly stuck" note when output
-// stalls, so a hung agent is visible long before its TTL instead of a 60-min
-// black box.
-async function runHarness(prompt) {
-	const env = harnessEnv()
-	// The adapter layers env over process.env; keep keys harnessEnv() removed removed.
-	for (const k of Object.keys(process.env)) if (!(k in env)) env[k] = undefined
-	child = harness.runOnce({
-		prompt,
-		bin: cfg.CLAUDE_BIN ?? 'claude',
-		cwd: WORKDIR,
-		env,
-		skipPermissions: true,
-		mcpConfig: join(WORKDIR, '.mcp.json'),
-	})
-	let turns = 0
-	let lastTool = 'starting'
-	let lastActivity = Date.now()
-	let stuckNoted = false
+// Runs the harness in stream-json mode, tails each event to (a) post periodic
+// progress notes via /box/report so an orchestrator can watch a run, and
+// (b) emit an explicit "possibly stuck" note when output stalls, so a hung
+// agent is visible long before its TTL instead of a 60-min black box.
+function runHarness(prompt) {
+	return new Promise((resolvePromise) => {
+		const args = [
+			'-p',
+			'--dangerously-skip-permissions',
+			'--output-format',
+			'stream-json',
+			'--verbose',
+			'--mcp-config',
+			join(WORKDIR, '.mcp.json'),
+			'--strict-mcp-config',
+		]
+		child = spawn(cfg.CLAUDE_BIN ?? 'claude', args, {
+			cwd: WORKDIR,
+			env: harnessEnv(),
+			stdio: ['pipe', 'pipe', 'pipe'],
+		})
+		let err = ''
+		let buf = ''
+		let resultEvent = null
+		let turns = 0
+		let lastTool = 'starting'
+		let lastActivity = Date.now()
+		let stuckNoted = false
 
-	child.events.on('raw', () => {
-		lastActivity = Date.now()
-		stuckNoted = false
-	})
-	child.events.on('event', (ev) => {
-		if (ev.type === 'text' || ev.type === 'tool_call' || ev.type === 'tool_result') turns++
-		if (ev.type === 'tool_call') lastTool = ev.rawName
-	})
-	child.events.on('stderr', (d) => process.stderr.write(d))
+		child.stdout.on('data', (d) => {
+			buf += d
+			let nl
+			// biome-ignore lint/suspicious/noAssignInExpressions: line splitter
+			while ((nl = buf.indexOf('\n')) >= 0) {
+				const line = buf.slice(0, nl).trim()
+				buf = buf.slice(nl + 1)
+				if (!line) continue
+				lastActivity = Date.now()
+				stuckNoted = false
+				try {
+					const ev = JSON.parse(line)
+					if (ev.type === 'assistant' || ev.type === 'user') turns++
+					const tool = ev.message?.content?.find?.((c) => c.type === 'tool_use')?.name
+					if (tool) lastTool = tool
+					if (ev.type === 'result') resultEvent = ev
+				} catch {}
+			}
+		})
+		child.stderr.on('data', (d) => {
+			err += d
+			process.stderr.write(d)
+		})
 
-	// Progress / stuck reporter — best-effort, never blocks the run.
-	const reporter = setInterval(() => {
-		const idle = Math.round((Date.now() - lastActivity) / 1000)
-		if (idle * 1000 >= STUCK_MS) {
-			if (stuckNoted) return // one stuck note per stall, not every tick
-			stuckNoted = true
-			api('/box/report', {
-				note: `⚠️ possibly stuck: no harness output for ${idle}s (turns=${turns}, last tool=${lastTool})`,
-			}).catch(() => {})
-		} else {
-			api('/box/report', { note: `working: turns=${turns}, last tool=${lastTool}` }).catch(() => {})
+		// Progress / stuck reporter — best-effort, never blocks the run.
+		const reporter = setInterval(() => {
+			const idle = Math.round((Date.now() - lastActivity) / 1000)
+			if (idle * 1000 >= STUCK_MS) {
+				if (stuckNoted) return // one stuck note per stall, not every tick
+				stuckNoted = true
+				api('/box/report', {
+					note: `⚠️ possibly stuck: no harness output for ${idle}s (turns=${turns}, last tool=${lastTool})`,
+				}).catch(() => {})
+			} else {
+				api('/box/report', { note: `working: turns=${turns}, last tool=${lastTool}` }).catch(() => {})
+			}
+		}, PROGRESS_MS)
+
+		const finish = (payload) => {
+			clearInterval(reporter)
+			child = null
+			resolvePromise(payload)
 		}
-	}, PROGRESS_MS)
-
-	const { code, outcome, stderr, error } = await child.done
-	clearInterval(reporter)
-	child = null
-	if (error) return { code: 127, resultEvent: null, outcome: null, err: String(error) }
-	return { code, resultEvent: outcome?.raw ?? null, outcome, err: stderr }
+		child.on('error', (e) => finish({ code: 127, resultEvent: null, err: String(e) }))
+		child.on('close', (code) => finish({ code, resultEvent, err }))
+		child.stdin.write(prompt)
+		child.stdin.end()
+	})
 }
 
 // Lease any web sessions the mission named; write each storageState to a file
@@ -455,15 +477,39 @@ function localProofFailure(payload) {
 	return null // http checked by the worker; dom replays via fleetctl
 }
 
-// exit_reason for a failed run, from the run's turn_end: `harness api_error
-// <status>` when the API answered with an error status (the worker's route
-// health matches `^harness api_error`), else `harness <kind>` (spend_limit,
-// rate_limit, context_overflow, …) for a classified error result, else
-// `harness exited <code>: <stderr tail>`.
-function harnessFailureDetail(code, outcome, err) {
+// Inline copy of lib/turn-outcome.mjs classifyResult without the reset-time
+// parsing: box-runner.mjs must stay one self-contained file (fermi-mcp's
+// runner-pin ships only this file to boxes). test/box-runner.test.mjs asserts
+// the two agree on every result fixture.
+function classifyResult(ev) {
+	const text = typeof ev?.result === 'string' ? ev.result : ''
+	const status = ev?.api_error_status ?? null
+	const detail =
+		text.replace(/\s+/g, ' ').trim().slice(0, 200) || [ev?.subtype, ev?.terminal_reason].filter(Boolean).join('/')
+	if (ev?.is_error !== true && status == null) return { ok: true, kind: 'ok', detail }
+	let kind = 'unknown_error'
+	if (status === 401 || status === 403 || /authentication|unauthori[sz]ed|invalid api key|\/login|oauth token/i.test(text))
+		kind = 'auth'
+	else if (/spend(ing)? limit|credit balance|billing/i.test(text)) kind = 'spend_limit'
+	else if (status === 429 || /rate.?limit|usage limit|limit reached|too many requests/i.test(text)) kind = 'rate_limit'
+	else if (ev?.terminal_reason === 'blocking_limit' || /prompt is too long|context (window|length)|maximum context/i.test(text))
+		kind = 'context_overflow'
+	else if (status != null || /api error|overloaded|internal server error/i.test(text)) kind = 'api_error'
+	return { ok: false, kind, detail }
+}
+
+// exit_reason for a failed run. Route errors match the worker's route-health
+// regex `^harness api_error`: `harness api_error <status>` when the API gave a
+// status, else `harness api_error <kind>` (spend_limit, rate_limit, auth,
+// api_error). Other error results are `harness <kind>` (context_overflow,
+// unknown_error); no error result is `harness exited <code>` with the stderr tail.
+const ROUTE_ERROR_KINDS = new Set(['spend_limit', 'rate_limit', 'auth', 'api_error'])
+function harnessFailureDetail(code, resultEvent, err) {
+	const outcome = resultEvent ? classifyResult(resultEvent) : null
 	if (outcome && !outcome.ok) {
-		const status = outcome.raw?.api_error_status
-		const reason = status != null ? `api_error ${status}` : outcome.kind
+		const status = resultEvent.api_error_status
+		const reason =
+			status != null ? `api_error ${status}` : ROUTE_ERROR_KINDS.has(outcome.kind) ? `api_error ${outcome.kind}` : outcome.kind
 		const tail = err ? ` | stderr: ${err.replace(/\s+/g, ' ').trim().slice(-200)}` : ''
 		return `harness ${reason}: ${outcome.detail || 'no result text'}${tail}`
 	}
@@ -548,9 +594,9 @@ async function main() {
 		for (const c of poll.control ?? []) {
 			if (c.type === 'stop') {
 				stopping = true
-				if (child) child.close('SIGTERM')
+				if (child) child.kill('SIGTERM')
 			} else if (c.type === 'interrupt') {
-				if (child) child.close('SIGTERM')
+				if (child) child.kill('SIGTERM')
 				pendingFollowups.push(c.message)
 			} else if (c.type === 'followup') {
 				pendingFollowups.push(c.message)
@@ -580,7 +626,7 @@ async function main() {
 			const sessions = await leaseSessions(payload)
 			await api('/box/report', { note: `leased ${sessions.length}: ${sessions.map((s) => s.name).join(',') || 'none'}; helper=${sessions.length ? existsSync(join(WORKDIR, 'fermi-browser')) : 'n/a'}; spawning` }).catch(() => {})
 			log(`running task ${poll.task.id}${sessions.length ? ` (${sessions.length} session(s) leased)` : ''}`)
-			let { code, resultEvent, outcome, err } = await runHarness(buildPrompt(payload, followups, sessions, resumed))
+			let { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions, resumed))
 			// One corrective rerun when the harness claims success but the proof
 			// contract mechanically fails locally — honest agents self-correct
 			// here instead of being refused at /box/complete.
@@ -594,7 +640,6 @@ async function main() {
 					)
 					code = rerun.code
 					resultEvent = rerun.resultEvent
-					outcome = rerun.outcome
 					err = rerun.err
 					if (code === 0) ensureRepoDiffArtifact(payload)
 					const stillFailing = code === 0 ? localProofFailure(payload) : null
@@ -628,7 +673,7 @@ async function main() {
 			// On failure, surface the stderr tail so orchestrators can debug remotely.
 			// An API error (spend cap, 429, auth) is reported first and verbatim so
 			// exit_reason says *why* instead of a bare "harness exited 1" (fermi#47).
-			const failDetail = harnessFailureDetail(code, outcome, err)
+			const failDetail = harnessFailureDetail(code, resultEvent, err)
 			const completion = await api('/box/complete', {
 				task_id: poll.task.id,
 				status,
