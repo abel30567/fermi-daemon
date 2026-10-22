@@ -36,7 +36,9 @@ error or a non-localhost URL. `--out` defaults to `runs/evals-<timestamp>`.
    its tools are `mcp__fermi__*`, plus `ENABLE_CLAUDEAI_MCP_SERVERS=false`.
 4. Enqueues `inbound` through the channel webhook, the same way the bridge does.
 5. Runs one drain through the adapter (`runOnce`, `prompts/drain.md` as the
-   prompt) until it ends or `--timeout-ms` passes.
+   prompt, rendered with the eval overlay `fixtures/prompt-overlay.json`: owner
+   `U0EVALOWNER` on `sl`, finance channel `C0FINANCE`, call list
+   `+15555550100`) until it ends or `--timeout-ms` passes.
 6. Dumps state, adds what the fakes recorded (`state.fakes`), and evaluates `expect`.
    A timeout or a `turn_end` with `ok: false` adds a failed assertion, so such an
    attempt never passes.

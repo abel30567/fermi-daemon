@@ -55,3 +55,6 @@ demo/
 
 # orchestrator: personal settings
 .agents/orchestrator/local.env
+
+# private prompt overlay (owner and contact ids, phone numbers, channel ids)
+prompts/local.json
