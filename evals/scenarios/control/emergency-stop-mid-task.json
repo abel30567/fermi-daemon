@@ -1,0 +1,38 @@
+{
+  "name": "emergency-stop-mid-task",
+  "description": "An emergency stop interrupts the drain while the backup command runs: the cleanup turn fails that task \"stopped by user\" and sends \"🛑 Stopped.\", the work is not redone, and the same session answers the next turn.",
+  "fixtures": {
+    "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}],
+    "mac": [{"tool": "mac_shell", "match": "eval-backup\\.sh", "result": "backup: 40% (placeholder output)"}]
+  },
+  "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Run the full backup now"},
+  "session": [{"turn": "drain", "interruptAfter": "mac_shell"}, {"turn": "stop"}, {"turn": "keepalive"}],
+  "expect": [
+    {"task.status": "failed"},
+    {"argsMatch": {"tool": "task_complete", "args": {"status": "failed", "result": "/stopped by user/i"}}},
+    {"argsMatch": {"tool": "channel_send", "args": {"chat_id": "D0EVAL", "text": "/🛑 Stopped/"}}},
+    {"exactlyOnce": "mac_shell"},
+    {"exactlyOnce": "task_complete"},
+    {"notCalled": "task_list"},
+    {"outbox.count": {"eq": 2, "chat_id": "D0EVAL"}}
+  ],
+  "fake": {
+    "turns": [
+      [
+        {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+        {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+        {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "🔧 On it — running the full backup."}},
+        {"tool": "mac_shell", "args": {"command": "~/bin/eval-backup.sh --full"}},
+        {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Backup finished."}},
+        {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "ran the backup"}}
+      ],
+      [
+        {"tool": "task_complete", "args": {"id": "${task.id}", "status": "failed", "result": "stopped by user"}},
+        {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "🛑 Stopped."}}
+      ],
+      [
+        {"text": "OK"}
+      ]
+    ]
+  }
+}
