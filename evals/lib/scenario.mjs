@@ -46,6 +46,8 @@ export function loadScenario(file) {
   if (s.session != null && (!Array.isArray(s.session) || !s.session.length || s.session.some((t) => !TURNS[t?.turn])))
     errs.push(`session must be a non-empty list of { turn: ${Object.keys(TURNS).join(' | ')}, interruptAfter? }`)
   if (inb?.channel === 'teams' && !s.session?.some((t) => t?.turn === 'teams')) errs.push('a teams inbound needs a session with a teams turn')
+  if (s.harnesses != null && (!Array.isArray(s.harnesses) || !s.harnesses.length || s.harnesses.some((h) => typeof h !== 'string' || !h)))
+    errs.push('harnesses must be a non-empty list of harness names')
   if (s.expectOutcome != null && !['pass', 'fail'].includes(s.expectOutcome)) errs.push('expectOutcome must be "pass" or "fail"')
   if (errs.length) throw new Error(`${file}: ${errs.join('; ')}`)
   return s

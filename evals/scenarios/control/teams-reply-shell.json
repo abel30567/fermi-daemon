@@ -3,6 +3,7 @@
   "description": "A Teams message arrives as a warm turn, not a queue task: the reply goes out once through the harness shell tool running tools/teams-send.sh, with no task_claim, task_complete, mac_shell or channel_send.",
   "inbound": {"channel": "teams", "sender": "Eval Teams User", "chat": "fermi-bridge", "text": "What is the capital of France?"},
   "session": [{"turn": "teams"}],
+  "harnesses": ["fake"],
   "expect": [
     {"exactlyOnce": "Bash"},
     {"argsMatch": {"tool": "Bash", "args": {"command": "/^~\\/fermi-daemon\\/tools\\/teams-send\\.sh '[^']*Paris/"}}},

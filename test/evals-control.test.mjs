@@ -46,6 +46,7 @@ describe('DMN-13 AC1: the control pack passes against the fake harness, every sc
     assert.equal(summary.passed, 7)
     assert.equal(summary.expectedFailures, 7)
     assert.deepEqual(summary.unexpected, [])
+    assert.deepEqual(summary.skipped, [])
     const results = readJson(out, 'results.json')
     for (const res of results) {
       const neg = NEGATIVES[res.scenario]
@@ -157,6 +158,29 @@ describe('session mode (evals/lib/session.mjs)', () => {
     assert.throws(() => loadScenario(join(dir, 'a.json')), /teams inbound needs a session with a teams turn/)
     writeFileSync(join(dir, 'b.json'), JSON.stringify({ ...bad, session: [{ turn: 'nope' }] }))
     assert.throws(() => loadScenario(join(dir, 'b.json')), /session must be a non-empty list/)
+  })
+
+  test('the Teams scenarios are fake-only: another harness skips them, not fails, and summary.json lists the skips', () => {
+    for (const f of ['teams-reply-shell', 'teams-reply-shell-negative'])
+      assert.deepEqual(loadScenario(join(CONTROL, `${f}.json`)).harnesses, ['fake'], f)
+    const out = tmp()
+    const r = runCli(['--harness', 'claude-code', '--worker', tmp(), '--scenarios', `${CONTROL}/teams-reply-shell*`, '--out', out])
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /SKIP teams-reply-shell \(harnesses: fake\)/)
+    const summary = readJson(out, 'summary.json')
+    assert.equal(summary.attempts, 0)
+    assert.deepEqual(summary.unexpected, [])
+    assert.deepEqual(summary.skipped.map((s) => s.scenario).sort(), ['teams-reply-shell', 'teams-reply-shell-negative'])
+    assert.deepEqual(readJson(out, 'results.json'), [])
+  })
+
+  test('harnesses must be a non-empty list of names', () => {
+    const dir = tmp()
+    const base = { inbound: { channel: 'sl', sender: 'x', chat: 'y', text: 'z' }, expect: [{ called: 'channel_send' }] }
+    for (const harnesses of [[], 'fake', [1]]) {
+      writeFileSync(join(dir, 'h.json'), JSON.stringify({ ...base, harnesses }))
+      assert.throws(() => loadScenario(join(dir, 'h.json')), /harnesses must be a non-empty list/, JSON.stringify(harnesses))
+    }
   })
 })
 
