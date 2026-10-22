@@ -47,8 +47,15 @@ cloudflared tunnel.
   `.events.jsonl` next to it, when present) and posts short natural-language
   progress updates back to the originating chat, so long tasks don't go silent
   (at most one per `NARRATOR_MIN_INTERVAL`, default 4 s).
+- **`evals/`** — live behavioural evals: `evals/run.mjs` runs the drain
+  through a harness adapter against an isolated local Fermi (fermi-mcp's
+  `wrangler.eval.jsonc`) and fake chat/Twilio/Mac services, and grades the
+  normalized trace and resulting state. See [`evals/README.md`](evals/README.md).
 - **`prompts/`** — `drain.md` (the worker system prompt / tool policy) and
-  `heartbeat.md` (the idle check-in prompt).
+  `heartbeat.md` (the idle check-in prompt). `npm test` runs
+  `scripts/prompt-lint.mjs`, which fails if a prompt names a Fermi tool missing
+  from fermi-mcp's `tool-surface.json` (vendored in `test/fixtures/`; refresh
+  with `node scripts/prompt-lint.mjs --refresh`; fetched live when `CI` is set).
 - **`tools/`** — local speech-to-text helpers (`transcribe.sh` via whisper.cpp,
   `transcribe.swift` via the macOS Speech framework) for voice-note tasks.
 - **MacOSMCP + cloudflared tunnel** — run separately (see `RESTORE.md`). Fermi

@@ -477,6 +477,45 @@ function localProofFailure(payload) {
 	return null // http checked by the worker; dom replays via fleetctl
 }
 
+// Inline copy of lib/turn-outcome.mjs classifyResult without the reset-time
+// parsing: box-runner.mjs must stay one self-contained file (fermi-mcp's
+// runner-pin ships only this file to boxes). test/box-runner.test.mjs asserts
+// the two agree on every result fixture.
+function classifyResult(ev) {
+	const text = typeof ev?.result === 'string' ? ev.result : ''
+	const status = ev?.api_error_status ?? null
+	const detail =
+		text.replace(/\s+/g, ' ').trim().slice(0, 200) || [ev?.subtype, ev?.terminal_reason].filter(Boolean).join('/')
+	if (ev?.is_error !== true && status == null) return { ok: true, kind: 'ok', detail }
+	let kind = 'unknown_error'
+	if (status === 401 || status === 403 || /authentication|unauthori[sz]ed|invalid api key|\/login|oauth token/i.test(text))
+		kind = 'auth'
+	else if (/spend(ing)? limit|credit balance|billing/i.test(text)) kind = 'spend_limit'
+	else if (status === 429 || /rate.?limit|usage limit|limit reached|too many requests/i.test(text)) kind = 'rate_limit'
+	else if (ev?.terminal_reason === 'blocking_limit' || /prompt is too long|context (window|length)|maximum context/i.test(text))
+		kind = 'context_overflow'
+	else if (status != null || /api error|overloaded|internal server error/i.test(text)) kind = 'api_error'
+	return { ok: false, kind, detail }
+}
+
+// exit_reason for a failed run. Route errors match the worker's route-health
+// regex `^harness api_error`: `harness api_error <status>` when the API gave a
+// status, else `harness api_error <kind>` (spend_limit, rate_limit, auth,
+// api_error). Other error results are `harness <kind>` (context_overflow,
+// unknown_error); no error result is `harness exited <code>` with the stderr tail.
+const ROUTE_ERROR_KINDS = new Set(['spend_limit', 'rate_limit', 'auth', 'api_error'])
+function harnessFailureDetail(code, resultEvent, err) {
+	const outcome = resultEvent ? classifyResult(resultEvent) : null
+	if (outcome && !outcome.ok) {
+		const status = resultEvent.api_error_status
+		const reason =
+			status != null ? `api_error ${status}` : ROUTE_ERROR_KINDS.has(outcome.kind) ? `api_error ${outcome.kind}` : outcome.kind
+		const tail = err ? ` | stderr: ${err.replace(/\s+/g, ' ').trim().slice(-200)}` : ''
+		return `harness ${reason}: ${outcome.detail || 'no result text'}${tail}`
+	}
+	return `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
+}
+
 function extractResult(resultEvent) {
 	const text = resultEvent?.result ?? ''
 	const line = String(text).match(/RESULT:\s*(.+)/)
@@ -632,7 +671,9 @@ async function main() {
 			const inferenceCost = Number(resultEvent?.total_cost_usd) || 0
 			const status = code === 0 ? 'done' : 'failed'
 			// On failure, surface the stderr tail so orchestrators can debug remotely.
-			const failDetail = `harness exited ${code}${err ? `: ${err.slice(-500)}` : ''}`
+			// An API error (spend cap, 429, auth) is reported first and verbatim so
+			// exit_reason says *why* instead of a bare "harness exited 1" (fermi#47).
+			const failDetail = harnessFailureDetail(code, resultEvent, err)
 			const completion = await api('/box/complete', {
 				task_id: poll.task.id,
 				status,
