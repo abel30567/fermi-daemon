@@ -46,9 +46,7 @@ let prompt
 try {
   prompt = loadPrompt(o.prompt)
 } catch (e) {
-  const msg = `run-once: refusing to start: ${e.message}\n`
-  process.stderr.write(msg)
-  appendFileSync(o.log, msg)
+  appendFileSync(o.log, `run-once: refusing to start: ${e.message}\n`)
   process.exit(2)
 }
 
