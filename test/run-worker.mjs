@@ -1,9 +1,9 @@
 // Runs the real warm-worker.mjs against a fake harness (test/fixtures/fake-claude.mjs)
 // and a fake Fermi server, in a throwaway HOME.
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import http from 'node:http'
 
@@ -18,6 +18,23 @@ export const until = async (cond, ms = 20_000) => {
     if (Date.now() - t0 > ms) throw new Error('timed out')
     await new Promise((r) => setTimeout(r, 20))
   }
+}
+
+// Throws unless the harness binary a test is about to spawn resolves inside the
+// temp dir or test/fixtures, so no test can launch the real installed claude.
+// A bare name (PATH lookup) throws; a missing path passes, since spawning it
+// can only fail with ENOENT.
+export function assertFakeHarness(bin) {
+  if (!bin?.includes('/')) throw new Error(`test would spawn harness ${JSON.stringify(bin)} from PATH; point CLAUDE_BIN at a fake`)
+  let real
+  try {
+    real = realpathSync(bin)
+  } catch (e) {
+    if (e.code === 'ENOENT') return
+    throw e
+  }
+  const roots = [realpathSync(tmpdir()), realpathSync(join(ROOT, 'test/fixtures'))]
+  if (!roots.some((r) => real.startsWith(r + sep))) throw new Error(`test would spawn a real harness: ${bin} -> ${real}`)
 }
 
 // `env` adds/overrides worker env vars; `act({ log, home, narrations })` runs
@@ -36,6 +53,22 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
   writeFileSync(claudeBin, `#!/bin/sh\nexec "${process.execPath}" "${join(ROOT, 'test/fixtures/fake-claude.mjs')}" "$@"\n`)
   chmodSync(claudeBin, 0o755)
 
+  const childEnv = {
+    PATH: process.env.PATH,
+    HOME: home,
+    WARM_POLL_MS: String(sim(1000)),
+    WARM_CONTROL_PORT: '0',
+    WARM_BACKOFF_BASE_MS: String(sim(30_000)),
+    WARM_BACKOFF_MAX_MS: String(sim(1_800_000)),
+    FAKE_DIR: home,
+    FAKE_RESULT: resultFile,
+    FAKE_DELAY_MS: String(sim(3000)), // the incident's turns took ~4 s end to end
+    ...(errors != null && { FAKE_ERRORS: String(errors) }),
+    ...(claim && { FAKE_CLAIM: '1' }),
+    ...env,
+  }
+  assertFakeHarness(childEnv.CLAUDE_BIN || join(childEnv.HOME, '.local/bin/claude'))
+
   const narrations = []
   const server = http.createServer((req, res) => {
     if (req.url === '/admin/tasks/pending') return res.end(JSON.stringify({ pending }))
@@ -53,23 +86,7 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   writeFileSync(join(daemon, '.env'), `FERMI_URL=http://127.0.0.1:${server.address().port}\nFERMI_BEARER_TOKEN=test\n`)
 
-  const child = spawn(process.execPath, [worker], {
-    env: {
-      PATH: process.env.PATH,
-      HOME: home,
-      WARM_POLL_MS: String(sim(1000)),
-      WARM_CONTROL_PORT: '0',
-      WARM_BACKOFF_BASE_MS: String(sim(30_000)),
-      WARM_BACKOFF_MAX_MS: String(sim(1_800_000)),
-      FAKE_DIR: home,
-      FAKE_RESULT: resultFile,
-      FAKE_DELAY_MS: String(sim(3000)), // the incident's turns took ~4 s end to end
-      ...(errors != null && { FAKE_ERRORS: String(errors) }),
-      ...(claim && { FAKE_CLAIM: '1' }),
-      ...env,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  const child = spawn(process.execPath, [worker], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
   let log = ''
   child.stdout.on('data', (d) => (log += d))
   child.stderr.on('data', (d) => (log += d))
