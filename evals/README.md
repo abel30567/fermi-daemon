@@ -72,6 +72,7 @@ It also checks every URL it hands out (worker env, target, MCP config).
   "faults": { "channel_send": { "error": "slack is down" }, "context_bootstrap": { "latencyMs": 2000 } },
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
+  "category": "core",                     // optional: report category; default `severity`, else the pack dir
   "fake": { "script": [ … ] }             // only read by --harness fake
 }
 ```
@@ -111,3 +112,52 @@ fixtures, faults, inbound and expect, a misbehaving `fake.script`, and
 the pack. Scheduled-run scenarios send their inbound from a sender that is not
 allowlisted, so the webhook drops it and the drain sees only the seeded
 `schedule:` task.
+
+## Reporting: judge and compare
+
+`evals/judge.mjs` scores reply quality; it is reported, never gated (the
+assertions decide pass/fail).
+
+```bash
+node evals/judge.mjs <run dir> --scenarios '<glob>'... [--fake]   # → <run dir>/judge.json
+```
+
+- Rubric (1-5 each, score = mean / 5): helpful, tone (no "as an AI"), format
+  (Slack mrkdwn: no pipe tables, `#` headers or `**`).
+- Judge harness and model are fixed in `evals/judge.config.json`. The call goes
+  through the harness adapter like an eval attempt (same credential env, no MCP
+  servers, one turn).
+- The judge sees only the channel, the inbound text and the `channel_send` texts,
+  never the harness, model, trace or cost.
+- `--fake` uses the deterministic rule-based `fakeJudge` (no inference).
+
+`evals/compare.mjs` compares a baseline run with a candidate run:
+
+```bash
+node evals/compare.mjs <baseline>/results.json <candidate>/results.json [--out <dir>]
+```
+
+It prints markdown and writes `compare.md` and `compare.json` to `--out`
+(default: the candidate's dir). Exit 0 on GO, 1 on NO-GO, 2 on a usage error.
+Negative controls (`expectOutcome: "fail"`) are left out of every statistic. A
+`judge.json` next to a results file adds its mean score per category.
+
+The report has:
+- per category: pass rate, Wilson 95% interval, pass^5 (the unbiased estimate
+  per scenario, averaged; n/a below 5 attempts);
+- p50/p95 latency, cost per task, tool calls per task (with candidate/baseline ratios);
+- error-kind counts.
+
+The swap gate is GO only when every rule holds:
+
+| rule | condition |
+|---|---|
+| critical | category `critical`: every scenario has ≥ 5 attempts and pass^5 = 100% |
+| core | category `core`: lower 95% bound (Newcombe) of candidate − baseline pass rate > −5 pp |
+| latency | candidate p95 ≤ 1.25 × baseline p95 |
+| cost | candidate cost per task ≤ 1.5 × baseline (unknown cost fails) |
+| protocol | no candidate attempt failed an `order`, `exactlyOnce`, `outbox.count` or `task.status` assertion |
+| soak | category `endurance` present and every attempt passed |
+| credentials | category `credential-isolation` present and every attempt passed |
+
+A missing category fails its rule: the gate only passes on evidence.
