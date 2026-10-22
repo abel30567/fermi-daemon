@@ -13,8 +13,8 @@
 // turn 1); every other step is played in every turn. A session keeps its context
 // between turns, like a warm session remembers what it claimed.
 // String args may use ${task.<field>} (the first task of the latest non-empty
-// task_claim result), ${turn} and ${token} (the token read from `tokenFd`, there
-// only so a negative control can leak it). Each step becomes the same normalized
+// task_claim result), ${turn} and ${canary} (the runner's FERMI_EVAL_CANARY from
+// `env`, there only so a negative control can leak it). Each step becomes the same normalized
 // events a real adapter emits (tool_call / tool_result / text), then one
 // turn_end. A tool call that fails at the transport (an HTTP 500) is a failed
 // tool_result, the way a real harness hands it to the model.
@@ -33,7 +33,7 @@ const fill = (v, ctx) =>
     ? v
         .replace(/\$\{task\.(\w+)\}/g, (_, k) => String(ctx.task?.[k] ?? ''))
         .replace(/\$\{turn\}/g, String(ctx.turn))
-        .replace(/\$\{token\}/g, ctx.token ?? '')
+        .replace(/\$\{canary\}/g, ctx.canary ?? '')
     : Array.isArray(v)
       ? v.map((x) => fill(x, ctx))
       : v && typeof v === 'object'
@@ -43,7 +43,7 @@ const fill = (v, ctx) =>
 // The shared player behind runOnce and startSession. `turn()` plays one turn of
 // the script and resolves its turn_end payload ({ ok, kind, detail }).
 function player(o, emit, isStopped) {
-  const ctx = { turn: 0, token: o.tokenFd != null ? readFileSync(o.tokenFd, 'utf8').trim() : undefined }
+  const ctx = { turn: 0, canary: o.env?.FERMI_EVAL_CANARY }
   let mcp = null
   let n = 0
   const connect = async () => {
