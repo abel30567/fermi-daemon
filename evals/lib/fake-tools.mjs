@@ -4,7 +4,8 @@
 //   1. the first of the scenario's `fixtures.tools` canned results that matches
 //      ({ tool, match?, result, isError? }; match is a regex source tested against
 //      the arguments' JSON, result a string or JSON value);
-//   2. a small stateful stand-in (memory, profile, skills, schedules);
+//   2. a small stateful stand-in (memory, profile, skills, schedules, secrets; secrets
+//      stay out of the dump, as eval-dump.mjs has no secrets table);
 //   3. mac_* go to the fake Mac bridge, like the real worker's Mac proxy;
 //   4. otherwise an error naming the missing canned result.
 // A tool that is not on the surface is unknown. The real eval worker (--worker)
@@ -17,7 +18,19 @@ export const SURFACE = JSON.parse(readFileSync(fileURLToPath(new URL('../../test
 const surface = new Set(SURFACE)
 
 export function extraTools({ db, canned = [], skillBodies, macCall }) {
+  const secrets = new Map()
   const stateful = {
+    secret_set: ({ name, value, allowed_capabilities = [] }) => {
+      secrets.set(name, { value: String(value), allowed_capabilities })
+      return { ok: true, name }
+    },
+    secret_list: () => ({ secrets: [...secrets.keys()].map((name) => ({ name })) }),
+    secret_resolve: ({ name }) => {
+      const s = secrets.get(name)
+      if (!s) throw new Error(`Secret not found: ${name}`)
+      if (!s.allowed_capabilities.includes('secret_resolve')) throw new Error(`Secret "${name}" has not opted in to secret_resolve.`)
+      return { name, value: s.value }
+    },
     memory_write: ({ kind = 'fact', body, pinned = false }) => {
       const m = { id: db.memories.length + 1, kind, body: String(body ?? ''), pinned: !!pinned, created_at: Date.now(), decayed_at: null }
       db.memories.push(m)
