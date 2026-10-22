@@ -46,12 +46,21 @@ async function runOnceCli({ args = [], env = {}, act } = {}) {
   return { dir, code, log, spawns, harnessPid, laneGone: !existsSync(join(dir, 'lanes/1')) }
 }
 
+const spawned = async (home) => {
+  const turns = join(home, 'turns.log')
+  for (const t0 = Date.now(); !(existsSync(turns) && readFileSync(turns, 'utf8').includes('"kind":"spawn"')); ) {
+    if (Date.now() - t0 > 20_000) throw new Error('warm worker never spawned the harness')
+    await new Promise((res) => setTimeout(res, 20))
+  }
+}
+
 const flag = (argv, name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined)
 
 describe('AC1: cold argv has the warm worker\'s settings surface', () => {
   test('setting sources and allowed tools match a live warm spawn; no skip-permissions', async () => {
     const [warm, cold] = await Promise.all([
-      runWorker({ result: SUCCESS, pending: 0, durationMs: 1000 }),
+      // Stop the warm worker once it has spawned the harness, not after a fixed time.
+      runWorker({ result: SUCCESS, pending: 0, durationMs: 0, act: ({ home }) => spawned(home) }),
       runOnceCli({ args: ['--model', 'claude-opus-4-6[1m]', '--max-turns', '50', '--timeout-s', '60'] }),
     ])
     const warmArgv = warm.events.find((e) => e.kind === 'spawn').argv
@@ -87,6 +96,13 @@ describe('AC1: cold argv has the warm worker\'s settings surface', () => {
     const r = await runOnceCli({ env: { FAKE_ONCE: 'crash' } })
     assert.equal(r.code, 3)
     assert.match(r.log, /boom: harness crashed/)
+    assert.ok(r.laneGone)
+  })
+
+  test('harness binary missing: the spawn error lands in the log, lane removed', async () => {
+    const r = await runOnceCli({ env: { CLAUDE_BIN: '/nope' } })
+    assert.notEqual(r.code, 0)
+    assert.match(r.log, /^run-once: spawn error: spawn \/nope ENOENT$/m)
     assert.ok(r.laneGone)
   })
 })
