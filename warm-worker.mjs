@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, createWriteStream } from 'node:fs'
 import { join } from 'node:path'
 import http from 'node:http'
+import { classifyResult, Backoff, chatFromEvent } from './lib/turn-outcome.mjs'
 
 const HOME = process.env.HOME
 const DAEMON = join(HOME, 'fermi-daemon')
@@ -68,6 +69,13 @@ const KEEPALIVE_MS = Number(process.env.WARM_KEEPALIVE_MS || 240000) // no-op tu
 const CONTROL_PORT = Number(process.env.WARM_CONTROL_PORT || 8791) // localhost emergency-stop endpoint
 const STALENESS_MS = Number(process.env.WARM_STALENESS_MS || 300000) // idle re-check of prompt/server staleness
 const PROMPT_PATH = join(DAEMON, 'prompts/drain.md')
+// After an error drain turn, hold further drain turns: 30s, doubling, capped at 30min.
+const backoff = new Backoff({
+  baseMs: Number(process.env.WARM_BACKOFF_BASE_MS || 30000),
+  maxMs: Number(process.env.WARM_BACKOFF_MAX_MS || 1800000),
+})
+let alerted = false // one owner-visible alert per error episode
+let turnChat = null // {channel, chat_id} of a task claimed during the current drain turn
 
 // Emergency stops requested via the control endpoint, drained by the main loop
 // ahead of any normal queue work. Each is {channel, chat_id}.
@@ -197,6 +205,8 @@ function startClaude() {
 }
 
 function handleEvent(j) {
+  const chat = chatFromEvent(j)
+  if (chat) turnChat = chat
   // turn completion: the result event (type:result, or has num_turns+is_error)
   if (j.type === 'result' || (j.num_turns !== undefined && j.is_error !== undefined)) {
     if (turnResolve) {
@@ -261,6 +271,45 @@ function sendTurn(text) {
     }
     claude.stdin.write(JSON.stringify(msg) + '\n')
   })
+}
+
+// ---- drain turn outcome -----------------------------------------------------
+// A `result` with is_error (spend/rate limit, context overflow, API error) used
+// to count as a finished turn, so pending work re-fired a drain every few
+// seconds for as long as the error lasted. Back off instead.
+function onDrainResult(r) {
+  const c = classifyResult(r)
+  if (c.ok) {
+    if (backoff.failures) log(`drain recovered after ${backoff.failures} error turn(s) — backoff reset`)
+    backoff.reset()
+    alerted = false
+    return
+  }
+  const wait = backoff.fail(c.retryAfterMs)
+  log(`drain turn error (${c.kind}): ${c.detail} — next drain in ${Math.round(wait / 1000)}s`)
+  if (!alerted && turnChat) {
+    alerted = true
+    alertOwner(turnChat, c, wait)
+  }
+  if (c.kind === 'context_overflow' && claude) {
+    log('context overflow — respawning claude for a fresh session')
+    claude.kill()
+  }
+}
+
+async function alertOwner({ channel, chat_id }, c, wait) {
+  const text = `⚠️ I can't process messages right now (${c.kind}): ${c.detail} — retrying automatically in ${Math.ceil(wait / 60000)} min.`
+  try {
+    const res = await fetch(`${FERMI_URL}/admin/narrate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ channel, chat_id, text }),
+      signal: AbortSignal.timeout(8000),
+    })
+    log(`error alert sent to ${channel}/${chat_id} (${res.status})`)
+  } catch (e) {
+    log('error alert failed:', String(e))
+  }
 }
 
 // ---- queue polling ---------------------------------------------------------
@@ -467,6 +516,7 @@ async function loop() {
       busy = false
       continue
     }
+    if (!backoff.ready()) continue
     const n = await pendingCount()
     if (n <= 0) {
       // Keep the connector hot during long idle spells so the next real drain
@@ -497,11 +547,14 @@ async function loop() {
     } catch (e) {
       log('narrator spawn failed (non-fatal):', String(e))
     }
+    turnChat = null
     try {
-      await sendTurn(
+      const r = await sendTurn(
         'There are pending tasks in the queue. Claim and process every pending task now (claim one at a time, bootstrap, reply, complete), looping until task_claim returns empty. Then stop.',
       )
       log(`drain turn done in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+      // An emergency stop interrupts the turn on purpose — not an error to back off from.
+      if (r && !pendingStops.length) onDrainResult(r)
     } catch (e) {
       log('drain turn error:', String(e))
     } finally {
