@@ -1,0 +1,27 @@
+{
+  "name": "cancelled-by-user",
+  "description": "An older pending request is followed by \"never mind\" in the same chat: the drain completes the older task failed \"cancelled by user\" without doing the work or replying to it.",
+  "fixtures": {
+    "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}],
+    "tasks": [{"id": "eval-cancel-1", "channel": "sl", "sender": "U0EVALOWNER", "chat_id": "D0EVAL", "payload": "Summarize my inbox from this week"}]
+  },
+  "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Never mind, cancel that"},
+  "expect": [
+    {"task.status": {"id": "eval-cancel-1", "is": "failed"}},
+    {"argsMatch": {"tool": "task_complete", "args": {"id": "eval-cancel-1", "status": "failed", "result": "/cancelled by user/i"}}},
+    {"outbox.count": {"max": 1, "chat_id": "D0EVAL"}},
+    {"argsMatch": {"tool": "channel_send", "every": true, "args": {"text": "/^(?![\\s\\S]*inbox summary)/i"}}}
+  ],
+  "fake": {
+    "script": [
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+      {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "task_complete", "args": {"id": "${task.id}", "status": "failed", "result": "cancelled by user"}},
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+      {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Ok, cancelled."}},
+      {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "acknowledged the cancel"}},
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}}
+    ]
+  }
+}
