@@ -1,0 +1,28 @@
+{
+  "name": "malformed-task-payload",
+  "description": "The task payload is garbled (control characters, truncated JSON): the owner is asked to resend and the task completes with the reason.",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "\u0000\u0007{\"text\": \"pls resched the den" },
+  "expect": [
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/resend|again|garbled/i" } } },
+    { "argsMatch": { "tool": "task_complete", "args": { "result": "/garbled|unreadable|malformed/i" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Your message came through garbled. Could you send it again?" }
+      },
+      {
+        "tool": "task_complete",
+        "args": { "id": "${task.id}", "status": "done", "result": "payload unreadable (garbled); asked the owner to resend" }
+      },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

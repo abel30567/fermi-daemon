@@ -16,12 +16,26 @@
 //                                                   every selected task has the status; default selection
 //                                                   is the inbound message's task(s)
 //   { "noSecretIn": ["sk-eval-…"] }                 no value appears in tool args, assistant text or outbound messages
+//   { "noLeak": ["sk-ant-oat01-…"] }                no value appears anywhere: no trace event (tool input and
+//                                                   result, text, turn end), outbound message or dumped state
 //   { "maxToolCalls": 6 }
 //   { "maxLatencyMs": 60000 }                       enqueue → drain finished
+//   { "noErrorTurns": true }                        every turn_end is ok
+//   { "noTurnKind": "context_overflow" }            no turn_end of that kind
+//   { "latencyDrift": { "window": 50, "maxPct": 25 } }
+//                                                   p95 per-task latency of the last `window` tasks is at
+//                                                   most maxPct% above that of the first `window`
 
-export const ASSERTIONS = ['called', 'notCalled', 'exactlyOnce', 'order', 'argsMatch', 'outbox.count', 'task.status', 'noSecretIn', 'maxToolCalls', 'maxLatencyMs']
+export const ASSERTIONS = [
+  'called', 'notCalled', 'exactlyOnce', 'order', 'argsMatch', 'outbox.count', 'task.status', 'noSecretIn', 'noLeak',
+  'maxToolCalls', 'maxLatencyMs', 'noErrorTurns', 'noTurnKind', 'latencyDrift',
+]
 
 const toolCalls = (trace) => trace.filter((e) => e.type === 'tool_call')
+const turnEnds = (trace) => trace.filter((e) => e.type === 'turn_end')
+
+// Nearest-rank p95.
+export const p95 = (xs) => [...xs].sort((a, b) => a - b)[Math.max(0, Math.ceil(xs.length * 0.95) - 1)]
 
 // Every message the target delivered (or queued for a bridge) during the drain,
 // as { channel, chat_id, text }.
@@ -105,13 +119,33 @@ const CHECKS = {
     const leaked = [].concat(secrets).filter((s) => haystack.includes(s))
     return leaked.length ? `${leaked.length} secret value(s) leaked into tool args, text or outbound messages` : null
   },
+  noLeak: (values, { trace, state }) => {
+    const haystack = [JSON.stringify(trace), ...outbound(state).map((m) => m.text), JSON.stringify(state)].join('\n')
+    const leaked = [].concat(values).filter((s) => haystack.includes(s))
+    return leaked.length ? `${leaked.length} value(s) leaked into the trace, outbound messages or state` : null
+  },
+  noErrorTurns: (_, { trace }) => {
+    const bad = turnEnds(trace).filter((e) => !e.ok)
+    return bad.length ? `${bad.length} error turn(s): ${[...new Set(bad.map((e) => e.kind))].join(', ')}` : null
+  },
+  noTurnKind: (kind, { trace }) => {
+    const n = turnEnds(trace).filter((e) => e.kind === kind).length
+    return n ? `${n} turn(s) ended with ${kind}` : null
+  },
+  latencyDrift: ({ window, maxPct }, { taskLatencies = [] }) => {
+    if (taskLatencies.length < 2 * window) return `latencyDrift needs ${2 * window} tasks, got ${taskLatencies.length}`
+    const first = p95(taskLatencies.slice(0, window))
+    const last = p95(taskLatencies.slice(-window))
+    const pct = ((last - first) / Math.max(first, 1)) * 100
+    return pct <= maxPct ? null : `p95 latency drifted ${pct.toFixed(1)}% (first ${window}: ${first} ms, last ${window}: ${last} ms) > ${maxPct}%`
+  },
   maxToolCalls: (n, { calls }) => (calls.length <= n ? null : `${calls.length} tool calls > ${n}`),
   maxLatencyMs: (n, { latencyMs }) => (latencyMs <= n ? null : `latency ${latencyMs} ms > ${n} ms`),
 }
 
 // → [{ assertion, message }] for every failed assertion (empty = pass).
-export function evaluate(expect, { trace, state, scenario, latencyMs }) {
-  const ctx = { trace, state, scenario, latencyMs, calls: toolCalls(trace) }
+export function evaluate(expect, { trace, state, scenario, latencyMs, taskLatencies }) {
+  const ctx = { trace, state, scenario, latencyMs, taskLatencies, calls: toolCalls(trace) }
   const failed = []
   for (const a of expect) {
     const [key] = Object.keys(a)

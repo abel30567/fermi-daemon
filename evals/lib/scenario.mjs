@@ -1,9 +1,11 @@
-// Scenario files (JSON). See evals/README.md for the format.
+// Scenario files (JSON; .yaml/.yml in YAML's JSON-compatible flow style). See
+// evals/README.md for the format.
 import { existsSync, globSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { ASSERTIONS } from './assertions.mjs'
 
 const WILD = /[*?[{]/
+const EXTS = new Set(['.json', '.yaml', '.yml'])
 
 // `dir/*.json`-style globs without the (experimental) fs.globSync; anything with
 // wildcards above the last segment falls back to it.
@@ -19,19 +21,21 @@ export function expandScenarios(patterns) {
   const files = new Set()
   for (const p of patterns) {
     const hits = WILD.test(p) ? glob(p) : [p]
-    for (const f of hits.sort()) if (f.endsWith('.json') && statSync(f).isFile()) files.add(f)
+    for (const f of hits.sort()) if (EXTS.has(extname(f)) && statSync(f).isFile()) files.add(f)
   }
   return [...files]
 }
 
 export function loadScenario(file) {
   let s
+  const ext = extname(file)
   try {
     s = JSON.parse(readFileSync(file, 'utf8'))
   } catch (err) {
-    throw new Error(`${file}: ${err.message}`)
+    // No YAML parser is vendored: YAML scenarios use the flow style, which is JSON.
+    throw new Error(`${file}: ${err.message}${ext === '.json' ? '' : ' (YAML scenarios must use the JSON-compatible flow style)'}`)
   }
-  s.name ??= basename(file, '.json')
+  s.name ??= basename(file, ext)
   const errs = []
   const inb = s.inbound
   if (!inb || ['channel', 'sender', 'chat', 'text'].some((k) => typeof inb[k] !== 'string')) errs.push('inbound needs string channel, sender, chat, text')
@@ -41,6 +45,10 @@ export function loadScenario(file) {
     if (keys.length !== 1 || !ASSERTIONS.includes(keys[0])) errs.push(`bad assertion ${JSON.stringify(a)} (one of: ${ASSERTIONS.join(', ')})`)
   }
   if (s.expectOutcome != null && !['pass', 'fail'].includes(s.expectOutcome)) errs.push('expectOutcome must be "pass" or "fail"')
+  if (s.schedule != null && s.schedule !== 'weekly') errs.push('schedule must be "weekly"')
+  const sess = s.session
+  if (sess != null && (typeof sess !== 'object' || ['tasks', 'redrain'].some((k) => sess[k] != null && !(Number.isInteger(sess[k]) && sess[k] >= 0))))
+    errs.push('session must be { tasks?, redrain? } with non-negative integers')
   if (errs.length) throw new Error(`${file}: ${errs.join('; ')}`)
   return s
 }

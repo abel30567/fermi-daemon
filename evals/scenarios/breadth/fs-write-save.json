@@ -1,0 +1,26 @@
+{
+  "name": "fs-write-save",
+  "description": "A \"save this\" request writes the file before confirming, with the content the owner gave.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [{ "tool": "fs_write", "match": "groceries\\.md", "result": { "ok": true, "path": "notes/groceries.md", "bytes": 22 } }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Save this grocery list to notes/groceries.md: eggs, oats, coffee." },
+  "expect": [
+    { "argsMatch": { "tool": "fs_write", "args": { "path": "/groceries\\.md$/", "content": "/eggs[\\s\\S]*oats[\\s\\S]*coffee/" } } },
+    { "order": ["fs_write", "channel_send"] },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "fs_write", "args": { "path": "notes/groceries.md", "content": "- eggs\n- oats\n- coffee\n" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Saved to notes/groceries.md." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "wrote notes/groceries.md" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

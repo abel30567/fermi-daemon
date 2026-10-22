@@ -1,0 +1,17 @@
+{
+  "name": "latency-send-spike",
+  "description": "channel_send takes 1.5 s once: the slow send is not repeated, so the owner gets one reply.",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What is the capital of France?" },
+  "faults": { "channel_send": { "latencyMs": 1500, "times": 1 } },
+  "expect": [{ "exactlyOnce": "channel_send" }, { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }, { "task.status": "done" }, { "maxLatencyMs": 10000 }],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Paris." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

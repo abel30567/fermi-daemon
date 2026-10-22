@@ -1,0 +1,26 @@
+{
+  "name": "soak",
+  "category": "endurance",
+  "schedule": "weekly",
+  "description": "200 sequential tasks in one warm session: no context failure, no error turns, p95 latency of the last 50 tasks within 25% of the first 50. Weekly only.",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "session": { "tasks": 200 },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Soak task ${n}: what is ${n} plus one?" },
+  "expect": [
+    { "noTurnKind": "context_overflow" },
+    { "noErrorTurns": true },
+    { "latencyDrift": { "window": 50, "maxPct": 25 } },
+    { "task.status": "done" },
+    { "outbox.count": { "eq": 200, "chat_id": "D0EVAL" } }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "sleepMs": 60 },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Answer to: ${task.payload}" } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

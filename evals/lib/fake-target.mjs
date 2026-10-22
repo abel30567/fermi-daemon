@@ -1,19 +1,28 @@
 // In-process stand-in for the MCP-11 eval worker, used when no `--worker` checkout
 // is given (CI, runner tests). It speaks the same surface the daemon touches —
-// /health, the Slack bridge webhook, and the core tools over MCP at /mcp — keeps
+// /health, the Slack bridge webhook, and the core tools over MCP at /mcp (the rest
+// of fermi-mcp's tool surface comes from ./fake-tools.mjs) — keeps
 // state in memory, sends outbound traffic to the same fakes as the real target,
 // and dumps state in eval-dump.mjs's shape. It is not a model of Fermi: grading
 // semantics only hold against the real target.
 import { randomUUID } from 'node:crypto'
+import { extraTools } from './fake-tools.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
 import { readBody, sendJson, serve } from './net.mjs'
 
 const post = (url, body) =>
   fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.text())
 
-export async function startFakeTarget({ env }) {
+// `tools` is the scenario's fixtures.tools (canned results, see ./fake-tools.mjs).
+export async function startFakeTarget({ env, tools }) {
   const db = { profile: {}, memories: [], allowlist: [], tasks: [], outbox: [], schedules: [], skills: [], audit: [], messages: [] }
+  const skillBodies = new Map()
   let mac = null
+  const macCall = async (name, args) => {
+    mac ??= await mcpConnect(`${env.MACOS_MCP_URL}/mcp`, { clientName: 'fermi-worker', headers: { authorization: `Bearer ${env.MACOS_MCP_TOKEN}` } })
+    return resultText(await mac.callTool(name, args))
+  }
+  const extra = extraTools({ db, canned: tools, skillBodies, macCall })
 
   const allowed = (channel, id) => db.allowlist.some((a) => a.channel === channel && a.sender_id === id)
   const enqueue = (t) =>
@@ -57,10 +66,7 @@ export async function startFakeTarget({ env }) {
       const body = await post(`${env.TWILIO_API_BASE}/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, { To: to, From: env.TWILIO_FROM_NUMBER })
       return { ok: true, call_id: JSON.parse(body).sid }
     },
-    mac_shell: async (args) => {
-      mac ??= await mcpConnect(`${env.MACOS_MCP_URL}/mcp`, { clientName: 'fermi-worker', headers: { authorization: `Bearer ${env.MACOS_MCP_TOKEN}` } })
-      return resultText(await mac.callTool('mac_shell', args))
-    },
+    mac_shell: (args) => macCall('mac_shell', args),
   }
 
   const rpc = async (msg) => {
@@ -68,10 +74,10 @@ export async function startFakeTarget({ env }) {
     if (msg.method === 'initialize')
       return reply({ protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fermi-fake-target', version: '0' } })
     if (msg.method === 'tools/list')
-      return reply({ tools: Object.keys(TOOLS).map((name) => ({ name, inputSchema: { type: 'object' } })) })
+      return reply({ tools: [...new Set([...Object.keys(TOOLS), ...extra.names])].map((name) => ({ name, inputSchema: { type: 'object' } })) })
     if (msg.method === 'tools/call') {
       const { name, arguments: args = {} } = msg.params ?? {}
-      const fn = TOOLS[name]
+      const fn = TOOLS[name] ?? (extra.has(name) && ((a) => extra.call(name, a)))
       if (!fn) return reply({ content: [{ type: 'text', text: `unknown tool ${name}` }], isError: true })
       try {
         const out = await fn(args)
@@ -122,6 +128,7 @@ export async function startFakeTarget({ env }) {
         db.tasks = []
         for (const [i, t] of f.tasks.entries()) enqueue({ ...t, created_at: t.created_at ?? Date.now() - f.tasks.length + i })
       }
+      if (f.skills) for (const s of f.skills) skillBodies.set(s.slug, s.body ?? '')
       if (f.skills) db.skills = f.skills.map((s) => ({ slug: s.slug, name: s.slug, description: null, keywords: null, allowed_tools: null, version: 1, source: 'eval-seed', decayed_at: null }))
     },
     async dump() {

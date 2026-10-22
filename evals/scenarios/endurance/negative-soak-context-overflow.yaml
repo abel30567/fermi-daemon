@@ -1,0 +1,28 @@
+{
+  "name": "negative-soak-context-overflow",
+  "category": "endurance",
+  "schedule": "weekly",
+  "description": "Negative control for soak: turn 120 ends with a context overflow, so noTurnKind, noErrorTurns and task.status must fail.",
+  "expectOutcome": "fail",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "session": { "tasks": 200 },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Soak task ${n}: what is ${n} plus one?" },
+  "expect": [
+    { "noTurnKind": "context_overflow" },
+    { "noErrorTurns": true },
+    { "latencyDrift": { "window": 50, "maxPct": 25 } },
+    { "task.status": "done" },
+    { "outbox.count": { "eq": 200, "chat_id": "D0EVAL" } }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "apiError": { "text": "Prompt is too long: 1000001 tokens > 1000000 maximum context length" }, "onTurn": 120 },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "sleepMs": 5 },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Answer to: ${task.payload}" } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}
