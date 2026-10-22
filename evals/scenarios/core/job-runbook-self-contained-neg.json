@@ -1,0 +1,111 @@
+{
+  "name": "job-runbook-self-contained-neg",
+  "description": "Negative control for job-runbook-self-contained: The runbook is a bare one-liner with no state key or delivery condition.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Watch https://shop.example.com/item/42 and tell me when it is back in stock."
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "prompt": "/shop\\.example\\.com\\/item\\/42/"
+        }
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "prompt": "/sched:[\\w:-]+/"
+        }
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "prompt": "/only message|stay silent/i"
+        }
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "every_minutes": "/^([5-9]|[1-9]\\d+)$/"
+        }
+      }
+    },
+    {
+      "order": [
+        "schedule_create",
+        "channel_send",
+        "task_complete"
+      ]
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "schedule_create",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "every_minutes": 30,
+          "prompt": "check the item page"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Watching item 42."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "scheduled stock watch"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

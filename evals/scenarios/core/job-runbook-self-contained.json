@@ -1,0 +1,110 @@
+{
+  "name": "job-runbook-self-contained",
+  "description": "A watch request becomes a standalone runbook: the target, a sched: memory key for state, and an explicit delivery condition.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Watch https://shop.example.com/item/42 and tell me when it is back in stock."
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "prompt": "/shop\\.example\\.com\\/item\\/42/"
+        }
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "prompt": "/sched:[\\w:-]+/"
+        }
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "prompt": "/only message|stay silent/i"
+        }
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "every_minutes": "/^([5-9]|[1-9]\\d+)$/"
+        }
+      }
+    },
+    {
+      "order": [
+        "schedule_create",
+        "channel_send",
+        "task_complete"
+      ]
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "schedule_create",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "every_minutes": 30,
+          "prompt": "Goal: tell the owner when https://shop.example.com/item/42 is back in stock. Steps: open the page with the Playwright tools and read the stock status. State: memory_recall sched:item-42:last-seen, then memory_write the status you saw. Delivery: only message the owner when the status changed to in stock; otherwise stay silent."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Watching item 42 every 30 minutes. I only message you when it is back in stock."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "scheduled stock watch"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

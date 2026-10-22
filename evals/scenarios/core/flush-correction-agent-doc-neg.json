@@ -1,0 +1,85 @@
+{
+  "name": "flush-correction-agent-doc-neg",
+  "description": "Negative control for flush-correction-agent-doc: The environment correction is never saved.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ],
+    "profile": {
+      "agent": "Eval instance.\nPrinter: the den inkjet.",
+      "user": "Name: Eval Owner."
+    }
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Correction: my printer is the Example LaserJet in the office, not the den inkjet."
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "profile_update",
+        "args": {
+          "target": "agent",
+          "content": "/LaserJet/"
+        }
+      }
+    },
+    {
+      "order": [
+        "profile_update",
+        "task_complete"
+      ]
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Thanks, noted: the office LaserJet."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "acknowledged"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

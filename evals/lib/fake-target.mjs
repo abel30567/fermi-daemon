@@ -5,6 +5,7 @@
 // and dumps state in eval-dump.mjs's shape. It is not a model of Fermi: grading
 // semantics only hold against the real target.
 import { randomUUID } from 'node:crypto'
+import { coreTools } from './fake-target-tools.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
 import { readBody, sendJson, serve } from './net.mjs'
 
@@ -13,6 +14,7 @@ const post = (url, body) =>
 
 export async function startFakeTarget({ env }) {
   const db = { profile: {}, memories: [], allowlist: [], tasks: [], outbox: [], schedules: [], skills: [], audit: [], messages: [] }
+  const skillBodies = new Map()
   let mac = null
 
   const allowed = (channel, id) => db.allowlist.some((a) => a.channel === channel && a.sender_id === id)
@@ -61,6 +63,7 @@ export async function startFakeTarget({ env }) {
       mac ??= await mcpConnect(`${env.MACOS_MCP_URL}/mcp`, { clientName: 'fermi-worker', headers: { authorization: `Bearer ${env.MACOS_MCP_TOKEN}` } })
       return resultText(await mac.callTool('mac_shell', args))
     },
+    ...coreTools(db, skillBodies),
   }
 
   const rpc = async (msg) => {
@@ -122,6 +125,7 @@ export async function startFakeTarget({ env }) {
         db.tasks = []
         for (const [i, t] of f.tasks.entries()) enqueue({ ...t, created_at: t.created_at ?? Date.now() - f.tasks.length + i })
       }
+      if (f.skills) for (const s of f.skills) skillBodies.set(s.slug, s.body ?? '')
       if (f.skills) db.skills = f.skills.map((s) => ({ slug: s.slug, name: s.slug, description: null, keywords: null, allowed_tools: null, version: 1, source: 'eval-seed', decayed_at: null }))
     },
     async dump() {
