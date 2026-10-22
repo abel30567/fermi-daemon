@@ -17,10 +17,11 @@ cloudflared tunnel.
 - **`poll.sh`** — the drain loop. Fires every 60s from the
   `com.fermi.heartbeat` LaunchAgent (and on demand when a bridge receives a
   message). It curls the Worker's task queue and, when work is pending, spawns
-  up to `MAX_CONCURRENT` (default 5) `claude -p` "lanes", each running
-  `prompts/drain.md` to claim and complete one task at a time. Lane claiming is
-  race-safe via `mkdir`, and a per-lane watchdog kills runs over
-  `MAX_RUN_SECONDS`.
+  up to `MAX_CONCURRENT` (default 5) one-shot "lanes" through
+  `bin/run-once.mjs`, each running `prompts/drain.md` to claim and complete one
+  task at a time. Lane claiming is race-safe via `mkdir`, and a per-lane
+  watchdog kills runs over `MAX_RUN_SECONDS`. Cold runs get the warm worker's
+  allowed tools and setting sources (`lib/run-policy.mjs`).
 - **`warm-worker.mjs`** — an optional long-lived `claude` process
   (`com.fermi.warm-worker`) that keeps its MCP + Fermi connector warm so replies
   land in seconds instead of paying the cold-start cost on every message. When

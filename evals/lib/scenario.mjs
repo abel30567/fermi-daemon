@@ -36,6 +36,8 @@ export function loadScenario(file) {
     throw new Error(`${file}: ${err.message}${ext === '.json' ? '' : ' (YAML scenarios must use the JSON-compatible flow style)'}`)
   }
   s.name ??= basename(file, ext)
+  // The report's category: an explicit `category`, else `severity` (critical packs), else the pack dir.
+  s.category ??= s.severity ?? basename(dirname(file))
   const errs = []
   const inb = s.inbound
   if (!inb || ['channel', 'sender', 'chat', 'text'].some((k) => typeof inb[k] !== 'string')) errs.push('inbound needs string channel, sender, chat, text')
