@@ -53,6 +53,7 @@ export async function startFakeTarget({ env }) {
       await send(channel, chat_id, text)
       return { ok: true, channel }
     },
+    schedule_list: () => ({ schedules: db.schedules }),
     phone_call_start: async ({ to }) => {
       const body = await post(`${env.TWILIO_API_BASE}/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, { To: to, From: env.TWILIO_FROM_NUMBER })
       return { ok: true, call_id: JSON.parse(body).sid }
