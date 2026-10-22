@@ -5,8 +5,11 @@ channel, via the worker's /admin/narrate endpoint (ephemeral, unlogged).
 
 Usage: narrator.py <run-log-path>
 
+When a normalized event log (harness/index.mjs) sits next to the run log
+(runs/X.log -> runs/X.events.jsonl), that is read instead.
+
 Best-effort: any failure here must never affect the executor. Exits when the
-run emits its final `result` event or the log stops growing.
+run emits its final `result` / `turn_end` event or the log stops growing.
 """
 import json
 import os
@@ -15,7 +18,7 @@ import sys
 import time
 
 DAEMON_HOME = os.path.expanduser("~/fermi-daemon")
-POST_MIN_INTERVAL = 4.0  # seconds between posts per chat (respect Discord 5/5s)
+POST_MIN_INTERVAL = float(os.environ.get("NARRATOR_MIN_INTERVAL", 4.0))  # seconds between posts per chat (respect Discord 5/5s)
 IDLE_EXIT_SECONDS = 30   # give up if the log stops growing this long
 
 # Tool name -> (emoji, verb, which input field to show)
@@ -159,9 +162,14 @@ def main():
         except Exception:
             pass  # best-effort
 
-    # Wait for the log to exist
+    # Wait for the log to exist; prefer the normalized event log.
+    events_path = os.path.splitext(log_path)[0] + ".events.jsonl"
     for _ in range(30):
+        if os.path.exists(events_path):
+            log_path, normalized = events_path, True
+            break
         if os.path.exists(log_path):
+            normalized = False
             break
         time.sleep(1)
     else:
@@ -184,6 +192,18 @@ def main():
             except ValueError:
                 continue
             etype = evt.get("type")
+            if normalized:
+                if etype == "turn_end":
+                    return  # run finished
+                if etype == "tool_result":
+                    ctx = _extract_chat(evt)
+                    if ctx:
+                        channel, chat_id = ctx
+                elif etype == "tool_call":
+                    text = describe(evt.get("name", ""), evt.get("input", {}))
+                    if text:
+                        post(text)
+                continue
             if etype == "result":
                 return  # run finished
             # Learn chat context from task_claim results (in tool_result content)
@@ -210,7 +230,8 @@ def _content_blocks(message):
 
 
 def _extract_chat(tool_result_block):
-    # tool_result content can be a string or list of {type:text,text:...}
+    # tool_result content can be a string or list of {type:text,text:...};
+    # a normalized tool_result event carries it the same way.
     content = tool_result_block.get("content")
     raw = ""
     if isinstance(content, str):
