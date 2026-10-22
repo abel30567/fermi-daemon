@@ -1,0 +1,24 @@
+{
+  "name": "negative-double-reply",
+  "description": "Negative control for the runner: the scripted drain replies twice, so exactlyOnce and outbox.count must be reported as failures.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Hello" },
+  "expect": [
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": 1 },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Hi!" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Hi again!" } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "greeted" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

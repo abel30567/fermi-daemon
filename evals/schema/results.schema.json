@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fermi-daemon/evals/results.schema.json",
+  "title": "Eval run results",
+  "description": "evals/run.mjs writes one entry per scenario attempt to <out>/results.json.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["scenario", "attempt", "pass", "expectedOutcome", "failed", "latencyMs", "toolCalls", "tokens", "costUsd", "errorKinds"],
+    "properties": {
+      "scenario": { "type": "string", "minLength": 1 },
+      "attempt": { "type": "integer", "minimum": 1 },
+      "pass": { "type": "boolean" },
+      "expectedOutcome": { "enum": ["pass", "fail"] },
+      "failed": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["assertion", "message"],
+          "properties": {
+            "assertion": { "type": ["object", "null"] },
+            "message": { "type": "string" }
+          }
+        }
+      },
+      "latencyMs": { "type": "integer", "minimum": 0 },
+      "toolCalls": { "type": "array", "items": { "type": "string" } },
+      "tokens": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "required": ["input", "output"],
+        "properties": {
+          "input": { "type": ["integer", "null"], "minimum": 0 },
+          "output": { "type": ["integer", "null"], "minimum": 0 }
+        }
+      },
+      "costUsd": { "type": ["number", "null"], "minimum": 0 },
+      "errorKinds": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}
