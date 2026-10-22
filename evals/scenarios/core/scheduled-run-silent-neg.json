@@ -1,0 +1,111 @@
+{
+  "name": "scheduled-run-silent-neg",
+  "description": "Negative control for scheduled-run-silent: The run messages \"nothing changed\" although there is nothing to deliver.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "memories": [
+      {
+        "kind": "fact",
+        "body": "sched:example-status:last-seen = operational",
+        "pinned": false
+      }
+    ],
+    "tasks": [
+      {
+        "id": "eval-sched-1",
+        "channel": "sl",
+        "sender": "schedule:abc12345",
+        "chat_id": "D0EVAL",
+        "payload": "Goal: tell the owner when https://status.example.com changes state. Steps: memory_recall sched:example-status:last-seen; run mac_shell `curl -s https://status.example.com/api`; memory_write the new state if it changed. Delivery: only message the owner when the state differs from last-seen; otherwise stay silent."
+      }
+    ],
+    "mac": [
+      {
+        "tool": "mac_shell",
+        "match": "status\\.example\\.com",
+        "result": "operational"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALSTRANGER",
+    "chat": "D0STRANGER",
+    "text": "hello?"
+  },
+  "expect": [
+    {
+      "order": [
+        "task_claim",
+        "memory_recall",
+        "mac_shell",
+        "task_complete"
+      ]
+    },
+    {
+      "notCalled": "channel_send"
+    },
+    {
+      "outbox.count": 0
+    },
+    {
+      "task.status": {
+        "id": "eval-sched-1",
+        "is": "done"
+      }
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "memory_recall",
+        "args": {
+          "query": "sched:example-status:last-seen"
+        }
+      },
+      {
+        "tool": "mac_shell",
+        "args": {
+          "command": "curl -s https://status.example.com/api"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Status check: still operational, nothing new."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "delivered"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

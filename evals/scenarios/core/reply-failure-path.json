@@ -1,0 +1,105 @@
+{
+  "name": "reply-failure-path",
+  "description": "When the work fails (the Mac bridge is down), the user still gets one reply saying why and the task completes as failed.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "faults": {
+    "mac_shell": {
+      "error": "MacOSMCP unreachable"
+    }
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "What's my Mac's uptime?"
+  },
+  "expect": [
+    {
+      "called": "mac_shell"
+    },
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "args": {
+          "chat_id": "D0EVAL"
+        }
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "task_complete",
+        "args": {
+          "status": "failed"
+        }
+      }
+    },
+    {
+      "order": [
+        "mac_shell",
+        "channel_send",
+        "task_complete"
+      ]
+    },
+    {
+      "task.status": "failed"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "mac_shell",
+        "args": {
+          "command": "uptime"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "I couldn't reach your Mac just now (the Mac bridge is unreachable), so I can't read its uptime."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "failed",
+          "result": "mac bridge unreachable"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}
