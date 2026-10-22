@@ -1,0 +1,26 @@
+{
+  "name": "ask-instead-of-grind",
+  "description": "An ambiguous request (which file, which Ori) gets one specific clarifying question within a few tool calls, not a long search on a guess.",
+  "fixtures": {
+    "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}]
+  },
+  "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Send the file to Ori"},
+  "expect": [
+    {"exactlyOnce": "channel_send"},
+    {"argsMatch": {"tool": "channel_send", "args": {"chat_id": "D0EVAL", "text": "/\\?/"}}},
+    {"notCalled": "mac_shell"},
+    {"notCalled": "phone_call_start"},
+    {"maxToolCalls": 7},
+    {"task.status": "done"}
+  ],
+  "fake": {
+    "script": [
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+      {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "memory_recall", "args": {"query": "Ori"}},
+      {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Which file do you mean, and is Ori a Slack display name or a handle?"}},
+      {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "asked which file and which Ori"}},
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}}
+    ]
+  }
+}
