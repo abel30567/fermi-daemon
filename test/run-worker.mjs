@@ -13,8 +13,15 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCALE = 60
 export const sim = (ms) => Math.round(ms / SCALE)
 
-// `env` adds/overrides worker env vars; `act({ log, home })` runs alongside the
-// worker (log() is its output so far). Returns the fake harness's records and
+export const until = async (cond, ms = 20_000) => {
+  for (const t0 = Date.now(); !cond(); ) {
+    if (Date.now() - t0 > ms) throw new Error('timed out')
+    await new Promise((r) => setTimeout(r, 20))
+  }
+}
+
+// `env` adds/overrides worker env vars; `act({ log, home, narrations })` runs
+// alongside the worker (log() is its output so far). Returns the fake harness's records and
 // the worker's runs/ files.
 export async function runWorker({ result, errors, claim, durationMs, pending = 1, env = {}, act, worker = join(ROOT, 'warm-worker.mjs') }) {
   const home = mkdtempSync(join(tmpdir(), 'dmn2-'))
@@ -66,7 +73,7 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
   let log = ''
   child.stdout.on('data', (d) => (log += d))
   child.stderr.on('data', (d) => (log += d))
-  await Promise.all([new Promise((r) => setTimeout(r, durationMs)), act?.({ log: () => log, home })])
+  await Promise.all([new Promise((r) => setTimeout(r, durationMs)), act?.({ log: () => log, home, narrations })])
   child.kill('SIGTERM')
   await new Promise((r) => child.on('exit', r))
   server.close()

@@ -14,6 +14,7 @@ const FAKE = join(ROOT, 'test/fixtures/fake-claude-once.mjs')
 
 // Runs box-runner for one task; resolves with the gateway calls, the fake
 // harness's spawn records and the runner's output once the runner exits.
+// A `slow` harness stalls until the gateway gets a stuck note.
 async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-runner.mjs') } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'dmn8-')))
   const work = join(home, 'work')
@@ -29,6 +30,7 @@ async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-run
     req.on('end', () => {
       const json = req.headers['content-type'] === 'application/json'
       calls.push({ path: req.url, body: json ? JSON.parse(body) : body })
+      if (calls.at(-1).body.note?.startsWith('⚠️ possibly stuck')) writeFileSync(join(home, 'stuck'), '')
       const reply = (o) => res.end(JSON.stringify(o))
       if (req.url === '/box/inference-auth') return reply({ ok: true, secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'tok', CPA_API_KEY: 'cpa' } })
       if (req.url === '/box/poll')
@@ -47,6 +49,7 @@ async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-run
       CLAUDE_BIN: bin,
       FAKE_DIR: home,
       FAKE_ONCE: mode,
+      FAKE_STALL_FILE: join(home, 'stuck'),
       POLL_MS: '50',
       ...env,
     },
@@ -171,7 +174,7 @@ describe('AC2: argv and env for the claude route are unchanged', () => {
 
 describe('progress and stuck notes', () => {
   test('`working:` notes count turns and name the last tool; a stall gets one stuck note', async () => {
-    const r = await runBox({ mode: 'slow', env: { FAKE_STALL_MS: '1500', PROGRESS_MS: '100', STUCK_MS: '600' } })
+    const r = await runBox({ mode: 'slow', env: { PROGRESS_MS: '100', STUCK_MS: '2000' } })
     assert.equal(r.completes[0].status, 'done', r.out)
     assert.ok(r.notes.includes('working: turns=2, last tool=Bash'), r.notes.join('\n'))
     const stuck = r.notes.filter((n) => n.startsWith('⚠️ possibly stuck'))
