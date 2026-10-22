@@ -1,0 +1,26 @@
+{
+  "name": "audio-transcribe",
+  "description": "A voice note is transcribed with the local tools/transcribe.sh (answered by the fake Mac bridge), and the reply answers what was said; no Gemini fallback for a short note.",
+  "fixtures": {
+    "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}],
+    "mac": [{"tool": "mac_shell", "match": "tools/transcribe\\.sh", "result": "What is the capital of France?"}]
+  },
+  "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "", "attachment": {"kind": "audio", "file": "eval-voice-note.m4a"}},
+  "expect": [
+    {"argsMatch": {"tool": "mac_shell", "args": {"command": "/fermi-daemon\\/tools\\/transcribe\\.sh\\s+\\S*media\\/eval-voice-note\\.m4a/"}}},
+    {"order": ["task_claim", {"tool": "mac_shell", "args": {"command": "/transcribe\\.sh/"}}, {"tool": "channel_send", "args": {"text": "/Paris/"}}, "task_complete"]},
+    {"notCalled": "secret_resolve"},
+    {"outbox.count": {"min": 1, "max": 2, "chat_id": "D0EVAL"}},
+    {"task.status": "done"}
+  ],
+  "fake": {
+    "script": [
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+      {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "mac_shell", "args": {"command": "~/fermi-daemon/tools/transcribe.sh ~/fermi-daemon/media/eval-voice-note.m4a en"}},
+      {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "You asked: \"What is the capital of France?\" Paris."}},
+      {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "transcribed and answered"}},
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}}
+    ]
+  }
+}

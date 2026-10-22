@@ -69,32 +69,53 @@ It also checks every URL it hands out (worker env, target, MCP config).
   "faults": { "channel_send": { "error": "slack is down" }, "context_bootstrap": { "latencyMs": 2000 } },
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
+  "session": [ { "turn": "drain", "interruptAfter": "mac_shell" }, { "turn": "stop" } ], // optional, see below
   "category": "core",                     // optional: report category; default `severity`, else the pack dir
-  "fake": { "script": [ … ] }             // only read by --harness fake
+  "harnesses": [ "fake" ],                // optional: run only under these harnesses, skipped elsewhere
+  "fake": { "script": [ … ] }             // only read by --harness fake ("turns": [[ … ], …] with a session)
 }
 ```
 
 Inbound channels: `sl` (Slack bridge webhook; a chat id starting with `D` is a
 DM). Other channels fail the attempt with a clear error until they are added.
+`teams` is not a queue channel: it needs a session with a `teams` turn and
+posts no webhook.
 
 `expect` entries each have exactly one key (see `lib/assertions.mjs`):
 
 | assertion | example |
 |---|---|
 | `called` / `notCalled` / `exactlyOnce` | `{ "notCalled": "phone_call_start" }` |
-| `order` (a subsequence of the calls) | `{ "order": ["task_claim", "channel_send", "task_complete"] }` |
+| `order` (a subsequence of the calls; an entry may be `{ "tool", "args" }`) | `{ "order": ["task_complete", { "tool": "mac_shell", "args": { "command": "/-X POST/" } }] }` |
 | `argsMatch` (some call, or `every`) | `{ "argsMatch": { "tool": "task_claim", "every": true, "args": { "queue": null } } }`: a `"/re/i"` string is a regex, `null` means absent |
 | `outbox.count` | `{ "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }`: messages sent during the drain (chat API fakes + D1 outbox); the webhook's own "Got it" ack is not counted |
 | `task.status` | `"done"` for the inbound message's task, or `{ "queue": "grok-bot", "is": "pending" }` |
 | `noSecretIn` | `["sk-…"]`: not in tool args, assistant text or outbound messages |
 | `maxToolCalls` / `maxLatencyMs` | `{ "maxLatencyMs": 60000 }`: from enqueue to the end of the drain |
 
+## Session mode
+
+With `session`, the attempt runs the warm worker's own turns in one live
+harness session (`startSession`, `prompts/drain.md` as the system prompt)
+instead of one drain (`lib/session.mjs`). Turns: `drain`, `stop` (the
+emergency-stop cleanup for the inbound chat), `teams` (the Teams warm turn
+for the inbound sender and text) and `keepalive`. `interruptAfter: "<tool>"`
+interrupts the turn as soon as it calls that tool, as `POST /abort` does; that
+turn's `turn_end` is marked `interrupted` and is not a harness failure. A
+session that dies before a turn fails the attempt. The texts are copied from
+`warm-worker.mjs`; `test/evals-control.test.mjs` keeps them in sync. A real
+adapter still gets only `mcp__fermi__*`, so it has no shell tool and the Teams
+scenarios carry `"harnesses": ["fake"]` until a sandboxed shell exists (DMN-22).
+A scenario whose `harnesses` excludes `--harness` is skipped, not failed, and
+listed under `skipped` in `summary.json`.
+
 ## The fake harness
 
 `--harness fake` (`harness/fake.mjs`) runs no model. It plays the scenario's
 `fake.script` against the `fermi` server in its MCP config and emits the same
-normalized events a real adapter does. A step is `{ "tool", "args" }` or
-`{ "text" }`. `${task.<field>}` in an arg means the first task of the latest
+normalized events a real adapter does. A step is `{ "tool", "args" }`,
+`{ "shell", "result" }` (a call to the harness's own shell tool, traced as
+`Bash`; nothing runs) or `{ "text" }`. `${task.<field>}` in an arg means the first task of the latest
 non-empty `task_claim`. The runner tests in `test/evals.test.mjs` use only this
 harness and the fake target. They run under a preload that blocks every
 non-loopback connection.

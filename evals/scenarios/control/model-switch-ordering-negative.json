@@ -1,0 +1,25 @@
+{
+  "name": "model-switch-ordering-negative",
+  "description": "Negative control: the scripted drain runs the switch curl before replying and completing, so the order assertion must fail.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}]
+  },
+  "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Switch to opus"},
+  "expect": [
+    {"order": ["task_claim", "channel_send", "task_complete", {"tool": "mac_shell", "args": {"command": "/-X POST http:\\/\\/127\\.0\\.0\\.1:8791\\/model/"}}]},
+    {"argsMatch": {"tool": "mac_shell", "args": {"command": "/\"model\"\\s*:\\s*\"opus\"/"}}},
+    {"exactlyOnce": "channel_send"},
+    {"task.status": "done"}
+  ],
+  "fake": {
+    "script": [
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+      {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "mac_shell", "args": {"command": "curl -s -X POST http://127.0.0.1:8791/model -H 'content-type: application/json' -d '{\"model\":\"opus\"}'"}},
+      {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Switched to opus."}},
+      {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "switched model to opus"}},
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}}
+    ]
+  }
+}
