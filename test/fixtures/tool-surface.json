@@ -1,0 +1,362 @@
+[
+  {
+    "name": "allowlist_add"
+  },
+  {
+    "name": "allowlist_list"
+  },
+  {
+    "name": "allowlist_remove"
+  },
+  {
+    "name": "box_heartbeat"
+  },
+  {
+    "name": "box_list"
+  },
+  {
+    "name": "browser_action"
+  },
+  {
+    "name": "browser_extract"
+  },
+  {
+    "name": "browser_navigate"
+  },
+  {
+    "name": "browser_screenshot"
+  },
+  {
+    "name": "browser_session_action"
+  },
+  {
+    "name": "browser_session_close"
+  },
+  {
+    "name": "browser_session_launch"
+  },
+  {
+    "name": "browser_session_list"
+  },
+  {
+    "name": "browser_session_request_human"
+  },
+  {
+    "name": "browser_session_resume"
+  },
+  {
+    "name": "canvas_update"
+  },
+  {
+    "name": "channel_pair_approve"
+  },
+  {
+    "name": "channel_read"
+  },
+  {
+    "name": "channel_send"
+  },
+  {
+    "name": "cloud_agent_destroy"
+  },
+  {
+    "name": "cloud_agent_followup"
+  },
+  {
+    "name": "cloud_agent_get"
+  },
+  {
+    "name": "cloud_agent_launch"
+  },
+  {
+    "name": "cloud_agent_list"
+  },
+  {
+    "name": "cloud_agent_stop"
+  },
+  {
+    "name": "cloud_env_list"
+  },
+  {
+    "name": "cloud_env_snapshot"
+  },
+  {
+    "name": "connector_delete"
+  },
+  {
+    "name": "connector_get"
+  },
+  {
+    "name": "connector_list"
+  },
+  {
+    "name": "connector_set"
+  },
+  {
+    "name": "context_bootstrap"
+  },
+  {
+    "name": "conversation_history"
+  },
+  {
+    "name": "execute"
+  },
+  {
+    "name": "fs_list"
+  },
+  {
+    "name": "fs_read"
+  },
+  {
+    "name": "fs_write"
+  },
+  {
+    "name": "hooks_list"
+  },
+  {
+    "name": "hooks_register"
+  },
+  {
+    "name": "hooks_test"
+  },
+  {
+    "name": "mac_app_activate"
+  },
+  {
+    "name": "mac_app_list"
+  },
+  {
+    "name": "mac_applescript"
+  },
+  {
+    "name": "mac_browser_action"
+  },
+  {
+    "name": "mac_browser_close"
+  },
+  {
+    "name": "mac_browser_launch"
+  },
+  {
+    "name": "mac_browser_list"
+  },
+  {
+    "name": "mac_chrome_open"
+  },
+  {
+    "name": "mac_click"
+  },
+  {
+    "name": "mac_clipboard_get"
+  },
+  {
+    "name": "mac_clipboard_set"
+  },
+  {
+    "name": "mac_file_delete"
+  },
+  {
+    "name": "mac_file_info"
+  },
+  {
+    "name": "mac_file_list"
+  },
+  {
+    "name": "mac_file_move"
+  },
+  {
+    "name": "mac_file_read"
+  },
+  {
+    "name": "mac_file_search"
+  },
+  {
+    "name": "mac_file_write"
+  },
+  {
+    "name": "mac_jxa"
+  },
+  {
+    "name": "mac_keystroke"
+  },
+  {
+    "name": "mac_notification"
+  },
+  {
+    "name": "mac_open"
+  },
+  {
+    "name": "mac_screen_ocr"
+  },
+  {
+    "name": "mac_screenshot"
+  },
+  {
+    "name": "mac_shell"
+  },
+  {
+    "name": "mac_system_info"
+  },
+  {
+    "name": "memory_delete"
+  },
+  {
+    "name": "memory_list_recent"
+  },
+  {
+    "name": "memory_recall"
+  },
+  {
+    "name": "memory_update"
+  },
+  {
+    "name": "memory_write"
+  },
+  {
+    "name": "meta_list_capabilities"
+  },
+  {
+    "name": "oauth_authorize_url"
+  },
+  {
+    "name": "oauth_delete_client"
+  },
+  {
+    "name": "oauth_get_client"
+  },
+  {
+    "name": "oauth_list_clients"
+  },
+  {
+    "name": "oauth_register_client"
+  },
+  {
+    "name": "open_generated_ui"
+  },
+  {
+    "name": "package_delete"
+  },
+  {
+    "name": "package_get"
+  },
+  {
+    "name": "package_list"
+  },
+  {
+    "name": "package_set"
+  },
+  {
+    "name": "phone_call_hangup"
+  },
+  {
+    "name": "phone_call_start"
+  },
+  {
+    "name": "phone_call_status"
+  },
+  {
+    "name": "plan_approve"
+  },
+  {
+    "name": "plan_draft"
+  },
+  {
+    "name": "profile_update"
+  },
+  {
+    "name": "retriever_delete"
+  },
+  {
+    "name": "retriever_get"
+  },
+  {
+    "name": "retriever_list"
+  },
+  {
+    "name": "retriever_run"
+  },
+  {
+    "name": "retriever_set"
+  },
+  {
+    "name": "schedule_create"
+  },
+  {
+    "name": "schedule_delete"
+  },
+  {
+    "name": "schedule_list"
+  },
+  {
+    "name": "search"
+  },
+  {
+    "name": "secret_approve_host"
+  },
+  {
+    "name": "secret_delete"
+  },
+  {
+    "name": "secret_list"
+  },
+  {
+    "name": "secret_resolve"
+  },
+  {
+    "name": "secret_set"
+  },
+  {
+    "name": "session_search"
+  },
+  {
+    "name": "session_set_mode"
+  },
+  {
+    "name": "skill_delete"
+  },
+  {
+    "name": "skill_load"
+  },
+  {
+    "name": "skill_search"
+  },
+  {
+    "name": "skill_set"
+  },
+  {
+    "name": "task_claim"
+  },
+  {
+    "name": "task_complete"
+  },
+  {
+    "name": "task_enqueue"
+  },
+  {
+    "name": "task_list"
+  },
+  {
+    "name": "task_wait"
+  },
+  {
+    "name": "team_spawn"
+  },
+  {
+    "name": "totp_setup"
+  },
+  {
+    "name": "usage_stats"
+  },
+  {
+    "name": "web_session_capture"
+  },
+  {
+    "name": "web_session_get"
+  },
+  {
+    "name": "web_session_invalidate"
+  },
+  {
+    "name": "web_session_list"
+  }
+]
