@@ -165,7 +165,7 @@ describe('AC2: watchdog kill and lane cleanup', () => {
     })
     assert.equal(r.code, 143)
     assert.match(r.log, /^run-once: SIGTERM: stopping harness$/m)
-    await new Promise((res) => setTimeout(res, 200))
+    for (const t0 = Date.now(); alive(r.harnessPid) && Date.now() - t0 < 5000; ) await new Promise((res) => setTimeout(res, 20))
     assert.ok(!alive(r.harnessPid))
     assert.ok(r.laneGone)
   })
@@ -185,7 +185,7 @@ function pollSh({ env = {}, pathNode } = {}) {
   fake(join(bin, 'pgrep'), 'exit 1')
   fake(join(bin, 'curl'), 'exit 7')
   const node = (name, version) =>
-    fake(join(home, name), `[ "$1" = -v ] && { echo ${version}; exit 0; }\nprintf '%s\\n' "$@" > "$FAKE_DIR/${name}.argv"\necho "${name} stderr" >&2`)
+    fake(join(home, name), `[ "$1" = -v ] && { echo ${version}; exit 0; }\nprintf '%s\\n' "$@" > "$FAKE_DIR/${name}.argv.tmp" && mv "$FAKE_DIR/${name}.argv.tmp" "$FAKE_DIR/${name}.argv"\necho "${name} stderr" >&2`)
   const nodes = { old: node('node14', 'v14.15.1'), new: node('node22', 'v22.3.0') }
   if (pathNode) fake(join(bin, 'node'), `exec "${nodes[pathNode]}" "$@"`)
   const r = spawnSync('/bin/zsh', [join(ROOT, 'poll.sh')], {
@@ -196,10 +196,10 @@ function pollSh({ env = {}, pathNode } = {}) {
   return { ...r, home, daemon, pollLog, lanes: readdirSync(join(daemon, 'lanes')) }
 }
 
-async function waitFor(path) {
-  for (const t0 = Date.now(); !existsSync(path); await new Promise((res) => setTimeout(res, 20)))
-    if (Date.now() - t0 > 5000) throw new Error(`${path} never appeared`)
-  await new Promise((res) => setTimeout(res, 50))
+// Waits until `path` exists and its content matches `done`.
+async function waitFor(path, done = /./) {
+  for (const t0 = Date.now(); !(existsSync(path) && done.test(readFileSync(path, 'utf8'))); await new Promise((res) => setTimeout(res, 20)))
+    if (Date.now() - t0 > 5000) throw new Error(`${path} never matched ${done}`)
   return readFileSync(path, 'utf8')
 }
 
@@ -232,6 +232,6 @@ describe('poll.sh node resolution for the cold path', () => {
     assert.match(r.pollLog, /spawned heartbeat\.md in lane 1/)
     assert.deepEqual(r.lanes, ['1'])
     const log = argv[argv.indexOf('--log') + 1]
-    assert.match(await waitFor(join(r.daemon, log)), /node22 stderr/)
+    assert.match(await waitFor(join(r.daemon, log), /node22 stderr/), /node22 stderr/)
   })
 })

@@ -6,8 +6,9 @@
 //   spend    a spend-limit result with no status, exit 1
 //   result   the result event in FAKE_ONCE_RESULT (JSON), exit 1
 //   crash    stderr only, no result, exit 3
-//   slow     like success, but stalls FAKE_STALL_MS before the result
-import { appendFileSync } from 'node:fs'
+//   slow     like success, but stalls FAKE_STALL_MS before the result (with
+//            FAKE_STALL_FILE: until that file exists)
+import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ENV_KEYS = ['IS_SANDBOX', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL']
@@ -45,7 +46,9 @@ process.stdin.on('end', async () => {
   }
   out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'ls' } }] } })
   out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'a b' }] } })
-  if (mode === 'slow') await new Promise((r) => setTimeout(r, Number(process.env.FAKE_STALL_MS ?? 1000)))
+  if (mode === 'slow' && process.env.FAKE_STALL_FILE)
+    while (!existsSync(process.env.FAKE_STALL_FILE)) await new Promise((r) => setTimeout(r, 20))
+  else if (mode === 'slow') await new Promise((r) => setTimeout(r, Number(process.env.FAKE_STALL_MS ?? 1000)))
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Done.\nRESULT: shipped the fix' }] } })
   out({ type: 'result', subtype: 'success', is_error: false, num_turns: 3, result: 'Done.\nRESULT: shipped the fix', total_cost_usd: 0.4321 })
 })
