@@ -4,6 +4,7 @@
   "expectOutcome": "fail",
   "inbound": {"channel": "teams", "sender": "Eval Teams User", "chat": "fermi-bridge", "text": "What is the capital of France?"},
   "session": [{"turn": "teams"}],
+  "harnesses": ["fake"],
   "expect": [
     {"exactlyOnce": "Bash"},
     {"argsMatch": {"tool": "Bash", "args": {"command": "/^~\\/fermi-daemon\\/tools\\/teams-send\\.sh '[^']*Paris/"}}},
