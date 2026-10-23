@@ -137,6 +137,8 @@ function spawnCodex(args, o) {
   }
   child.on('error', cleanup) // a spawn failure (missing bin, bad cwd)
   child.on('close', cleanup)
+  // codex may exit before reading its prompt: stdin then fails with EPIPE ('close' still follows).
+  for (const s of [child.stdin, child.stdout, child.stderr]) s.on('error', () => {})
   return child
 }
 
