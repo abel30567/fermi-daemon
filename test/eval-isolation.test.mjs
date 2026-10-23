@@ -18,6 +18,7 @@ import * as pi from '../harness/pi.mjs'
 import { createSandbox, sandboxBackend } from '../harness/sandbox.mjs'
 import * as fake from '../evals/harness/fake.mjs'
 import { allowedTarget, startEgressProxy } from '../evals/lib/egress-proxy.mjs'
+import { internalToolCalls } from '../evals/lib/assertions.mjs'
 import { allowedBuiltins, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from '../evals/lib/isolation.mjs'
 import { loadScenario } from '../evals/lib/scenario.mjs'
 import { runAttempt, summarize } from '../evals/lib/runner.mjs'
@@ -37,7 +38,7 @@ const fakeBin = (name, script) => {
   return bin
 }
 const CLAUDE_BIN = fakeBin('claude', join(HERE, 'fixtures/fake-claude-eval.mjs'))
-const fakeClaude = (env = {}) => ({ runOnce: (o) => claude.runOnce({ ...o, bin: CLAUDE_BIN, env: { ...o.env, ...env } }) })
+const fakeClaude = (env = {}) => ({ name: 'claude-code', runOnce: (o) => claude.runOnce({ ...o, bin: CLAUDE_BIN, env: { ...o.env, ...env } }) })
 const claudeAttempt = (scenario, env, outDir = tmp()) =>
   runAttempt({ scenario: { name: 'iso', inbound, expect: [], ...scenario }, attempt: 1, harness: fakeClaude(env), timeoutMs: 10_000, outDir, sandboxReadable: [HERE] }).then((r) => ({
     r,
@@ -47,22 +48,37 @@ const argvOf = (raw) => JSON.parse(raw.split('\n').find((l) => l.includes('"subt
 const flag = (argv, f) => argv[argv.indexOf(f) + 1]
 
 describe('AC1: the claude-code eval argv', () => {
-  test('through the runner: --setting-sources project,local, --strict-mcp-config, --tools Bash (production), never bypassPermissions', { skip: NO_SEATBELT }, async () => {
+  test('through the runner: --setting-sources project,local, --strict-mcp-config, --tools Bash,ToolSearch (production), never bypassPermissions', { skip: NO_SEATBELT }, async () => {
     const { r, raw } = await claudeAttempt({}, { FAKE_INIT_TOOLS: '["Bash","mcp__fermi__task_claim"]' })
     assert.deepEqual(r.errorKinds, [], JSON.stringify(r.failed))
     const argv = argvOf(raw)
     assert.equal(flag(argv, '--setting-sources'), 'project,local')
     assert.ok(argv.includes('--strict-mcp-config'))
     assert.ok(argv.includes('--tools'))
-    assert.equal(flag(argv, '--tools'), 'Bash', 'the production surface: a shell next to fermi')
+    assert.equal(flag(argv, '--tools'), 'Bash,ToolSearch', 'the production surface: a shell next to fermi, whose tools stay deferred')
     assert.equal(flag(argv, '--permission-mode'), 'default')
     assert.ok(!argv.some((a) => /bypassPermissions|dangerously-skip-permissions/.test(a)), argv.join(' '))
   })
 
-  test('a scenario that narrows tools to [] gets --tools ""', { skip: NO_SEATBELT }, async () => {
+  test('a scenario that narrows tools to [] gets --tools ToolSearch: no host tool', { skip: NO_SEATBELT }, async () => {
     const { r, raw } = await claudeAttempt({ tools: [] })
     assert.deepEqual(r.errorKinds, [], JSON.stringify(r.failed))
-    assert.equal(flag(argvOf(raw), '--tools'), '')
+    assert.equal(flag(argvOf(raw), '--tools'), 'ToolSearch')
+  })
+
+  test('an init listing ToolSearch + Bash passes; its ToolSearch call is an internalToolCall', { skip: NO_SEATBELT }, async () => {
+    const out = tmp()
+    const { r } = await claudeAttempt({}, { FAKE_INIT_TOOLS: '["Bash","ToolSearch","mcp__fermi__task_claim"]', FAKE_TOOL_CALLS: '["ToolSearch","mcp__fermi__task_claim"]' }, out)
+    assert.deepEqual(r.errorKinds, [], JSON.stringify(r.failed))
+    assert.deepEqual(r.builtinTools, ['Bash', 'ToolSearch'])
+    assert.deepEqual(r.surfaceDelta, { added: [], removed: [] }, 'ToolSearch is not surface')
+    const trace = readFileSync(join(out, 'iso/1/trace.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+    assert.deepEqual(internalToolCalls(trace), ['ToolSearch'])
+  })
+
+  test('an init listing Read next to ToolSearch + Bash breaches', { skip: NO_SEATBELT }, async () => {
+    const { r } = await claudeAttempt({}, { FAKE_INIT_TOOLS: '["Bash","ToolSearch","Read","mcp__fermi__task_claim"]' })
+    assert.ok(r.errorKinds.includes('isolation_breach'), JSON.stringify(r))
   })
 
   test('results record builtinTools and surfaceDelta against production', { skip: NO_SEATBELT }, async () => {
@@ -78,7 +94,7 @@ describe('AC1: the claude-code eval argv', () => {
     const a = claude.sessionArgs(seen)
     assert.equal(flag(a, '--setting-sources'), 'project,local')
     assert.ok(a.includes('--strict-mcp-config'))
-    assert.equal(flag(a, '--tools'), 'Bash')
+    assert.equal(flag(a, '--tools'), 'Bash,ToolSearch')
     assert.equal(flag(a, '--permission-mode'), 'default')
     assert.ok(!a.some((x) => /bypassPermissions|dangerously-skip-permissions/.test(x)))
     assert.equal(seen.env.ENABLE_CLAUDEAI_MCP_SERVERS, 'false')
@@ -200,6 +216,9 @@ describe('AC3: the isolation assertion', () => {
     assert.equal(isolationBreach({ tools: ['bash', 'mcp__fermi__x'] }), null, 'Bash by default, case-insensitive')
     assert.match(isolationBreach({ tools: ['Bash', 'Read'] }), /: Read$/)
     assert.match(isolationBreach({ tools: ['Bash'] }, { allowed: [] }), /: Bash$/)
+    assert.equal(isolationBreach({ tools: ['Bash', 'ToolSearch', 'mcp__fermi__x'] }, { allowed: allowedBuiltins('claude-code') }), null)
+    assert.match(isolationBreach({ tools: ['Bash', 'ToolSearch', 'Read'] }, { allowed: allowedBuiltins('claude-code') }), /: Read$/)
+    assert.match(isolationBreach({ tools: ['ToolSearch'] }, { allowed: allowedBuiltins('pi') }), /: ToolSearch$/, 'claude-code only')
     assert.match(isolationBreach({ tools: pi.PI_BUILTINS }), /: read, edit, write$/)
     assert.equal(isolationBreach({ tools: pi.PI_BUILTINS }, { allowed: allowedBuiltins('pi') }), null)
     assert.equal(isolationBreach({ tools: codex.CODEX_BUILTINS }, { allowed: allowedBuiltins('codex', []) }), null, 'irreducible even when narrowed')
@@ -211,8 +230,8 @@ describe('AC3: the isolation assertion', () => {
   })
 
   test('scenario tools may only narrow the production surface', () => {
-    assert.deepEqual(allowedBuiltins('claude-code'), ['Bash'])
-    assert.deepEqual(allowedBuiltins('claude-code', []), [])
+    assert.deepEqual(allowedBuiltins('claude-code'), ['Bash', 'ToolSearch'])
+    assert.deepEqual(allowedBuiltins('claude-code', []), ['ToolSearch'])
     assert.throws(() => allowedBuiltins('claude-code', ['Read']), /only narrow/)
     const dir = tmp()
     const file = join(dir, 's.json')
@@ -224,6 +243,7 @@ describe('AC3: the isolation assertion', () => {
     assert.deepEqual(surfaceDelta(['Bash']), { added: [], removed: [] })
     assert.deepEqual(surfaceDelta([]), { added: [], removed: ['Bash'] })
     assert.deepEqual(surfaceDelta(['bash', 'apply_patch']), { added: ['apply_patch'], removed: [] })
+    assert.deepEqual(surfaceDelta(['ToolSearch']), { added: [], removed: ['Bash'] })
   })
 
   test('checkMcpConfig: exactly { fermi → 127.0.0.1 }', () => {
