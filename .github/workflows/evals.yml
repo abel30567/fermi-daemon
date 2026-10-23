@@ -1,13 +1,15 @@
 name: Evals
 
-# Live evals (evals/README.md) against the fermi-mcp eval worker:
-# - smoke on every non-draft PR head (ready_for_review, then each push): critical + core, k=3, the
-#   baseline of evals/matrix.json; a newer push cancels the older run. Reported as a PR comment and
-#   the commit status evals/smoke.
-# - weekly: every pack, k=5 (--weekly: the soak too), the baseline and every candidate of evals/matrix.json.
+# Live evals (evals/README.md) against the fermi-mcp eval worker, in three jobs: plan → run (one
+# matrix cell per pack × harness) → report (joins the cells, compares each harness with the baseline).
+# - smoke on every non-draft PR head (ready_for_review, then each push): the base scenarios of
+#   evals/smoke.json (--no-variants), k=3, the baseline of evals/matrix.json; a newer push cancels
+#   the older run. Reported as a PR comment and the commit status evals/smoke.
+# - weekly: one cell per pack × entry of evals/matrix.json (the baseline, then every candidate),
+#   k=5, --weekly (the soak too).
 # - workflow_dispatch: the smoke, with the harness, model, scenarios and fermi-mcp ref overridable.
-# Fork PRs never get the job (it is skipped, not failed). Without the evals environment's
-# CLAUDE_CODE_OAUTH_TOKEN secret the job skips its steps with a notice.
+# Fork PRs never get the jobs (skipped, not failed). Without the evals environment's
+# CLAUDE_CODE_OAUTH_TOKEN secret, plan ends with a notice and run and report are skipped.
 on:
   pull_request:
     types: [ready_for_review, synchronize]
@@ -24,7 +26,7 @@ on:
         type: string
         default: ''
       scenarios:
-        description: 'Space-separated scenario globs (default: the smoke, critical + core)'
+        description: 'Space-separated scenario globs, variants included (default: the smoke, evals/smoke.json)'
         type: string
         default: ''
       fermi_mcp_ref:
@@ -39,24 +41,32 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-  statuses: write # the evals/smoke commit status
+
+env:
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  evals:
+  plan:
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     environment: evals
-    timeout-minutes: 360
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write # the evals/smoke commit status
     env:
-      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
-      CLAUDE_CODE_VERSION: 2.1.308
       GH_TOKEN: ${{ github.token }}
-      PR: ${{ github.event.pull_request.number }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    outputs:
+      ok: ${{ steps.token.outputs.ok }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      entries: ${{ steps.plan.outputs.entries }}
+      cells: ${{ steps.plan.outputs.cells }}
+      k: ${{ steps.plan.outputs.k }}
+      flags: ${{ steps.plan.outputs.flags }}
+      title: ${{ steps.plan.outputs.title }}
     steps:
       - id: token
         env:
@@ -64,35 +74,10 @@ jobs:
         run: |
           echo "ok=$HAS_TOKEN" >> "$GITHUB_OUTPUT"
           [ "$HAS_TOKEN" = true ] || echo "::notice::Evals skipped: the evals environment has no CLAUDE_CODE_OAUTH_TOKEN secret"
-
-      # bwrap is the eval sandbox's Linux backend (harness/sandbox.mjs); it needs unprivileged user namespaces.
-      - if: steps.token.outputs.ok == 'true'
-        run: |
-          sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - if: steps.token.outputs.ok == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: steps.token.outputs.ok == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: abel30567/fermi-mcp
-          ref: ${{ inputs.fermi_mcp_ref || 'master' }}
-          path: fermi-mcp
-          persist-credentials: false
-      - if: steps.token.outputs.ok == 'true'
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-      - if: steps.token.outputs.ok == 'true'
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - if: steps.token.outputs.ok == 'true'
-        run: |
-          (cd fermi-mcp && bun install --frozen-lockfile)
-          npm install --prefix "$RUNNER_TEMP/claude-code" --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
-          echo "CLAUDE_BIN=$RUNNER_TEMP/claude-code/node_modules/.bin/claude" >> "$GITHUB_ENV"
-
       - id: plan
         if: steps.token.outputs.ok == 'true'
         env:
@@ -101,63 +86,160 @@ jobs:
           IN_MODEL: ${{ inputs.model }}
           IN_SCENARIOS: ${{ inputs.scenarios }}
         run: |
-          smoke='evals/scenarios/critical/* evals/scenarios/core/*'
+          smoke=$(jq -c '[{cell: "smoke", scenarios: (.scenarios | join(" "))}]' evals/smoke.json)
           case "$EVENT" in
             schedule)
-              entries=$(jq -c '[.baseline] + .candidates' evals/matrix.json) k=5 scenarios='evals/scenarios/*/*' weekly=--weekly title='Evals weekly' ;;
+              entries=$(jq -c '[.baseline] + .candidates' evals/matrix.json)
+              cells=$(find evals/scenarios -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | jq -Rnc '[inputs | {cell: ., scenarios: "evals/scenarios/\(.)/*"}]')
+              k=5 flags=--weekly title='Evals weekly' ;;
             workflow_dispatch)
               entries=$(jq -c --arg h "$IN_HARNESS" --arg m "$IN_MODEL" '[.baseline | if $h != "" then .harness = $h else . end | if $m != "" then .model = $m else . end]' evals/matrix.json)
-              k=3 scenarios=${IN_SCENARIOS:-$smoke} weekly= title='Evals (dispatch)' ;;
+              if [ -n "$IN_SCENARIOS" ]; then
+                cells=$(jq -nc --arg s "$IN_SCENARIOS" '[{cell: "dispatch", scenarios: $s}]') flags=
+              else
+                cells=$smoke flags=--no-variants
+              fi
+              k=3 title='Evals (dispatch)' ;;
             *)
-              entries=$(jq -c '[.baseline]' evals/matrix.json) k=3 scenarios=$smoke weekly= title='Evals smoke' ;;
+              entries=$(jq -c '[.baseline]' evals/matrix.json) cells=$smoke k=3 flags=--no-variants title='Evals smoke' ;;
           esac
           {
+            echo "matrix=$(jq -nc --argjson e "$entries" --argjson c "$cells" '{include: [$e[] as $x | $c[] | . + {entry: ($x | tojson), name: "\($x.harness)-\($x.model // "default")"}]}')"
             echo "entries=$entries"
+            echo "cells=$(jq -r 'map(.cell) | join(" ")' <<<"$cells")"
             echo "k=$k"
-            echo "scenarios=$scenarios"
-            echo "weekly=$weekly"
+            echo "flags=$flags"
             echo "title=$title (${HEAD_SHA:0:7})"
           } >> "$GITHUB_OUTPUT"
-
       - if: steps.token.outputs.ok == 'true' && github.event_name == 'pull_request'
         run: gh api "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" -f state=pending -f context=evals/smoke -f description=running -f target_url="$RUN_URL" > /dev/null
 
-      # The token reaches the runner only on a pipe (fd 3): the secret is unset before anything is
-      # started, and scripts/evals-ci.sh hands it to run.mjs and scan-secrets.mjs on fresh pipes.
+  run:
+    needs: plan
+    if: needs.plan.outputs.ok == 'true'
+    name: run (${{ matrix.cell }}, ${{ matrix.name }})
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
+      CLAUDE_CODE_VERSION: 2.1.308
+    steps:
+      # bwrap is the eval sandbox's Linux backend (harness/sandbox.mjs); it needs unprivileged user namespaces.
+      - run: |
+          sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: abel30567/fermi-mcp
+          ref: ${{ inputs.fermi_mcp_ref || 'master' }}
+          path: fermi-mcp
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: |
+          (cd fermi-mcp && bun install --frozen-lockfile)
+          npm install --prefix "$RUNNER_TEMP/claude-code" --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+          echo "CLAUDE_BIN=$RUNNER_TEMP/claude-code/node_modules/.bin/claude" >> "$GITHUB_ENV"
+
+      # The one step that sees the secret. A secrets.* value can only reach a step through env: or
+      # with:, so this env var is the accepted bridge (evals/README.md, CI): its first line puts the
+      # token on a pipe (fd 3) and its second unsets it, before anything is started; it is never
+      # exported to a child process. scripts/evals-ci.sh hands it on to run.mjs and scan-secrets.mjs
+      # on fresh pipes.
       - id: run
-        if: steps.token.outputs.ok == 'true'
         env:
           EVAL_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          ENTRIES: ${{ steps.plan.outputs.entries }}
-          K: ${{ steps.plan.outputs.k }}
-          SCENARIOS: ${{ steps.plan.outputs.scenarios }}
-          WEEKLY: ${{ steps.plan.outputs.weekly }}
-          TITLE: ${{ steps.plan.outputs.title }}
+          ENTRY: ${{ matrix.entry }}
+          NAME: ${{ matrix.name }}
+          CELL: ${{ matrix.cell }}
+          SCENARIOS: ${{ matrix.scenarios }}
+          K: ${{ needs.plan.outputs.k }}
+          FLAGS: ${{ needs.plan.outputs.flags }}
         run: |
           exec 3< <(printf '%s' "$EVAL_TOKEN")
           unset EVAL_TOKEN
           set -f # the globs are run.mjs's to expand
           read -ra globs <<<"$SCENARIOS"
-          CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3 bash scripts/evals-ci.sh --entries "$ENTRIES" -k "$K" --title "$TITLE" \
-            --out "$RUNNER_TEMP/evals" --artifacts "$RUNNER_TEMP/evals-artifacts" --worker "$GITHUB_WORKSPACE/fermi-mcp" $WEEKLY --scenarios "${globs[@]}"
+          CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3 bash scripts/evals-ci.sh run --entry "$ENTRY" --cell "$CELL" -k "$K" \
+            --out "$RUNNER_TEMP/evals" --artifacts "$RUNNER_TEMP/evals-cell" --worker "$GITHUB_WORKSPACE/fermi-mcp" $FLAGS --scenarios "${globs[@]}"
+          echo "outcome=$(cat "$RUNNER_TEMP/evals-cell/$NAME/$CELL/outcome")" >> "$GITHUB_OUTPUT"
+
+      # For the report job only (1 day): results.json, summary.json and outcome, already scanned;
+      # never the attempt dirs (transcripts).
+      - if: steps.run.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-cell-${{ matrix.cell }}-${{ matrix.name }}
+          path: ${{ runner.temp }}/evals-cell
+          if-no-files-found: error
+          retention-days: 1
+      - if: steps.run.outputs.outcome == 'failure'
+        run: |
+          echo "::error::Evals failed in this cell: see the report job"
+          exit 1
+
+  report:
+    needs: [plan, run]
+    if: ${{ !cancelled() && needs.plan.outputs.ok == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write # the evals/smoke commit status
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # A cell that failed its scan uploaded nothing; the report counts it as missing.
+      - continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: evals-cell-*
+          path: ${{ runner.temp }}/evals-cells
+          merge-multiple: true
+      - id: report
+        env:
+          ENTRIES: ${{ needs.plan.outputs.entries }}
+          CELLS: ${{ needs.plan.outputs.cells }}
+          TITLE: ${{ needs.plan.outputs.title }}
+        run: |
+          bash scripts/evals-ci.sh report --entries "$ENTRIES" --cells "$CELLS" --in "$RUNNER_TEMP/evals-cells" \
+            --out "$RUNNER_TEMP/evals" --artifacts "$RUNNER_TEMP/evals-artifacts" --title "$TITLE"
           echo "outcome=$(cat "$RUNNER_TEMP/evals/outcome")" >> "$GITHUB_OUTPUT"
           cat "$RUNNER_TEMP/evals/comment.md" >> "$GITHUB_STEP_SUMMARY"
 
-      # Only summary.json and compare.md per entry, already scanned: never results.json or the attempt dirs (transcripts).
-      - if: steps.run.outcome == 'success'
+      # Only compare.md per entry and summary.json per cell, already scanned: never results.json or transcripts.
+      - if: steps.report.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: evals-${{ github.run_id }}
           path: ${{ runner.temp }}/evals-artifacts
           if-no-files-found: error
           retention-days: 30
-      - if: steps.run.outcome == 'success' && github.event_name == 'pull_request'
+      - if: steps.report.outcome == 'success' && github.event_name == 'pull_request'
         run: gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/evals/comment.md"
-      - if: "!cancelled() && steps.token.outputs.ok == 'true' && github.event_name == 'pull_request'"
+      - if: "!cancelled() && github.event_name == 'pull_request'"
         env:
-          OUTCOME: ${{ steps.run.outputs.outcome || 'failure' }}
+          OUTCOME: ${{ steps.report.outputs.outcome || 'failure' }}
         run: gh api "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" -f state="$OUTCOME" -f context=evals/smoke -f description="evals $OUTCOME" -f target_url="$RUN_URL" > /dev/null
-      - if: steps.run.outputs.outcome == 'failure'
+      - if: steps.report.outputs.outcome == 'failure'
         run: |
           echo "::error::Evals failed: see the report in the job summary"
           exit 1

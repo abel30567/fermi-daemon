@@ -3,7 +3,7 @@
 // grade the normalized trace and the resulting state. See evals/README.md.
 //
 //   node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios <glob>... \
-//     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
+//     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] [--no-variants] \
 //     [--auth none|fd|keychain|proxy] [--judge-auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>] \
 //     [--auth-file <auth.json>]
 //
@@ -22,6 +22,7 @@
 // origin/master (fetched with a timeout, skipped offline) is warned about. Attempts on
 // one --auth backend run one at a time across processes, --min-gap-ms apart (lib/pacing.mjs).
 // Scenarios with `"schedule": "weekly"` (the soak) are skipped unless --weekly is given.
+// --no-variants runs only each file's base scenario, not its `variants` (the CI smoke, evals/smoke.json).
 // Exit 0 when every attempt's outcome is the expected one, 1 otherwise, 2 on a
 // usage error or a non-localhost URL.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -57,6 +58,7 @@ function parseArgs(argv) {
     else if (a === '--worker') o.worker = val()
     else if (a === '--timeout-ms') o.timeoutMs = Number(val())
     else if (a === '--weekly') o.weekly = true
+    else if (a === '--no-variants') o.noVariants = true
     else if (a === '--fake-script') o.fakeScript = val()
     else if (a === '--auth') o.auth = val()
     else if (a === '--auth-file') o.authFile = val()
@@ -114,7 +116,7 @@ async function main() {
   }
   let scenarios
   try {
-    scenarios = files.flatMap((f) => expandVariants(loadScenario(f)))
+    scenarios = files.flatMap((f) => expandVariants(loadScenario(f)).slice(0, opts.noVariants ? 1 : undefined))
     if (opts.fakeScript) scenarios = scenarios.map((s) => withFakeScript(s, opts.fakeScript))
   } catch (err) {
     console.error(`evals: ${err.message}`)

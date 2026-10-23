@@ -7,7 +7,7 @@ final text.
 
 ```bash
 node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios '<glob>'... \
-  [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
+  [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] [--no-variants] \
   [--auth none|fd|keychain|proxy] [--judge-auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>] \
   [--auth-file <auth.json>]
 
@@ -21,7 +21,7 @@ node evals/run.mjs --harness fake --fake-script negative --scenarios 'evals/scen
 Exit code: 0 when every attempt ended as expected, 1 otherwise, 2 on a usage
 error or a non-localhost URL. `--out` defaults to `runs/evals-<timestamp>`.
 Scenarios marked `"schedule": "weekly"` (the soak) are skipped unless `--weekly`
-is given.
+is given. `--no-variants` runs only each file's base scenario, not its `variants`.
 
 ## Infrastructure outcomes and pacing
 
@@ -443,21 +443,35 @@ allowlisted, so the webhook drops it and the drain sees only the seeded
 
 | trigger | scenarios | k | entries of `evals/matrix.json` |
 |---|---|---|---|
-| a non-draft PR's `ready_for_review` and every later push (a newer push cancels the older run) | `critical/*`, `core/*` (negative controls are skipped under a real harness) | 3 | the baseline |
-| weekly (Mondays 06:17 UTC) | every pack, `--weekly` | 5 | the baseline, then every candidate |
-| `workflow_dispatch` | the `scenarios` input, else the smoke | 3 | the baseline, with the `harness` / `model` inputs over it |
+| a non-draft PR's `ready_for_review` and every later push (a newer push cancels the older run) | the 15 base scenarios of `evals/smoke.json` (7 critical, 8 core), `--no-variants` | 3 | the baseline |
+| weekly (Mondays 06:17 UTC) | one cell per pack (`evals/scenarios/<pack>/*`), variants included, `--weekly` | 5 | the baseline, then every candidate |
+| `workflow_dispatch` | the `scenarios` input (variants included), else the smoke | 3 | the baseline, with the `harness` / `model` inputs over it |
 
-The job runs on ubuntu-latest in the `evals` environment, against fermi-mcp `master` (or the
-`fermi_mcp_ref` input) as `--worker`. Fork PRs and drafts skip it. Without the environment
-secret `CLAUDE_CODE_OAUTH_TOKEN` it skips its steps with a notice. The token goes on a pipe
-(`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`), never an env var or argument, and
-`scripts/evals-ci.sh` hands it to each `run.mjs` (`--auth fd --judge-auth fd`) on a fresh pipe.
-`evals-ci.sh` compares each entry with the baseline (the baseline with itself), then
-`scripts/scan-secrets.mjs` scans the run log, the PR comment and the artifacts for the token and
-secret-shaped strings, and fails the job on a finding before anything is uploaded or posted. Only
-`summary.json` and `compare.md` per entry are uploaded, never `results.json` or the attempt dirs.
-A PR gets the report as a comment and the commit status `evals/smoke`.
+Three jobs: `plan` checks for the secret and builds the matrix; `run` is one ubuntu-latest job
+per cell (pack × entry; `timeout-minutes: 240`, `fail-fast: false`) in the `evals` environment,
+against fermi-mcp `master` (or the `fermi_mcp_ref` input) as `--worker`; `report` joins each
+entry's cells, compares the joined run with the baseline's (the baseline with itself), posts the
+PR comment and the commit status `evals/smoke`, and fails on a failed or missing cell. Fork PRs
+and drafts skip all three. Without the environment secret `CLAUDE_CODE_OAUTH_TOKEN`, `plan`
+ends green with the notice "Evals skipped: …" and `run` and `report` are skipped.
+
+Token: the run step reads the token on a pipe (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`), never
+an argument, and `scripts/evals-ci.sh run` hands it to `run.mjs` (`--auth fd --judge-auth fd`) and
+to `scripts/scan-secrets.mjs` on fresh pipes. One accepted exception: a `secrets.*` value can only
+reach a step through `env:` or `with:`, so it enters the one `run` step that needs it as the env var
+`EVAL_TOKEN`. That step's first line writes it to fd 3 and its second unsets it, before anything is
+started, so no child process inherits it (and the harness env is an allowlist anyway). No other
+step or job sees the secret; `report` runs outside the environment.
+
+Artifacts: each cell scans its run log and its `results.json`, `summary.json` and `outcome` for
+the token and secret-shaped strings, and only a clean cell uploads them, for the report job,
+for 1 day. `report` scans its comment and its public artifact (patterns only) before posting
+or uploading: `compare.md` per entry and `summary.json` per cell, for 30 days. The attempt dirs
+(transcripts) are never uploaded.
+
 `--auth fd` is claude-code only, so the matrix can only hold claude-code entries.
+`candidates: []` in `evals/matrix.json` is intentional for now: hbar is local-only (private),
+and pi and codex need their own environment secrets before they can be CI candidates.
 
 ## Reporting: judge and compare
 
