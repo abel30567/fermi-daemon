@@ -11,12 +11,14 @@
 // --session  resume the session id in this file (if any), then store the run's id there
 // --timeout-s watchdog: SIGTERM the harness after S seconds, SIGKILL 2s later (exit 124)
 //
-// Runs in the current directory (poll.sh cds to the daemon home first).
+// Runs in the current directory (poll.sh cds to the daemon home first). The prompt is
+// rendered with the local.json overlay next to it (lib/prompt.mjs).
 
-import { readFileSync, writeFileSync, existsSync, rmSync, createWriteStream } from 'node:fs'
+import { readFileSync, writeFileSync, appendFileSync, existsSync, rmSync, createWriteStream } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { loadHarness } from '../harness/index.mjs'
 import { ALLOWED_TOOLS, SETTING_SOURCES } from '../lib/run-policy.mjs'
+import { loadPrompt } from '../lib/prompt.mjs'
 
 const KILL_GRACE_MS = 2000
 
@@ -39,13 +41,22 @@ if (!o.prompt || !o.log) {
 // The lane is ours from here on: free it however we exit.
 if (o.lane) process.on('exit', () => rmSync(o.lane, { recursive: true, force: true }))
 
+// A missing prompts/local.json or key refuses to start, before any harness spawns.
+let prompt
+try {
+  prompt = loadPrompt(o.prompt)
+} catch (e) {
+  appendFileSync(o.log, `run-once: refusing to start: ${e.message}\n`)
+  process.exit(2)
+}
+
 const out = createWriteStream(o.log, { flags: 'a' })
 const note = (msg) => out.write(`run-once: ${msg}\n`)
 
 const resume = o.session && existsSync(o.session) ? readFileSync(o.session, 'utf8').trim() : ''
 const harness = await loadHarness()
 const run = harness.runOnce({
-  prompt: readFileSync(o.prompt, 'utf8'),
+  prompt,
   cwd: process.cwd(),
   model: o.model,
   maxTurns: o['max-turns'] != null ? Number(o['max-turns']) : undefined,
