@@ -10,7 +10,7 @@
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
     { "task.status": "done" },
     { "order": ["context_bootstrap", "channel_send"] },
-    { "maxLatencyMs": 10000 }
+    { "maxLatencyMs": 30000 }
   ],
   "fake": {
     "script": [

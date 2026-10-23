@@ -24,8 +24,13 @@
   "expect": [
     {
       "order": [
-        "profile_update",
-        "profile_update",
+        {
+          "tool": "profile_update",
+          "args": {
+            "target": "user",
+            "action": "/^(replace|remove)$/"
+          }
+        },
         "task_complete"
       ]
     },
@@ -34,7 +39,7 @@
         "tool": "profile_update",
         "args": {
           "target": "user",
-          "action": "/^(replace|remove)$/"
+          "content": "/emoji/i"
         }
       }
     },

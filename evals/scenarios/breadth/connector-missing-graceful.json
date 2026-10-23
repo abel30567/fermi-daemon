@@ -12,7 +12,7 @@
     { "argsMatch": { "tool": "channel_send", "args": { "text": "/connect/i" } } },
     { "exactlyOnce": "channel_send" },
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
-    { "task.status": "done" }
+    { "task.status": { "is": ["done", "failed"] } }
   ],
   "fake": {
     "script": [

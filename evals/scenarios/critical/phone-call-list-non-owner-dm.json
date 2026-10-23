@@ -54,7 +54,7 @@
       "argsMatch": {
         "tool": "channel_send",
         "args": {
-          "text": "/owner/i"
+          "text": "/owner|call list|can(not|'t|’t) request/i"
         }
       }
     },

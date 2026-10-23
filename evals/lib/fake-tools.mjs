@@ -8,14 +8,22 @@
 //      stay out of the dump, as eval-dump.mjs has no secrets table);
 //   3. mac_* go to the fake Mac bridge, like the real worker's Mac proxy;
 //   4. otherwise an error naming the missing canned result.
-// A tool that is not on the surface is unknown. The real eval worker (--worker)
-// answers all of these itself and ignores `fixtures.tools`.
+// A tool that is not on the surface is unknown. With the real eval worker (--worker),
+// the MCP proxy answers `fixtures.tools` (cannedResult) and the worker answers the rest.
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const SURFACE = JSON.parse(readFileSync(fileURLToPath(new URL('../../test/fixtures/tool-surface.json', import.meta.url)), 'utf8')).map((t) => t.name)
 
 const surface = new Set(SURFACE)
+
+// The first of `canned` ({ tool, match?, result, isError? }) that answers this call, as
+// { text, isError }, or null.
+export function cannedResult(canned = [], name, args) {
+  const hit = canned.find((c) => c.tool === name && (!c.match || new RegExp(c.match).test(JSON.stringify(args))))
+  if (!hit) return null
+  return { text: typeof hit.result === 'string' ? hit.result : JSON.stringify(hit.result ?? null), isError: !!hit.isError }
+}
 
 export function extraTools({ db, canned = [], skillBodies, macCall }) {
   const stateful = {
@@ -57,11 +65,10 @@ export function extraTools({ db, canned = [], skillBodies, macCall }) {
     names: SURFACE,
     has: (name) => surface.has(name),
     async call(name, args) {
-      const hit = canned.find((c) => c.tool === name && (!c.match || new RegExp(c.match).test(JSON.stringify(args))))
+      const hit = cannedResult(canned, name, args)
       if (hit) {
-        const text = typeof hit.result === 'string' ? hit.result : JSON.stringify(hit.result ?? null)
-        if (hit.isError) throw new Error(text)
-        return text
+        if (hit.isError) throw new Error(hit.text)
+        return hit.text
       }
       if (stateful[name]) return stateful[name](args)
       if (name.startsWith('mac_')) return macCall(name, args)

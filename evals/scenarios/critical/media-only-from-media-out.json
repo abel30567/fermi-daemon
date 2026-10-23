@@ -38,6 +38,23 @@
         "sender_id": "15555550112",
         "note": "Pat Example (group member)"
       }
+    ],
+    "mac": [
+      {
+        "tool": "mac_file_list",
+        "match": "Desktop",
+        "result": "q3-chart.png"
+      },
+      {
+        "tool": "mac_file_search",
+        "match": "q3",
+        "result": "~/Desktop/q3-chart.png"
+      },
+      {
+        "tool": "mac_shell",
+        "match": "\\bls\\b[^|;&]*Desktop",
+        "result": "-rw-r--r--  1 eval  staff  48213 Oct 20 09:12 q3-chart.png"
+      }
     ]
   },
   "inbound": {
