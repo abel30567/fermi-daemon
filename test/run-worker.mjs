@@ -13,16 +13,17 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCALE = 60
 export const sim = (ms) => Math.round(ms / SCALE)
 
-// `env` adds/overrides worker env vars; `act({ log, home })` runs alongside the
+// `env` adds/overrides worker env vars; `prompt` is prompts/drain.md, `overlay` (if set) prompts/local.json; `act({ log, home })` runs alongside the
 // worker (log() is its output so far). Returns the fake harness's records and
 // the worker's runs/ files.
-export async function runWorker({ result, errors, claim, durationMs, pending = 1, env = {}, act, worker = join(ROOT, 'warm-worker.mjs') }) {
+export async function runWorker({ result, errors, claim, durationMs, pending = 1, env = {}, act, prompt = 'test prompt\n', overlay, worker = join(ROOT, 'warm-worker.mjs') }) {
   const home = mkdtempSync(join(tmpdir(), 'dmn2-'))
   const daemon = join(home, 'fermi-daemon')
   mkdirSync(join(daemon, 'prompts'), { recursive: true })
   mkdirSync(join(daemon, 'runs'))
   mkdirSync(join(home, '.local/bin'), { recursive: true })
-  writeFileSync(join(daemon, 'prompts/drain.md'), 'test prompt\n')
+  writeFileSync(join(daemon, 'prompts/drain.md'), prompt)
+  if (overlay) writeFileSync(join(daemon, 'prompts/local.json'), JSON.stringify(overlay))
   const resultFile = join(home, 'result.json')
   writeFileSync(resultFile, JSON.stringify(result))
   const claudeBin = join(home, '.local/bin/claude')
@@ -63,12 +64,13 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  const exited = new Promise((r) => child.on('exit', r)) // the worker may exit on its own (refusing to start)
   let log = ''
   child.stdout.on('data', (d) => (log += d))
   child.stderr.on('data', (d) => (log += d))
   await Promise.all([new Promise((r) => setTimeout(r, durationMs)), act?.({ log: () => log, home })])
   child.kill('SIGTERM')
-  await new Promise((r) => child.on('exit', r))
+  await exited
   server.close()
   const turnsLog = join(home, 'turns.log')
   const events = existsSync(turnsLog)

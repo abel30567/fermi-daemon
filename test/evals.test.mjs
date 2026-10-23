@@ -8,7 +8,8 @@ import { ROOT } from './run-worker.mjs'
 import { evaluate, outbound } from '../evals/lib/assertions.mjs'
 import { validate } from '../evals/lib/json-schema.mjs'
 import { assertLocalUrls, isLocalUrl } from '../evals/lib/net.mjs'
-import { runAttempt } from '../evals/lib/runner.mjs'
+import { DRAIN_PROMPT, EVAL_OVERLAY, runAttempt } from '../evals/lib/runner.mjs'
+import { loadPrompt } from '../lib/prompt.mjs'
 import { loadScenario } from '../evals/lib/scenario.mjs'
 import * as fake from '../evals/harness/fake.mjs'
 
@@ -102,12 +103,13 @@ describe('AC2: fake harness, localhost only', () => {
     assert.match(r.stderr, /localhost-only: blocked connection to 192\.0\.2\.1/)
   })
 
-  test('the harness gets prompts/drain.md, only mcp__fermi__* tools and no claude.ai connectors', async () => {
+  test('the harness gets prompts/drain.md rendered with the eval overlay, only mcp__fermi__* tools and no claude.ai connectors', async () => {
     let seen
     const spy = { runOnce: (o) => ((seen = o), fake.runOnce(o)) }
     const r = await attempt(scenario(), { harness: spy })
     assert.equal(r.pass, true, JSON.stringify(r.failed))
-    assert.equal(seen.prompt, readFileSync(join(ROOT, 'prompts/drain.md'), 'utf8'))
+    assert.equal(seen.prompt, loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY))
+    assert.doesNotMatch(seen.prompt, /\{\{/)
     assert.deepEqual(seen.allowedTools, ['mcp__fermi__*'])
     assert.equal(seen.env.ENABLE_CLAUDEAI_MCP_SERVERS, 'false')
   })
