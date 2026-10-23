@@ -180,7 +180,7 @@ mid-turn API errors can only be injected there, since the model API is not proxi
 4. Enqueues `inbound` through the channel webhook, the same way the bridge does.
 5. Runs one drain through the adapter (`runOnce`, `prompts/drain.md` as the
    prompt, rendered with the eval overlay `fixtures/prompt-overlay.json`: owner
-   `U0EVALOWNER` on `sl`, finance channel `C0FINANCE`, call list
+   `U0EVALOWNER` on `sl`, owner name `Eval`, finance channel `C0FINANCE`, call list
    `+15555550100`) until it ends or `--timeout-ms` passes.
 6. Dumps state, adds what the fakes recorded (`state.fakes`), and evaluates `expect`.
    A timeout or a `turn_end` with `ok: false` adds a failed assertion, so such an
