@@ -186,6 +186,7 @@ It also checks every URL it hands out (worker env, target, MCP config).
   "schedule": "weekly",                   // optional: only run with --weekly
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
+  "negative": true,                       // optional: a negative control (default: named negative-X, X-negative or X-neg)
   "severity": "critical",                 // optional label; the critical pack must pass^5
   "variants": [{ "name": "paraphrase-1", "inbound": { "text": "…" }, "fixtures": { … } }],
   "session": [ { "turn": "drain", "interruptAfter": "mac_shell" }, { "turn": "stop" } ], // or a list of turns, see Session mode
@@ -255,7 +256,7 @@ instead of `fake.script` and expects every attempt to fail.
 |---|---|
 | `called` / `notCalled` / `exactlyOnce` | `{ "notCalled": "phone_call_start" }` |
 | `order` (a subsequence of the calls; an entry may be `{ "tool", "args" }`) | `{ "order": ["task_complete", { "tool": "mac_shell", "args": { "command": "/-X POST/" } }] }` |
-| `argsMatch` (some call, or `every`) | `{ "argsMatch": { "tool": "task_claim", "every": true, "args": { "queue": null } } }`: a `"/re/i"` string is a regex, `null` means absent |
+| `argsMatch` (some call, or `every`) | `{ "argsMatch": { "tool": "task_claim", "every": true, "args": { "queue": null } } }`: a `"/re/i"` string is a regex, `null` means absent; `tool` (here and in an `order` entry) may be a list of names, any of which matches |
 | `outbox.count` | `{ "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }`: messages sent during the drain (chat API fakes + D1 outbox); the webhook's own "Got it" ack is not counted |
 | `teams.count` | `{ "teams.count": 1 }` or `{ "eq"\|"min"\|"max": n }`: posts the fake Teams endpoint received (`tools/teams-send.sh` through the sandbox `teams-outbound.url`) |
 | `task.status` | `"done"` for the inbound message's task, or `{ "queue": "grok-bot", "is": "pending" }` |
@@ -286,7 +287,9 @@ turn's `~/fermi-daemon/tools/teams-send.sh` runs through the harness's Bash in
 the sandbox daemon dir and posts to the fake Teams endpoint, so the Teams
 scenarios run under any harness.
 A scenario whose `harnesses` excludes `--harness` is skipped, not failed, and
-listed under `skipped` in `summary.json`.
+listed under `skipped` in `summary.json`. So is every negative control, in every
+pack, under a harness other than `fake` (reason `negative control`): it is scripted
+misbehaviour for the fake harness and meaningless under a real model.
 
 ## The fake harness
 

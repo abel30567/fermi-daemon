@@ -9,7 +9,8 @@
 //                                                   an entry may be { "tool", "args" } to match one call's args
 //   { "argsMatch": { "tool": "channel_send", "args": { "text": "/\\+15555550100/" }, "every": false } }
 //                                                   some (every, with every:true) call's args match;
-//                                                   "/re/flags" strings are regexes, null means absent
+//                                                   "/re/flags" strings are regexes, null means absent;
+//                                                   here and in order, "tool" may be a list of names (any of them)
 //   { "outbox.count": 1 }  or  { "outbox.count": { "eq"|"min"|"max": n, "channel"?, "chat_id"? } }
 //                                                   messages the target sent during the drain (chat API
 //                                                   fakes + D1 outbox); the webhook's own ack is excluded
@@ -163,6 +164,8 @@ const countCheck = (n, spec) => {
   return null
 }
 
+const isTool = (c, tool) => (Array.isArray(tool) ? tool.includes(c.name) : c.name === tool)
+
 const CHECKS = {
   called: (tool, { calls }) => (calls.some((c) => c.name === tool) ? null : `${tool} was never called`),
   notCalled: (tool, { calls }) => {
@@ -174,13 +177,13 @@ const CHECKS = {
     return n === 1 ? null : `${tool} was called ${n} time(s), expected exactly once`
   },
   order: (tools, { calls }) => {
-    const hit = (c, t) => (typeof t === 'string' ? c.name === t : c.name === t.tool && matches(c.input, t.args ?? {}))
+    const hit = (c, t) => (typeof t === 'string' ? c.name === t : isTool(c, t.tool) && matches(c.input, t.args ?? {}))
     let i = 0
     for (const c of calls) if (i < tools.length && hit(c, tools[i])) i++
     return i === tools.length ? null : `calls ${JSON.stringify(calls.map((c) => c.name))} do not contain the order ${JSON.stringify(tools)} (stuck at ${JSON.stringify(tools[i])})`
   },
   argsMatch: ({ tool, args, every = false }, { calls }) => {
-    const mine = calls.filter((c) => c.name === tool)
+    const mine = calls.filter((c) => isTool(c, tool))
     if (!mine.length) return `${tool} was never called`
     const ok = mine.map((c) => matches(c.input, args))
     if (every ? ok.every(Boolean) : ok.some(Boolean)) return null
