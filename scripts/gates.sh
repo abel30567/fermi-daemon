@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+node scripts/private-scan.mjs
 for d in wa-bridge dc-bridge sl-bridge; do
   (cd "$d" && npm ci --no-audit --no-fund && npm test && npm run typecheck)
 done
