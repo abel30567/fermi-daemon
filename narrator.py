@@ -147,7 +147,7 @@ def main():
 
     def post(text):
         nonlocal last_post
-        if not channel or not chat_id:
+        if not channel or not chat_id or is_group(channel, chat_id):
             return
         now = time.time()
         if now - last_post < POST_MIN_INTERVAL:
@@ -227,6 +227,19 @@ def main():
                         text = describe(block.get("name", ""), block.get("input", {}))
                         if text:
                             post(text)
+
+
+def is_group(channel, chat_id):
+    # Narrate only in DMs: command lines in a shared chat expose the private setup.
+    if channel == "wa":
+        return chat_id.endswith("@g.us")
+    if channel == "tg":
+        return chat_id.startswith("-")
+    if channel == "sl":
+        return chat_id[:1] in ("C", "G")
+    if channel == "dc":
+        return chat_id.isdigit()
+    return False
 
 
 def _content_blocks(message):
