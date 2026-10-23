@@ -11,6 +11,9 @@
 //                       the same call, but `/bin/sh -c <shell>` really runs, under
 //                       the attempt's `sandbox` (harness/sandbox.mjs; refused without
 //                       one); the result is its output, ok when it exits 0
+//   { internal, args?, result? }
+//                       a call to another of the harness's own tools, e.g.
+//                       "ToolSearch" loading deferred tools; nothing runs
 //   { sleepMs }         think for that long (a number, or a string such as "${turn}")
 //   { apiError: { status?, text } }
 //                       the model API fails mid-turn: the turn ends here with
@@ -91,6 +94,11 @@ async function play(steps, { mcp, ctx, emit, stopped, o }) {
       const command = fill(step.shell, ctx)
       emit({ type: 'tool_call', id, name: 'Bash', rawName: 'Bash', input: { command } })
       emit({ type: 'tool_result', id, ...(step.exec ? execShell(command, o.sandbox, o.cwd) : { ok: true, content: String(step.result ?? '') }) })
+      continue
+    }
+    if (step.internal != null) {
+      emit({ type: 'tool_call', id, name: step.internal, rawName: step.internal, input: fill(step.args ?? {}, ctx) })
+      emit({ type: 'tool_result', id, ok: true, content: String(step.result ?? '') })
       continue
     }
     const input = fill(step.args ?? {}, ctx)

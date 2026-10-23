@@ -28,6 +28,7 @@
       },
       "latencyMs": { "type": "integer", "minimum": 0 },
       "toolCalls": { "type": "array", "items": { "type": "string" } },
+      "internalToolCalls": { "type": "array", "items": { "type": "string" } },
       "tokens": {
         "type": ["object", "null"],
         "additionalProperties": false,
