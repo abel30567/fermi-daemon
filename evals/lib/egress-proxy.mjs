@@ -8,12 +8,14 @@ import net from 'node:net'
 // Anthropic (claude-code, pi), ChatGPT/OpenAI (codex) and xAI (hbar's grok route).
 export const MODEL_HOSTS = ['api.anthropic.com', 'chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.x.ai']
 
-export const allowedTarget = (authority, hosts = MODEL_HOSTS) => {
+// `local`: exact 127.0.0.1 authorities also tunnelled (--auth proxy: CLIProxyAPI's 127.0.0.1:8317).
+export const allowedTarget = (authority, hosts = MODEL_HOSTS, local = []) => {
+  if (local.includes(String(authority ?? '').toLowerCase())) return true
   const m = /^([a-z0-9.-]+):(\d+)$/i.exec(String(authority ?? ''))
   return !!m && m[2] === '443' && hosts.includes(m[1].toLowerCase())
 }
 
-export async function startEgressProxy({ hosts = MODEL_HOSTS, onDeny = () => {} } = {}) {
+export async function startEgressProxy({ hosts = MODEL_HOSTS, local = [], onDeny = () => {} } = {}) {
   const server = http.createServer((req, res) => {
     onDeny(`${req.method} ${req.url}`) // plain HTTP is never forwarded
     res.writeHead(403).end('egress denied (eval sandbox)\n')
@@ -22,7 +24,7 @@ export async function startEgressProxy({ hosts = MODEL_HOSTS, onDeny = () => {} 
   server.on('connect', (req, client, head) => {
     tunnels.add(client)
     client.on('close', () => tunnels.delete(client))
-    if (!allowedTarget(req.url, hosts)) {
+    if (!allowedTarget(req.url, hosts, local)) {
       onDeny(`CONNECT ${req.url}`)
       return client.end('HTTP/1.1 403 Forbidden\r\n\r\n')
     }

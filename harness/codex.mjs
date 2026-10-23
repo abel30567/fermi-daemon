@@ -23,7 +23,7 @@
 //              fails inside ours, and ours already bounds it. Never set without `sandbox`.
 //   runOnce only: skipPermissions (--dangerously-bypass-approvals-and-sandbox)
 // allowedTools and runOnce's maxTurns/settingSources/resume have no codex
-// equivalent and are ignored. tokenFd, configDir and scrubSubprocessEnv are
+// equivalent and are ignored. tokenFd, tokenPipe, configDir and scrubSubprocessEnv are
 // refused (they promise an isolation codex cannot give; see below).
 //
 // Known gaps vs the Claude Code adapter:
@@ -53,7 +53,7 @@ import { bareToolName } from './index.mjs'
 
 export const name = 'codex'
 
-const UNSUPPORTED = ['tokenFd', 'configDir', 'scrubSubprocessEnv']
+const UNSUPPORTED = ['tokenFd', 'tokenPipe', 'configDir', 'scrubSubprocessEnv']
 // Features that reach past the eval's MCP servers: ChatGPT connectors, plugins, the user's browser and desktop.
 const DISABLED_FEATURES = ['apps', 'plugins', 'browser_use', 'computer_use']
 // codex's always-on built-ins as the normalized stream names them (its shell is `Bash`).
@@ -92,11 +92,11 @@ export function codexConfig(mcpConfig, { sandboxMode } = {}) {
 function spawnCodex(args, o) {
   const bad = UNSUPPORTED.filter((k) => o[k] != null)
   if (bad.length) throw new Error(`codex adapter: unsupported option(s) ${bad.join(', ')} (see harness/codex.mjs)`)
-  const env = { ...process.env, ...o.env, ...o.sandbox?.env }
+  const env = { ...(o.sandbox ? {} : process.env), ...o.env, ...o.sandbox?.env } // sandboxed: nothing ambient
   let home = null
   if (o.mcpConfig) {
     const config = codexConfig(o.mcpConfig, o.sandbox ? { sandboxMode: 'danger-full-access' } : {})
-    const auth = join(env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
+    const auth = join(env.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
     home = mkdtempSync(join(o.sandbox?.root ?? tmpdir(), 'codex-home-'))
     writeFileSync(join(home, 'config.toml'), config)
     if (existsSync(auth)) copyFileSync(auth, join(home, 'auth.json'))

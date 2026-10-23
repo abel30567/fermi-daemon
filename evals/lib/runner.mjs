@@ -20,7 +20,7 @@ import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
 import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
-import { assertLocalUrls, isLocalUrl } from './net.mjs'
+import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
 import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
@@ -98,12 +98,9 @@ async function seedSecrets(url, secrets = []) {
 
 const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v))))
 
-// A localhost model endpoint the harness is pointed at (CLIProxyAPI via ANTHROPIC_BASE_URL / OPENAI_BASE_URL).
-export const localModelPorts = (env = process.env) =>
-  ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL'].filter((k) => isLocalUrl(env[k])).map((k) => new URL(env[k]).port || '80')
-
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
-export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [] }) {
+// `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
+export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth }) {
   const dir = join(outDir, scenario.name, String(attempt))
   mkdirSync(dir, { recursive: true })
   const closers = []
@@ -182,9 +179,12 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     // A per-attempt HOME for adapters that read MCP servers from it (pi); others ignore it.
     const sandboxHome = mkdtempSync(join(tmpdir(), 'eval-home-'))
     closers.push(async () => rmSync(sandboxHome, { recursive: true, force: true }))
-    const egress = await startEgressProxy({ onDeny: (detail) => note({ type: 'note', source: 'egress', detail }) })
+    // Read now, not at startup: a keychain token is short-lived. Never logged; only scanned for.
+    const { secrets = [], localPorts = [], egressAllow = [], env: authEnv = {}, ...authOpts } = auth?.attempt() ?? {}
+    assertLocalUrls(urlEntries(authEnv))
+    const egress = await startEgressProxy({ local: egressAllow, onDeny: (detail) => note({ type: 'note', source: 'egress', detail }) })
     closers.push(egress.close)
-    const sandbox = createSandbox({ root: sandboxHome, readable: [dir, ...sandboxReadable], localPorts: [proxy.port, ...localModelPorts()], egressProxy: egress.url })
+    const sandbox = createSandbox({ root: sandboxHome, readable: [dir, ...sandboxReadable], localPorts: [proxy.port, ...localPorts], egressProxy: egress.url })
     const opts = {
       model,
       cwd: dir,
@@ -201,13 +201,15 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
       env: {
         ENABLE_CLAUDEAI_MCP_SERVERS: 'false', // no claude.ai connectors (the production Fermi) next to the eval server
         CLAUDE_CONFIG_DIR: join(sandbox.root, '.claude'), // not an inherited real config dir
+        ...authEnv,
       },
+      ...authOpts, // tokenPipe (claude-code), scrubSubprocessEnv, provider (pi)
       script: scenario.fake?.script, // the fake harness's script and built-ins; real adapters ignore them
       builtins: scenario.fake?.builtins,
     }
     if (canary) {
       await plantCanary(canary, { opts, target })
-      canaries = { canary, token: heldToken() }
+      canaries = { canary, tokens: [heldToken(), ...secrets].filter(Boolean) }
     }
     const record = (events) => {
       events.on('event', note)
@@ -276,6 +278,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     scenario: scenario.name,
     ...(scenario.category != null && { category: String(scenario.category) }),
     attempt,
+    authMode: auth?.mode ?? 'none', // the mode only, never a value
     pass: failed.length === 0,
     expectedOutcome: scenario.expectOutcome ?? 'pass',
     failed: failed.map((f) => ({ assertion: f.assertion, message: f.message })),
