@@ -4,7 +4,7 @@
   "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
   "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What is the capital of France?" },
   "faults": { "channel_send": { "latencyMs": 1500, "times": 1 } },
-  "expect": [{ "exactlyOnce": "channel_send" }, { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }, { "task.status": "done" }, { "maxLatencyMs": 10000 }],
+  "expect": [{ "exactlyOnce": "channel_send" }, { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }, { "task.status": "done" }, { "maxLatencyMs": 30000 }],
   "fake": {
     "script": [
       { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },

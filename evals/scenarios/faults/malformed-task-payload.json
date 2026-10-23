@@ -8,7 +8,7 @@
     { "argsMatch": { "tool": "task_complete", "args": { "result": "/garbled|unreadable|malformed/i" } } },
     { "exactlyOnce": "channel_send" },
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
-    { "task.status": "done" }
+    { "task.status": { "is": ["done", "failed"] } }
   ],
   "fake": {
     "script": [

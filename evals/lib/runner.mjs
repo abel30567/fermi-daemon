@@ -221,6 +221,7 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
     const proxy = await startMcpProxy({
       target: target.url,
       faults: scenario.faults,
+      canned: worker ? fixtures?.tools : [], // the fake target answers its own
       onError: (err) => note({ type: 'note', source: 'mcp-proxy', detail: [err?.message ?? String(err), err?.cause?.message].filter(Boolean).join(': ') }), // non-fatal
     })
     closers.push(proxy.close)

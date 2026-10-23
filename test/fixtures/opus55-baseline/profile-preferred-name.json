@@ -1,0 +1,180 @@
+{
+ "scenario": "profile-preferred-name",
+ "class": "OVERSTRICT",
+ "recorded": {
+  "pass": false,
+  "failed": [
+   "no profile_update call matches {\"user\":\"/Sam/\"}; inputs: [{\"target\":\"user\",\"action\":\"replace\",\"match\":\"Name: Eval Owner.\",\"content\":\"Name: Eval Owner; preferred name Sam — always address them as Sam, never \\\"Eval\\\".\"}]"
+  ]
+ },
+ "latencyMs": 12534,
+ "trace": [
+  {
+   "type": "tool_call",
+   "id": "toolu_01K8gejh69SSEBGU3BMFC2np",
+   "name": "ToolSearch",
+   "rawName": "ToolSearch",
+   "input": {
+    "query": "select:mcp__fermi__task_claim,mcp__fermi__context_bootstrap,mcp__fermi__channel_send,mcp__fermi__task_complete,mcp__fermi__profile_update",
+    "max_results": 5
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01K8gejh69SSEBGU3BMFC2np",
+   "ok": true,
+   "content": "    "
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_017Eeo4cfqpTSDx8vyjw3QGR",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_017Eeo4cfqpTSDx8vyjw3QGR",
+   "ok": true,
+   "content": "{\"tasks\":[{\"id\":\"c182532c-3144-4a62-88c2-430a509c87f9\",\"channel\":\"sl\",\"sender\":\"U0EVALOWNER\",\"chat_id\":\"D0EVAL\",\"payload\":\"From now on call me Sam, not Eval.\",\"created_at\":1792729406843,\"queue\":\"main\"}],\"total\":1}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_014C2uaHV5eoi7bNhUaJ5aFK",
+   "name": "context_bootstrap",
+   "rawName": "mcp__fermi__context_bootstrap",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_014C2uaHV5eoi7bNhUaJ5aFK",
+   "ok": true,
+   "content": "{\"agent_doc\":{\"body\":\"Eval instance.\",\"usage\":14,\"limit\":2200},\"user_doc\":{\"body\":\"Name: Eval Owner. Prefers short answers.\",\"usage\":40,\"limit\":1375},\"prior_summary\":null,\"history\":[{\"role\":\"user\",\"body\":\"From now on call me Sam, not Eval.\",\"created_at\":1792729406842}],\"pinned_memories\":[{\"kind\":\"fact\",\"body\":\"Fermi is a personal MCP agent with cross-host memory.\"}]}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01ATBQv2S2QnW15N66evAZue",
+   "name": "profile_update",
+   "rawName": "mcp__fermi__profile_update",
+   "input": {
+    "target": "user",
+    "action": "replace",
+    "match": "Name: Eval Owner.",
+    "content": "Name: Eval Owner; preferred name Sam — always address them as Sam, never \"Eval\"."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01ATBQv2S2QnW15N66evAZue",
+   "ok": true,
+   "content": "{\"ok\":true,\"usage\":80,\"limit\":1375}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01UPCV1EeT7LUVNv4u8GbEmy",
+   "name": "channel_send",
+   "rawName": "mcp__fermi__channel_send",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL",
+    "text": "Got it, Sam. Saved. 👍"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01UPCV1EeT7LUVNv4u8GbEmy",
+   "ok": true,
+   "content": "{\"ok\":true,\"channel\":\"sl\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01Gf4F3z6oJUDRP5pqRDY5VS",
+   "name": "task_complete",
+   "rawName": "mcp__fermi__task_complete",
+   "input": {
+    "id": "c182532c-3144-4a62-88c2-430a509c87f9",
+    "status": "done",
+    "result": "Updated user profile: preferred name Sam; confirmed in chat."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01Gf4F3z6oJUDRP5pqRDY5VS",
+   "ok": true,
+   "content": "{\"ok\":true}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_014FEMawbksGRP5fyMAZ9yy7",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_014FEMawbksGRP5fyMAZ9yy7",
+   "ok": true,
+   "content": "{\"tasks\":[],\"total\":0}"
+  },
+  {
+   "type": "text",
+   "text": "The queue is empty. There was one task: the owner asked to be called Sam instead of Eval. I updated their user profile so future replies use \"Sam\" and never \"Eval\", and sent \"Got it, Sam. Saved. 👍\" in that Slack DM. The task is marked done."
+  },
+  {
+   "type": "turn_end",
+   "ok": true,
+   "kind": "ok"
+  }
+ ],
+ "state": {
+  "profile": {
+   "agent": "Eval instance.",
+   "user": "Name: Eval Owner; preferred name Sam — always address them as Sam, never \"Eval\"."
+  },
+  "tasks": [
+   {
+    "id": "c182532c-3144-4a62-88c2-430a509c87f9",
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat_id": "D0EVAL",
+    "status": "done",
+    "queue": "main",
+    "result": "Updated user profile: preferred name Sam; confirmed in chat."
+   }
+  ],
+  "outbox": [],
+  "fakes": {
+   "slack": [
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it — working on it."
+     },
+     "phase": "inbound"
+    },
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it, Sam. Saved. 👍"
+     },
+     "phase": "drain"
+    }
+   ],
+   "telegram": [],
+   "discord": []
+  }
+ }
+}

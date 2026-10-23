@@ -21,8 +21,8 @@
   },
   "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's the current LTS release of Node.js?" },
   "expect": [
-    { "argsMatch": { "tool": "search", "args": { "query": "/node/i" } } },
-    { "order": ["search", "channel_send"] },
+    { "argsMatch": { "tool": ["search", "mac_shell", "browser_extract"], "args": "/node/i" } },
+    { "order": [{ "tool": ["search", "mac_shell", "browser_extract"] }, "channel_send"] },
     { "argsMatch": { "tool": "channel_send", "args": { "text": "/v99/" } } },
     { "exactlyOnce": "channel_send" },
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },

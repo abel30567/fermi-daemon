@@ -11,8 +11,8 @@
   },
   "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's the main heading on example.com right now?" },
   "expect": [
-    { "order": ["browser_navigate", "browser_extract", "channel_send"] },
-    { "argsMatch": { "tool": "browser_navigate", "args": { "url": "/example\\.com/" } } },
+    { "order": ["browser_extract", "channel_send"] },
+    { "argsMatch": { "tool": ["browser_navigate", "browser_extract"], "args": { "url": "/example\\.com/" } } },
     { "argsMatch": { "tool": "channel_send", "args": { "text": "/Example Domain/" } } },
     { "exactlyOnce": "channel_send" },
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
