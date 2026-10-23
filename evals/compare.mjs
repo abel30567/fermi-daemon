@@ -10,6 +10,8 @@
 // Invalid attempts (status "invalid", infrastructure-limited: evals/lib/runner.mjs) are
 // left out of every rate and counted per category; when more than 10% of a category's
 // attempts in either run are invalid, the verdict is INCONCLUSIVE.
+// Setup errors (status "setup_error": a seeded fixture section never landed on the eval
+// target) are left out of every rate the same way and counted per category.
 // A category with a graded attempt whose semantic assertion ran with the judge
 // disabled (judge: "disabled", calibration below 97%: evals/lib/semantic.mjs) is
 // INCONCLUSIVE too: that attempt was graded on the regex alone.
@@ -84,17 +86,22 @@ const ratio = (a, b) => (a == null || b == null ? null : b === 0 ? (a === 0 ? 1 
 const mean = (xs) => (xs.length ? xs.reduce((a, x) => a + x, 0) / xs.length : null)
 
 // Negative controls (expectedOutcome "fail") grade the grader, not the harness, so they are left out.
-// Invalid attempts were never graded, so they are left out too (and counted per category).
+// Invalid and setup_error attempts were never graded, so they are left out too (and counted per category).
 const controls = (results) => results.filter((r) => r.expectedOutcome !== 'fail')
 const invalid = (r) => r.status === 'invalid'
-const graded = (results) => controls(results).filter((r) => !invalid(r))
+const setupError = (r) => r.status === 'setup_error'
+const graded = (results) => controls(results).filter((r) => !invalid(r) && !setupError(r))
 
 function categories(results, k, judge) {
   const out = {}
   for (const r of controls(results)) {
-    const c = (out[r.category ?? 'uncategorized'] ??= { attempts: 0, passes: 0, invalidAttempts: 0, semanticDisabledAttempts: 0, scenarios: {} })
+    const c = (out[r.category ?? 'uncategorized'] ??= { attempts: 0, passes: 0, invalidAttempts: 0, setupErrorAttempts: 0, semanticDisabledAttempts: 0, scenarios: {} })
     if (invalid(r)) {
       c.invalidAttempts++
+      continue
+    }
+    if (setupError(r)) {
+      c.setupErrorAttempts++
       continue
     }
     c.attempts++
@@ -216,6 +223,7 @@ export function compare(baseline, candidate, { k = GATE.k, judge = {} } = {}) {
 const pct = (x) => (x == null ? 'n/a' : `${(x * 100).toFixed(1)}%`)
 const ci = (w) => (w ? `[${pct(w.lo)}, ${pct(w.hi)}]` : 'n/a')
 const num = (x, d = 2) => (x == null ? 'n/a' : Number.isFinite(x) ? x.toFixed(d) : String(x))
+const setupErrors = (cs) => Object.values(cs).reduce((a, c) => a + c.setupErrorAttempts, 0)
 const times = (x) => (x == null ? 'n/a' : `${num(x)}×`)
 
 export function verdictLine(report) {
@@ -251,6 +259,8 @@ export function renderMarkdown(report) {
       const frac = (x) => `${x.passes}/${x.attempts} (${pct(x.passRate)})`
       return `| ${n} | ${cell(b, frac)} | ${cell(b, (x) => ci(x.wilson))} | ${cell(b, (x) => pct(x.passK))} | ${cell(c, frac)} | ${cell(c, (x) => ci(x.wilson))} | ${cell(c, (x) => pct(x.passK))} | ${num(b?.judgeScore)} / ${num(c?.judgeScore)} | ${b?.invalidAttempts ?? '–'} / ${c?.invalidAttempts ?? '–'} |`
     }),
+    '',
+    `Setup errors (seed did not land, never graded): baseline ${setupErrors(cats.baseline)}, candidate ${setupErrors(cats.candidate)}`,
     '',
     '## Latency, cost, tool calls',
     '',
