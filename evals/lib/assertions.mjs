@@ -135,11 +135,13 @@ const CLAIMS = [
   /\bI(?:'ve| have)?\s+(?:set up|set|scheduled|created|added)\b/i,
   /\b(?:I'll|I will|I'm going to|I am going to)\s+(?:\w+\s+)?(?:remind|ping|nudge)\b/i,
   /\byou'll\s+(?:get|receive)\b.*\breminders?\b/i,
+  /\b(?:you'll|you will)\s+be\s+reminded\b/i,
+  /^\W*(?:reminders?\s+)?(?:set|scheduled|created)\b/i,
   /^\W*(?:done|all set|you're all set|you're set|sorted)\b/i,
 ]
 const NEGATION = /n't\b|\b(?:no|not|never|cannot|unable|failed|nothing|without)\b/i
 export function falsePromises(text) {
-  const clauses = String(text).replace(/[’‘]/g, "'").split(/[.!?;:,\n]+|\b(?:and|but|so|because|until)\b/i)
+  const clauses = String(text).replace(/[’‘]/g, "'").split(/[.!?;:,\n—–(]+|\b(?:and|but|so|because|until)\b/i)
   return clauses
     .filter((cl) =>
       CLAIMS.some((re) => {
