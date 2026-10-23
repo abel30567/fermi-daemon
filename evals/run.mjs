@@ -26,7 +26,7 @@ import { createAuth } from './lib/auth.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
 import { createPacer } from './lib/pacing.mjs'
 import { runAttempt, summarize } from './lib/runner.mjs'
-import { expandScenarios, expandVariants, loadScenario } from './lib/scenario.mjs'
+import { expandScenarios, expandVariants, isNegativeControl, loadScenario } from './lib/scenario.mjs'
 import { fakeAsk, prepareSemantic, semanticSpecs } from './lib/semantic.mjs'
 
 // URL-valued env the runner, wrangler or the harness would inherit. Any of them
@@ -117,11 +117,16 @@ async function main() {
       return 2
     }
   }
-  // A scenario that lists `harnesses` only runs under those; elsewhere it is reported as skipped.
-  const skipped = scenarios
-    .filter((s) => s.harnesses && !s.harnesses.includes(opts.harness))
-    .map((s) => ({ scenario: s.name, reason: `harnesses: ${s.harnesses.join(', ')}` }))
-  scenarios = scenarios.filter((s) => !s.harnesses || s.harnesses.includes(opts.harness))
+  // A scenario that lists `harnesses` only runs under those, and a negative control (scripted
+  // misbehaviour, meaningless under a real model) only under the fake; elsewhere either is reported as skipped.
+  const skipReason = (s) =>
+    s.harnesses && !s.harnesses.includes(opts.harness)
+      ? `harnesses: ${s.harnesses.join(', ')}`
+      : opts.harness !== 'fake' && isNegativeControl(s)
+        ? 'negative control'
+        : null
+  const skipped = scenarios.filter(skipReason).map((s) => ({ scenario: s.name, reason: skipReason(s) }))
+  scenarios = scenarios.filter((s) => !skipReason(s))
   for (const s of skipped) console.log(`SKIP ${s.scenario} (${s.reason})`)
   const harness = opts.harness === 'fake' ? await import('./harness/fake.mjs') : await loadHarness(opts.harness)
   const out = opts.out ?? join('runs', `evals-${new Date().toISOString().replace(/[:.]/g, '-')}`)
