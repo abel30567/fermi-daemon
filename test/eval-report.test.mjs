@@ -240,7 +240,7 @@ describe('judge', () => {
     assert.equal((await fakeJudge({ ...input, replies: [' '] })).helpful, 1)
   })
 
-  test('modelJudge goes through the harness adapter with the configured model and no MCP servers', async () => {
+  test('modelJudge goes through the harness adapter with the configured model, no tools, no MCP servers, sandboxed', async () => {
     let seen
     const harness = {
       runOnce(o) {
@@ -256,6 +256,15 @@ describe('judge', () => {
     assert.deepEqual(seen.mcp, { mcpServers: {} })
     assert.equal(seen.maxTurns, 1)
     assert.equal(seen.env.ENABLE_CLAUDEAI_MCP_SERVERS, 'false')
+    // the eval isolation flags, inside the OS sandbox behind the egress proxy
+    assert.deepEqual(seen.tools, [])
+    assert.equal(seen.strictMcpConfig, true)
+    assert.equal(seen.settingSources, 'project,local')
+    assert.equal(seen.permissionMode, 'default')
+    assert.equal(typeof seen.sandbox?.wrap, 'function')
+    assert.equal(seen.sandbox.env.HOME, seen.sandbox.root)
+    assert.match(seen.sandbox.env.HTTPS_PROXY, /^http:\/\/127\.0\.0\.1:\d+$/)
+    assert.equal(seen.env.CLAUDE_CONFIG_DIR, join(seen.sandbox.root, '.claude'))
     // no credential options of its own: the adapter reads the same env as an eval attempt
     for (const k of ['bin', 'configDir', 'tokenFd']) assert.equal(seen[k], undefined, k)
   })

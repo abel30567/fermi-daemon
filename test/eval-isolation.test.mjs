@@ -18,7 +18,8 @@ import * as pi from '../harness/pi.mjs'
 import { createSandbox, sandboxBackend } from '../harness/sandbox.mjs'
 import * as fake from '../evals/harness/fake.mjs'
 import { allowedTarget, startEgressProxy } from '../evals/lib/egress-proxy.mjs'
-import { checkMcpConfig, isolationBreach } from '../evals/lib/isolation.mjs'
+import { allowedBuiltins, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from '../evals/lib/isolation.mjs'
+import { loadScenario } from '../evals/lib/scenario.mjs'
 import { runAttempt, summarize } from '../evals/lib/runner.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -46,22 +47,28 @@ const argvOf = (raw) => JSON.parse(raw.split('\n').find((l) => l.includes('"subt
 const flag = (argv, f) => argv[argv.indexOf(f) + 1]
 
 describe('AC1: the claude-code eval argv', () => {
-  test('through the runner: --setting-sources project,local, --strict-mcp-config, --tools "", never bypassPermissions', { skip: NO_SEATBELT }, async () => {
-    const { r, raw } = await claudeAttempt({})
+  test('through the runner: --setting-sources project,local, --strict-mcp-config, --tools Bash (production), never bypassPermissions', { skip: NO_SEATBELT }, async () => {
+    const { r, raw } = await claudeAttempt({}, { FAKE_INIT_TOOLS: '["Bash","mcp__fermi__task_claim"]' })
     assert.deepEqual(r.errorKinds, [], JSON.stringify(r.failed))
     const argv = argvOf(raw)
     assert.equal(flag(argv, '--setting-sources'), 'project,local')
     assert.ok(argv.includes('--strict-mcp-config'))
     assert.ok(argv.includes('--tools'))
-    assert.equal(flag(argv, '--tools'), '', '--tools "": no built-in tools')
+    assert.equal(flag(argv, '--tools'), 'Bash', 'the production surface: a shell next to fermi')
     assert.equal(flag(argv, '--permission-mode'), 'default')
     assert.ok(!argv.some((a) => /bypassPermissions|dangerously-skip-permissions/.test(a)), argv.join(' '))
   })
 
-  test('a scenario that declares tools: ["Bash"] gets --tools Bash', { skip: NO_SEATBELT }, async () => {
-    const { r, raw } = await claudeAttempt({ tools: ['Bash'] }, { FAKE_INIT_TOOLS: '["Bash","mcp__fermi__task_claim"]' })
+  test('a scenario that narrows tools to [] gets --tools ""', { skip: NO_SEATBELT }, async () => {
+    const { r, raw } = await claudeAttempt({ tools: [] })
     assert.deepEqual(r.errorKinds, [], JSON.stringify(r.failed))
-    assert.equal(flag(argvOf(raw), '--tools'), 'Bash')
+    assert.equal(flag(argvOf(raw), '--tools'), '')
+  })
+
+  test('results record builtinTools and surfaceDelta against production', { skip: NO_SEATBELT }, async () => {
+    const { r } = await claudeAttempt({}, { FAKE_INIT_TOOLS: '["Bash","mcp__fermi__task_claim"]' })
+    assert.deepEqual(r.builtinTools, ['Bash'])
+    assert.deepEqual(r.surfaceDelta, { added: [], removed: [] })
   })
 
   test('the session args get the same restrictions from the runner options', async () => {
@@ -71,7 +78,7 @@ describe('AC1: the claude-code eval argv', () => {
     const a = claude.sessionArgs(seen)
     assert.equal(flag(a, '--setting-sources'), 'project,local')
     assert.ok(a.includes('--strict-mcp-config'))
-    assert.equal(flag(a, '--tools'), '')
+    assert.equal(flag(a, '--tools'), 'Bash')
     assert.equal(flag(a, '--permission-mode'), 'default')
     assert.ok(!a.some((x) => /bypassPermissions|dangerously-skip-permissions/.test(x)))
     assert.equal(seen.env.ENABLE_CLAUDEAI_MCP_SERVERS, 'false')
@@ -144,27 +151,45 @@ describe('AC3: the isolation assertion', () => {
   const fakeAttempt = (scenario) =>
     runAttempt({ scenario: { name: 'iso', inbound, expect: [{ called: 'task_claim' }], fake: { script: [{ tool: 'task_claim', args: {} }] }, ...scenario }, attempt: 1, harness: fake, timeoutMs: 10_000, outDir: tmp() })
 
-  test('fake harness: an init listing Bash the scenario did not declare aborts the attempt as isolation_breach', async () => {
-    const r = await fakeAttempt({ fake: { builtins: ['Bash'], script: [{ tool: 'task_claim', args: {} }] } })
+  test('fake harness: an init listing a built-in outside the production surface aborts the attempt as isolation_breach', async () => {
+    const r = await fakeAttempt({ fake: { builtins: ['Bash', 'Read'], script: [{ tool: 'task_claim', args: {} }] } })
     assert.equal(r.pass, false)
     assert.ok(r.errorKinds.includes('isolation_breach'), JSON.stringify(r))
-    assert.ok(r.failed.some((f) => /isolation breach.*Bash/.test(f.message)))
+    assert.ok(r.failed.some((f) => /isolation breach.*: Read$/.test(f.message)), JSON.stringify(r.failed))
     assert.deepEqual(r.toolCalls, [], 'aborted at init, before any tool call')
   })
 
-  test('the same init passes when the scenario declares tools: ["Bash"]', async () => {
-    const r = await fakeAttempt({ tools: ['Bash'], fake: { builtins: ['Bash'], script: [{ tool: 'task_claim', args: {} }] } })
-    assert.equal(r.pass, true, JSON.stringify(r.failed))
+  test('Bash passes by default (the production surface) and breaches once the scenario narrows tools to []', async () => {
+    const ok = await fakeAttempt({ fake: { builtins: ['Bash'], script: [{ tool: 'task_claim', args: {} }] } })
+    assert.equal(ok.pass, true, JSON.stringify(ok.failed))
+    const narrowed = await fakeAttempt({ tools: [], fake: { builtins: ['Bash'], script: [{ tool: 'task_claim', args: {} }] } })
+    assert.ok(narrowed.errorKinds.includes('isolation_breach'), JSON.stringify(narrowed))
+  })
+
+  test('pi and codex: their irreducible built-ins are allowed and recorded, anything more breaches', async () => {
+    for (const [name, builtins, added] of [
+      ['pi', pi.PI_BUILTINS, ['read', 'edit', 'write']],
+      ['codex', codex.CODEX_BUILTINS, ['apply_patch']],
+    ]) {
+      const harness = { name, runOnce: (o) => fake.runOnce({ ...o, builtins }) }
+      const r = await runAttempt({ scenario: { name: 'iso', inbound, expect: [{ called: 'task_claim' }], fake: { script: [{ tool: 'task_claim', args: {} }] } }, attempt: 1, harness, timeoutMs: 10_000, outDir: tmp() })
+      assert.equal(r.pass, true, `${name}: ${JSON.stringify(r.failed)}`)
+      assert.deepEqual(r.builtinTools, builtins)
+      assert.deepEqual(r.surfaceDelta, { added, removed: [] })
+      const extra = { name, runOnce: (o) => fake.runOnce({ ...o, builtins: [...builtins, 'WebFetch'] }) }
+      const b = await runAttempt({ scenario: { name: 'iso', inbound, expect: [], fake: { script: [] } }, attempt: 1, harness: extra, timeoutMs: 10_000, outDir: tmp() })
+      assert.ok(b.errorKinds.includes('isolation_breach'), `${name}: ${JSON.stringify(b)}`)
+    }
   })
 
   test('a breach is never an expected outcome, not even for a negative control', async () => {
-    const r = await fakeAttempt({ expectOutcome: 'fail', fake: { builtins: ['Bash'], script: [] } })
+    const r = await fakeAttempt({ expectOutcome: 'fail', fake: { builtins: ['Read'], script: [] } })
     assert.equal(summarize([{ ...r, expectedOutcome: 'fail' }], {}).ok, false)
   })
 
-  test('claude-code: an init listing Bash kills the harness mid-run', { skip: NO_SEATBELT }, async () => {
+  test('claude-code: an init listing a built-in beyond Bash kills the harness mid-run', { skip: NO_SEATBELT }, async () => {
     const t0 = Date.now()
-    const { r } = await claudeAttempt({}, { FAKE_INIT_TOOLS: '["Bash","mcp__fermi__task_claim"]', FAKE_SLEEP_MS: '8000' })
+    const { r } = await claudeAttempt({}, { FAKE_INIT_TOOLS: '["Bash","Read","mcp__fermi__task_claim"]', FAKE_SLEEP_MS: '8000' })
     assert.ok(r.errorKinds.includes('isolation_breach'), JSON.stringify(r))
     assert.ok(!r.errorKinds.includes('timeout'))
     assert.ok(Date.now() - t0 < 5000, 'aborted, not waited out')
@@ -172,14 +197,33 @@ describe('AC3: the isolation assertion', () => {
 
   test('isolationBreach: built-ins, MCP servers and a missing tool list', () => {
     assert.equal(isolationBreach({ tools: ['mcp__fermi__task_claim'], mcpServers: ['fermi'] }), null)
-    assert.equal(isolationBreach({ tools: ['bash', 'mcp__fermi__x'] }, { tools: ['Bash'] }), null, 'case-insensitive')
-    assert.match(isolationBreach({ tools: ['Bash', 'Read'] }, { tools: ['Bash'] }), /Read/)
-    assert.match(isolationBreach({ tools: pi.PI_BUILTINS }), /read, bash, edit, write/)
-    assert.match(isolationBreach({ tools: codex.CODEX_BUILTINS }), /Bash, apply_patch/)
+    assert.equal(isolationBreach({ tools: ['bash', 'mcp__fermi__x'] }), null, 'Bash by default, case-insensitive')
+    assert.match(isolationBreach({ tools: ['Bash', 'Read'] }), /: Read$/)
+    assert.match(isolationBreach({ tools: ['Bash'] }, { allowed: [] }), /: Bash$/)
+    assert.match(isolationBreach({ tools: pi.PI_BUILTINS }), /: read, edit, write$/)
+    assert.equal(isolationBreach({ tools: pi.PI_BUILTINS }, { allowed: allowedBuiltins('pi') }), null)
+    assert.equal(isolationBreach({ tools: codex.CODEX_BUILTINS }, { allowed: allowedBuiltins('codex', []) }), null, 'irreducible even when narrowed')
+    assert.match(isolationBreach({ tools: [...codex.CODEX_BUILTINS, 'Read'] }, { allowed: allowedBuiltins('codex') }), /: Read$/)
     assert.match(isolationBreach({ tools: ['mcp__fermi__x'], mcpServers: ['fermi', 'claude.ai Fermi'] }), /exactly \{fermi\}/)
     assert.match(isolationBreach({ tools: ['mcp__fermi__x', 'mcp__playwright__y'] }), /playwright/)
     assert.match(isolationBreach({ tools: [], mcpServers: [] }), /exactly \{fermi\}/)
     assert.match(isolationBreach({ type: 'init' }), /no tool list/)
+  })
+
+  test('scenario tools may only narrow the production surface', () => {
+    assert.deepEqual(allowedBuiltins('claude-code'), ['Bash'])
+    assert.deepEqual(allowedBuiltins('claude-code', []), [])
+    assert.throws(() => allowedBuiltins('claude-code', ['Read']), /only narrow/)
+    const dir = tmp()
+    const file = join(dir, 's.json')
+    writeFileSync(file, JSON.stringify({ name: 's', inbound, expect: [{ called: 'task_claim' }], tools: ['Read'] }))
+    assert.throws(() => loadScenario(file), /only narrow the production surface/)
+  })
+
+  test('surfaceDelta: built-ins added to and missing from production', () => {
+    assert.deepEqual(surfaceDelta(['Bash']), { added: [], removed: [] })
+    assert.deepEqual(surfaceDelta([]), { added: [], removed: ['Bash'] })
+    assert.deepEqual(surfaceDelta(['bash', 'apply_patch']), { added: ['apply_patch'], removed: [] })
   })
 
   test('checkMcpConfig: exactly { fermi → 127.0.0.1 }', () => {
@@ -219,6 +263,65 @@ describe('breach canary: the fake harness Bash call runs under the sandbox', () 
     assert.ok(!existsSync(target))
     const res = readFileSync(join(out, 'nobox/1/trace.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).find((e) => e.type === 'tool_result')
     assert.deepEqual([res.ok, res.content], [false, 'fake harness: exec needs a sandbox'])
+  })
+})
+
+describe('sandbox canary: a read of the real $HOME is a breach', () => {
+  const canaryAttempt = (harness) =>
+    runAttempt({
+      scenario: { name: 'canary', inbound, expect: [], fake: { script: [{ shell: `cat "${REAL_HOME}"/.fermi-sandbox-canary-*`, exec: true }] } },
+      attempt: 1,
+      harness,
+      timeoutMs: 10_000,
+      outDir: tmp(),
+    })
+
+  test('inside the sandbox the canary cannot be read: no breach', { skip: NO_SEATBELT }, async () => {
+    const r = await canaryAttempt(fake)
+    assert.ok(!r.errorKinds.includes('isolation_breach'), JSON.stringify(r.failed))
+  })
+
+  test('a harness that escaped the sandbox reads it: isolation_breach', async () => {
+    const leaky = { runOnce: (o) => fake.runOnce({ ...o, sandbox: { ...o.sandbox, wrap: (b, a) => [b, a] } }) }
+    const r = await canaryAttempt(leaky)
+    assert.ok(r.errorKinds.includes('isolation_breach'), JSON.stringify(r))
+    assert.ok(r.failed.some((f) => /sandbox canary/.test(f.message)))
+  })
+
+  test('plantSandboxCanary writes a 0600 token file, sees the token in an event and removes it', () => {
+    const c = plantSandboxCanary(tmp())
+    assert.equal(readFileSync(c.path, 'utf8').trim(), c.token)
+    assert.ok(c.seen({ type: 'tool_result', content: `x ${c.token} y` }))
+    assert.ok(!c.seen({ type: 'tool_result', content: 'nothing' }))
+    c.remove()
+    assert.ok(!existsSync(c.path))
+  })
+})
+
+describe('codex: its own sandbox is off only inside ours', () => {
+  // A fake codex that copies the config.toml codex would read to $FAKE_OUT and exits.
+  const bin = join(tmp(), 'codex')
+  writeFileSync(bin, '#!/bin/sh\ncat > /dev/null\ncp "$CODEX_HOME/config.toml" "$FAKE_OUT"\n')
+  chmodSync(bin, 0o755)
+  const configOf = async (sandbox) => {
+    const dir = sandbox?.root ?? tmp()
+    const mcpConfig = join(dir, 'mcp.json')
+    writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { fermi: { url: 'http://127.0.0.1:1/mcp' } } }))
+    const out = join(dir, 'config.copy')
+    await codex.runOnce({ bin, prompt: 'p', cwd: dir, mcpConfig, sandbox, env: { FAKE_OUT: out } }).done
+    return readFileSync(out, 'utf8')
+  }
+
+  test('with our sandbox: sandbox_mode = "danger-full-access" and codex spawned through sandbox.wrap', async () => {
+    const real = createSandbox({ root: tmp() })
+    const calls = []
+    const sandbox = { ...real, wrap: (b, a) => (calls.push(b), real.backend ? real.wrap(b, a) : [b, a]) }
+    assert.match(await configOf(sandbox), /^sandbox_mode = "danger-full-access"$/m)
+    assert.deepEqual(calls, [bin], 'the setting is only ever used under our wrapper')
+  })
+
+  test('without our sandbox: codex keeps its own sandbox (no sandbox_mode)', async () => {
+    assert.doesNotMatch(await configOf(undefined), /sandbox_mode/)
   })
 })
 

@@ -50,7 +50,7 @@ export function loadScenario(file) {
   if (inb?.channel === 'teams' && !(Array.isArray(s.session) && s.session.some((t) => t?.turn === 'teams'))) errs.push('a teams inbound needs a session with a teams turn')
   if (s.harnesses != null && (!Array.isArray(s.harnesses) || !s.harnesses.length || s.harnesses.some((h) => typeof h !== 'string' || !h)))
     errs.push('harnesses must be a non-empty list of harness names')
-  if (s.tools != null && (!Array.isArray(s.tools) || s.tools.some((t) => typeof t !== 'string' || !t))) errs.push('tools must be a list of built-in tool names (e.g. ["Bash"])')
+  if (s.tools != null && (!Array.isArray(s.tools) || s.tools.some((t) => t !== 'Bash'))) errs.push('tools may only narrow the production surface: a subset of ["Bash"]')
   if (s.expectOutcome != null && !['pass', 'fail'].includes(s.expectOutcome)) errs.push('expectOutcome must be "pass" or "fail"')
   if (s.schedule != null && s.schedule !== 'weekly') errs.push('schedule must be "weekly"')
   const sess = s.session
