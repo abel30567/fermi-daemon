@@ -1,6 +1,6 @@
 // Fake external services for the eval target, all on 127.0.0.1 and all recording
 // every request: the chat APIs (Slack, Telegram, Discord), Twilio, the Anthropic
-// API, and the Mac bridge (MacOSMCP's JSON-RPC, including the warm worker's
+// API, the Teams outbound webhook (tools/teams-send.sh's teams-outbound.url), and the Mac bridge (MacOSMCP's JSON-RPC, including the warm worker's
 // model-switch curl that the drain prompt runs through mac_shell).
 import { randomUUID } from 'node:crypto'
 import { readBody, sendJson, serve } from './net.mjs'
@@ -12,6 +12,7 @@ const CANNED = {
   discord: () => ({ id: '1' }),
   twilio: () => ({ sid: `CA${randomUUID().replaceAll('-', '')}`, status: 'queued' }),
   anthropic: () => ({ type: 'message', role: 'assistant', content: [{ type: 'text', text: 'eval' }], usage: {} }),
+  teams: () => ({}),
 }
 
 const parse = (body, type = '') => {
@@ -84,7 +85,7 @@ export async function startFakeMac({ canned = [], model = 'sonnet' } = {}) {
   return { ...srv, calls, state }
 }
 
-const SERVICES = ['slack', 'telegram', 'discord', 'twilio', 'anthropic']
+const SERVICES = ['slack', 'telegram', 'discord', 'twilio', 'anthropic', 'teams']
 
 // Start every fake. `env` is the worker env that points the eval target at them.
 // `setPhase('inbound' | 'drain')` tags later requests: the target's own webhook acks

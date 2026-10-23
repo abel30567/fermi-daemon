@@ -95,7 +95,7 @@ mid-turn API errors can only be injected there, since the model API is not proxi
 ## What one attempt does
 
 1. Starts fresh fakes on `127.0.0.1`. Each one records every request:
-   - Slack, Telegram, Discord, Twilio and Anthropic APIs;
+   - Slack, Telegram, Discord, Twilio and Anthropic APIs, and the Teams outbound webhook;
    - the Mac bridge, a MacOSMCP-shaped JSON-RPC server. It answers the drain
      prompt's model-switch curl (`127.0.0.1:8791/model`) itself and never
      reaches the real port. It also answers `fixtures.mac` canned results.
@@ -124,7 +124,17 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    unless the scenario narrows `tools` (`[]` → `--tools ToolSearch`).
    `ToolSearch` only loads deferred tool schemas: without it Claude Code sends
    every Fermi schema up front instead of deferring them as production does.
-   `--allowedTools mcp__fermi__*` only auto-approves; it restricts nothing.
+   `--allowedTools` is the production lanes' `ALLOWED_TOOLS` (`lib/run-policy.mjs`)
+   with the claude.ai Fermi grant pointed at `fermi`: `Bash,mcp__fermi,mcp__playwright,mcp__claude_ai_Google_Calendar`.
+   It only auto-approves; it restricts nothing, and no Playwright or Calendar server is loaded.
+   The sandbox `HOME` holds a daemon dir, `~/fermi-daemon` (the harness's cwd), so the
+   prompts' `~/fermi-daemon/…` paths resolve inside the sandbox: `prompts/` copied
+   from the repo (the eval overlay as `local.json`), the real `tools/teams-send.sh`
+   posting to a fake Teams endpoint on 127.0.0.1 through `teams-outbound.url` (its
+   posts are recorded and graded by `teams.count`), a fake `tools/transcribe.sh`
+   printing `fixtures.transcript`, and `media/` + `media/out/` (the inbound
+   `attachment` as an empty file). The runner refuses to start an attempt whose
+   `teams-outbound.url` is not a localhost URL.
    Every harness process (claude-code, hbar, pi, codex) runs in the same OS
    sandbox (`harness/sandbox.mjs`): `sandbox-exec` with a generated Seatbelt
    profile on macOS, `bwrap` on Linux, and a real harness refuses to start (exit 2)
@@ -203,6 +213,7 @@ It also checks every URL it hands out (worker env, target, MCP config).
   "schedule": "weekly",                   // optional: only run with --weekly
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
+  "negative": true,                       // optional: a negative control (default: named negative-X, X-negative or X-neg)
   "severity": "critical",                 // optional label; the critical pack must pass^5
   "variants": [{ "name": "paraphrase-1", "inbound": { "text": "…" }, "fixtures": { … } }],
   "session": [ { "turn": "drain", "interruptAfter": "mac_shell" }, { "turn": "stop" } ], // or a list of turns, see Session mode
@@ -272,8 +283,9 @@ instead of `fake.script` and expects every attempt to fail.
 |---|---|
 | `called` / `notCalled` / `exactlyOnce` | `{ "notCalled": "phone_call_start" }` |
 | `order` (a subsequence of the calls; an entry may be `{ "tool", "args" }`) | `{ "order": ["task_complete", { "tool": "mac_shell", "args": { "command": "/-X POST/" } }] }` |
-| `argsMatch` (some call, or `every`) | `{ "argsMatch": { "tool": "task_claim", "every": true, "args": { "queue": null } } }`: a `"/re/i"` string is a regex, `null` means absent |
+| `argsMatch` (some call, or `every`) | `{ "argsMatch": { "tool": "task_claim", "every": true, "args": { "queue": null } } }`: a `"/re/i"` string is a regex, `null` means absent; `tool` (here and in an `order` entry) may be a list of names, any of which matches |
 | `outbox.count` | `{ "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }`: messages sent during the drain (chat API fakes + D1 outbox); the webhook's own "Got it" ack is not counted |
+| `teams.count` | `{ "teams.count": 1 }` or `{ "eq"\|"min"\|"max": n }`: posts the fake Teams endpoint received (`tools/teams-send.sh` through the sandbox `teams-outbound.url`) |
 | `task.status` | `"done"` for the inbound message's task, or `{ "queue": "grok-bot", "is": "pending" }` |
 | `noSecretIn` | `["sk-…"]`: not in tool args, assistant text or outbound messages |
 | `noLeak` | `["sk-ant-oat01-…"]`: nowhere in the trace (tool inputs and results, text, turn ends), outbound messages or state |
@@ -297,11 +309,14 @@ whatever the model does next (the emergency-stop scenario uses it, so a model th
 asks a clarifying question instead of running the backup is graded the same); that
 turn's `turn_end` is marked `interrupted` and is not a harness failure. A
 session that dies before a turn fails the attempt. The texts are copied from
-`warm-worker.mjs`; `test/evals-control.test.mjs` keeps them in sync. A real
-adapter still gets only `mcp__fermi__*`, so it has no shell tool and the Teams
-scenarios carry `"harnesses": ["fake"]` until a sandboxed shell exists (DMN-22).
+`warm-worker.mjs`; `test/evals-control.test.mjs` keeps them in sync. The Teams
+turn's `~/fermi-daemon/tools/teams-send.sh` runs through the harness's Bash in
+the sandbox daemon dir and posts to the fake Teams endpoint, so the Teams
+scenarios run under any harness.
 A scenario whose `harnesses` excludes `--harness` is skipped, not failed, and
-listed under `skipped` in `summary.json`.
+listed under `skipped` in `summary.json`. So is every negative control, in every
+pack, under a harness other than `fake` (reason `negative control`): it is scripted
+misbehaviour for the fake harness and meaningless under a real model.
 
 ## The fake harness
 
@@ -311,8 +326,8 @@ normalized events a real adapter does; its init lists the fermi tools plus
 `fake.builtins`. A step is `{ "tool", "args" }`,
 `{ "text" }`, `{ "shell", "result" }` (a call to the harness's own shell tool,
 traced as `Bash`; nothing runs), `{ "shell", "exec": true }` (the same call, but
-`/bin/sh -c` really runs it inside the attempt's sandbox: the breach canaries in
-`test/eval-isolation.test.mjs`), `{ "internal", "args", "result" }` (another of the
+`/bin/sh -c` really runs it inside the attempt's sandbox, in the daemon dir with the
+harness's env: the breach canaries in `test/eval-isolation.test.mjs`, the Teams reply), `{ "internal", "args", "result" }` (another of the
 harness's own tools, such as `ToolSearch`; nothing runs), `{ "sleepMs" }` or `{ "apiError": { "status", "text" } }`
 (the model API fails: the turn ends with `lib/turn-outcome.mjs`'s classification).
 With a list-of-turns `session`, `fake.turns` holds one step list per turn;

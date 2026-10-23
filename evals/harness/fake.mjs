@@ -31,7 +31,7 @@
 // only in the n-th turn (runOnce is turn 1). Either way the context carries
 // across turns, like a warm session remembers what it claimed, and interrupt()
 // ends the turn after the step in flight.
-import { spawnSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -64,13 +64,18 @@ async function connect(o, emit) {
 }
 
 // Play `steps` as turn `ctx.turn`; returns the turn_end payload, or null if `stopped()` cut it short.
-// A shell step with exec: true, run under the sandbox → its tool_result.
-function execShell(command, sandbox, cwd) {
+// A shell step with exec: true, run under the sandbox with the env a sandboxed adapter
+// gives its harness (the options' env and sandbox.env, nothing ambient) → its tool_result.
+// Asynchronously: the command may call the runner's in-process fakes (tools/teams-send.sh).
+async function execShell(command, { sandbox, cwd, env }) {
   if (!sandbox) return { ok: false, content: 'fake harness: exec needs a sandbox' }
   try {
     const [cmd, argv] = sandbox.wrap('/bin/sh', ['-c', command])
-    const r = spawnSync(cmd, argv, { cwd, env: { ...process.env, ...sandbox.env }, encoding: 'utf8', timeout: 10_000 })
-    return { ok: r.status === 0, content: `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? r.error.message : ''}` }
+    return await new Promise((resolve) =>
+      execFile(cmd, argv, { cwd, env: { ...env, ...sandbox.env }, encoding: 'utf8', timeout: 10_000 }, (err, stdout, stderr) =>
+        resolve({ ok: !err, content: `${stdout ?? ''}${stderr ?? ''}${err && err.code == null ? err.message : ''}` }),
+      ),
+    )
   } catch (err) {
     return { ok: false, content: String(err?.message ?? err) }
   }
@@ -93,7 +98,7 @@ async function play(steps, { mcp, ctx, emit, stopped, o }) {
     if (step.shell != null) {
       const command = fill(step.shell, ctx)
       emit({ type: 'tool_call', id, name: 'Bash', rawName: 'Bash', input: { command } })
-      emit({ type: 'tool_result', id, ...(step.exec ? execShell(command, o.sandbox, o.cwd) : { ok: true, content: String(step.result ?? '') }) })
+      emit({ type: 'tool_result', id, ...(step.exec ? await execShell(command, o) : { ok: true, content: String(step.result ?? '') }) })
       continue
     }
     if (step.internal != null) {
