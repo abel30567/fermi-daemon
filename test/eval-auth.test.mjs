@@ -226,7 +226,7 @@ describe('AC2: --auth proxy for claude-code', () => {
     for (const proxyUrl of ['https://proxy.example:8317', 'http://10.0.0.5:8317', 'http://127.0.0.1.evil.example:8317'])
       assert.throws(() => createAuth({ mode: 'proxy', harness: 'claude-code', model: MODEL, proxyUrl, readProxyToken: () => 'x' }), /non-localhost/, proxyUrl)
     assert.throws(() => createAuth({ mode: 'proxy', harness: 'claude-code', readProxyToken: () => 'x' }), /needs --model/)
-    assert.throws(() => createAuth({ mode: 'proxy', harness: 'codex', model: MODEL, readProxyToken: () => 'x' }), /codex keeps its own auth.json/)
+    assert.throws(() => createAuth({ mode: 'proxy', harness: 'fake', model: MODEL, readProxyToken: () => 'x' }), /needs --harness claude-code or pi or codex/)
     assert.throws(() => createAuth({ mode: 'bogus', harness: 'claude-code' }), /--auth must be one of none, fd, keychain, proxy/)
   })
 
