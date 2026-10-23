@@ -81,7 +81,3 @@ test('MentionDirectory merges sightings, persists, and reloads aliases', () => {
 	writeFileSync(join(dir, 'mention-aliases.json'), JSON.stringify({ [g]: { Pollo: '15551234567@s.whatsapp.net' } }))
 	assert.equal(d.resolve(g, '@pollo', 'lid').text, '@11600723472408')
 })
-
-test('DMN-1 deliberate CI failure (to be reverted)', () => {
-	assert.equal(1, 2)
-})
