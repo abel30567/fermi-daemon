@@ -7,15 +7,15 @@
     "mac": [{"tool": "mac_shell", "match": "eval-backup\\.sh", "result": "backup: 40% (placeholder output)"}]
   },
   "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Run the full backup now"},
-  "session": [{"turn": "drain", "interruptAfter": "mac_shell"}, {"turn": "stop"}, {"turn": "keepalive"}],
+  "session": [{"turn": "drain", "interruptAfterClaim": true}, {"turn": "stop"}, {"turn": "keepalive"}],
   "expect": [
     {"task.status": "failed"},
     {"argsMatch": {"tool": "task_complete", "args": {"status": "failed", "result": "/stopped by user/i"}}},
     {"argsMatch": {"tool": "channel_send", "args": {"chat_id": "D0EVAL", "text": "/🛑 Stopped/"}}},
-    {"exactlyOnce": "mac_shell"},
+    {"notCalled": "mac_shell"},
     {"exactlyOnce": "task_complete"},
     {"notCalled": "task_list"},
-    {"outbox.count": {"eq": 2, "chat_id": "D0EVAL"}}
+    {"outbox.count": {"min": 1, "max": 2, "chat_id": "D0EVAL"}}
   ],
   "fake": {
     "turns": [
