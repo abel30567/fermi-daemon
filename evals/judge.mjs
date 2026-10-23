@@ -3,6 +3,7 @@
 // The score is reported by evals/compare.mjs, never gated: assertions decide pass/fail.
 //
 //   node evals/judge.mjs <run dir> --scenarios <glob>... [--fake] [--auth none|fd|keychain|proxy]
+//   node evals/judge.mjs --calibrate [--fake] [--auth none|fd|keychain|proxy]
 //
 // Writes <run dir>/judge.json: one entry per attempt in results.json,
 // { scenario, category, attempt, score (0..1, null without a reply), helpful, tone, format, notes }.
@@ -16,6 +17,10 @@
 // only the user's message, the channel and the reply texts: never the harness,
 // model, trace or cost, so it is blind to which harness produced the reply.
 // --fake scores with fakeJudge (deterministic, no inference), for tests.
+//
+// --calibrate asks the semantic judge (lib/semantic.mjs, same model and isolation)
+// every case of test/fixtures/semantic/*.json and prints its confusion table. Exit 1
+// when its accuracy is below the threshold, so semantic assertions would be disabled.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -26,6 +31,7 @@ import { startEgressProxy } from './lib/egress-proxy.mjs'
 import { createAuth } from './lib/auth.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
 import { expandScenarios, loadScenario } from './lib/scenario.mjs'
+import { fakeAsk, prepareSemantic, semanticPrompt } from './lib/semantic.mjs'
 
 export const CONFIG = JSON.parse(readFileSync(new URL('./judge.config.json', import.meta.url), 'utf8'))
 
@@ -67,7 +73,15 @@ export function parseVerdict(text) {
 
 // The real judge: one sandboxed runOnce through the configured adapter, no tools, no MCP servers.
 // `auth`: createAuth() for the judge's harness and model (default: none).
-export async function modelJudge(input, { config = CONFIG, harness, auth } = {}) {
+export async function modelJudge(input, opts) {
+  return parseVerdict(await judgeTurn(judgePrompt(input), opts))
+}
+
+// The semantic judge's ask (lib/semantic.mjs createSemanticJudge): the same sandboxed turn.
+export const semanticAsk = (opts) => ({ question, text }) => judgeTurn(semanticPrompt(question, text), opts)
+
+// One prompt to the judge model → its reply text.
+export async function judgeTurn(prompt, { config = CONFIG, harness, auth } = {}) {
   harness ??= await loadHarness(config.harness)
   const { secrets, localPorts = [], egressAllow = [], env: authEnv = {}, ...authOpts } = auth?.attempt() ?? {} // secrets: never handed on
   assertLocalUrls(Object.fromEntries(Object.entries(authEnv).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v)))))
@@ -78,7 +92,7 @@ export async function modelJudge(input, { config = CONFIG, harness, auth } = {})
     writeFileSync(mcpConfig, JSON.stringify({ mcpServers: {} }))
     const sandbox = createSandbox({ root: join(cwd, 'home'), localPorts, egressProxy: egress.url })
     const run = harness.runOnce({
-      prompt: judgePrompt(input),
+      prompt,
       model: config.model,
       cwd,
       mcpConfig,
@@ -94,7 +108,7 @@ export async function modelJudge(input, { config = CONFIG, harness, auth } = {})
     let timer
     const res = await Promise.race([run.done, new Promise((_, rej) => (timer = setTimeout(() => rej(new Error(`judge timed out after ${config.timeoutMs} ms`)), config.timeoutMs)))]).finally(() => (clearTimeout(timer), run.close?.('SIGTERM')))
     if (res.outcome && !res.outcome.ok) throw new Error(`judge turn ended with ${res.outcome.kind}: ${res.outcome.detail}`)
-    return parseVerdict(res.events.filter((e) => e.type === 'text').map((e) => e.text).join('\n'))
+    return res.events.filter((e) => e.type === 'text').map((e) => e.text).join('\n')
   } finally {
     await egress.close().catch(() => {})
     rmSync(cwd, { recursive: true, force: true })
@@ -156,15 +170,28 @@ export async function judgeRun(runDir, scenarios, judge = modelJudge) {
 async function main(argv) {
   let runDir
   let fake = false
+  let calibrateOnly = false
   let mode = 'none'
   const patterns = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--fake') fake = true
+    else if (a === '--calibrate') calibrateOnly = true
     else if (a === '--auth' && i + 1 < argv.length) mode = argv[++i]
     else if (a === '--scenarios') while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) patterns.push(argv[++i])
     else if (!a.startsWith('-') && runDir == null) runDir = a
     else return usage(`unknown argument ${a}`)
+  }
+  if (calibrateOnly) {
+    let auth
+    try {
+      if (!fake) auth = createAuth({ mode, harness: CONFIG.harness, model: CONFIG.model })
+    } catch (err) {
+      return usage(err.message)
+    }
+    console.log(`calibrating ${fake ? 'the fake semantic judge' : `${CONFIG.harness} ${CONFIG.model}`}`)
+    const { calibration } = await prepareSemantic({ ask: fake ? fakeAsk() : semanticAsk({ auth }), cacheFile: fake ? null : semanticCacheFile() })
+    return calibration.enabled ? 0 : 1
   }
   if (!runDir || !patterns.length) return usage('needs <run dir> --scenarios <glob>...')
   let scenarios, auth
@@ -181,8 +208,11 @@ async function main(argv) {
   return 0
 }
 
+// The real semantic judge's answer cache, one file per judge model.
+export const semanticCacheFile = (config = CONFIG) => join('runs', 'semantic-cache', `${config.harness}-${config.model}.json`)
+
 function usage(msg) {
-  console.error(`judge: ${msg}\nusage: node evals/judge.mjs <run dir> --scenarios <glob>... [--fake] [--auth none|fd|keychain|proxy]`)
+  console.error(`judge: ${msg}\nusage: node evals/judge.mjs <run dir> --scenarios <glob>... [--fake] [--auth none|fd|keychain|proxy]\n       node evals/judge.mjs --calibrate [--fake] [--auth none|fd|keychain|proxy]`)
   return 2
 }
 

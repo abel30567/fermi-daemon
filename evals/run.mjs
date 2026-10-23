@@ -7,6 +7,9 @@
 //     [--auth none|fd|keychain|proxy]
 //
 // --auth decides how the sandboxed harness gets inference credentials (lib/auth.mjs).
+// When a scenario has semantic assertions, the semantic judge (lib/semantic.mjs) is
+// calibrated first; below its accuracy threshold they grade on their regex alone.
+// --harness fake uses the fake judge (calibration labels, no inference).
 // Scenarios with `"schedule": "weekly"` (the soak) are skipped unless --weekly is given.
 // Exit 0 when every attempt's outcome is the expected one, 1 otherwise, 2 on a
 // usage error or a non-localhost URL.
@@ -15,10 +18,12 @@ import { join } from 'node:path'
 import { loadHarness } from '../harness/index.mjs'
 import { sandboxBackend } from '../harness/sandbox.mjs'
 import { internalToolCalls } from './lib/assertions.mjs'
+import { CONFIG as JUDGE, semanticAsk, semanticCacheFile } from './judge.mjs'
 import { createAuth } from './lib/auth.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
 import { runAttempt, summarize } from './lib/runner.mjs'
 import { expandScenarios, expandVariants, loadScenario } from './lib/scenario.mjs'
+import { fakeAsk, prepareSemantic, semanticSpecs } from './lib/semantic.mjs'
 
 // URL-valued env the runner, wrangler or the harness would inherit. Any of them
 // pointing off-box means production could be reached, so the run refuses to start.
@@ -113,12 +118,29 @@ async function main() {
   const harness = opts.harness === 'fake' ? await import('./harness/fake.mjs') : await loadHarness(opts.harness)
   const out = opts.out ?? join('runs', `evals-${new Date().toISOString().replace(/[:.]/g, '-')}`)
   mkdirSync(out, { recursive: true })
+  let semantic = null
+  if (scenarios.some((s) => semanticSpecs(s.expect).length)) {
+    let ask
+    if (opts.harness === 'fake') ask = fakeAsk()
+    else {
+      // The judge's own credential, for its fixed model: a proxy credential pins every tier to one model.
+      let judgeAuth = auth
+      try {
+        if (auth.mode === 'proxy') judgeAuth = createAuth({ mode: 'proxy', harness: JUDGE.harness, model: JUDGE.model })
+      } catch (err) {
+        console.error(`evals: semantic judge: ${err.message}`)
+        return 2
+      }
+      ask = semanticAsk({ auth: judgeAuth })
+    }
+    semantic = await prepareSemantic({ ask, cacheFile: opts.harness === 'fake' ? null : semanticCacheFile() })
+  }
 
   const startedAt = new Date().toISOString()
   const results = []
   for (const scenario of scenarios)
     for (let attempt = 1; attempt <= opts.k; attempt++) {
-      const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out, auth })
+      const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out, auth, semanticJudge: semantic?.judge })
       r.internalToolCalls = internalCalls(out, r)
       results.push(r)
       const tag = r.pass ? 'PASS' : r.expectedOutcome === 'fail' ? 'FAIL (expected)' : 'FAIL'
@@ -133,6 +155,7 @@ async function main() {
     startedAt,
     finishedAt: new Date().toISOString(),
     skipped,
+    semanticJudge: semantic?.calibration ?? null, // null: no semantic assertions in this run
   })
   writeFileSync(join(out, 'results.json'), JSON.stringify(results, null, 2) + '\n')
   writeFileSync(join(out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n')

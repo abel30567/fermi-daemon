@@ -50,6 +50,24 @@
           "added": { "type": "array", "items": { "type": "string" } },
           "removed": { "type": "array", "items": { "type": "string" } }
         }
+      },
+      "semantic": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["question", "tool", "expect", "regex", "judge", "answers"],
+          "properties": {
+            "question": { "type": "string", "minLength": 1 },
+            "tool": { "type": "string", "minLength": 1 },
+            "expect": { "enum": ["yes", "no"] },
+            "regex": { "enum": ["pass", "fail", null] },
+            "regexMessage": { "type": "string" },
+            "judge": { "enum": ["pass", "fail", "error", "disabled"] },
+            "answers": { "type": "array", "items": { "enum": ["yes", "no"] } },
+            "error": { "type": "string" }
+          }
+        }
       }
     }
   }
