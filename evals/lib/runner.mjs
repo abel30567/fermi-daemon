@@ -7,9 +7,10 @@
 // reaching the model endpoints only through the egress proxy, and its init must
 // pass the isolation assertion (isolation.mjs) or the attempt is aborted.
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, fstatSync, mkdirSync, mkdtempSync, readSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, fstatSync, mkdirSync, mkdtempSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
@@ -98,9 +99,40 @@ async function seedSecrets(url, secrets = []) {
 
 const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v))))
 
+// Infrastructure outcomes: the subscription or the provider failed, not the harness.
+const SERVER_ERROR = /\b5\d\d\b|overloaded|internal server error/i
+export const isInfraLimit = (ev) => ev.kind === 'rate_limit' || ev.kind === 'spend_limit' || (ev.kind === 'api_error' && SERVER_ERROR.test(ev.detail ?? ''))
+export const INFRA_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
+
+// One graded attempt. An attempt whose turn ends with an infrastructure outcome
+// (isInfraLimit, not absorbed by a session re-drain) is re-run from scratch, up to
+// `infraRetries` times, after the reset time the error names (retryAfterMs) or else
+// `backoff` (30 s, doubling, capped at 10 min). The earlier tries' dirs are kept as
+// <n>.infra-<i>. Still limited after that → status "invalid", pass null: never graded.
+// A reset further away than backoff.maxMs (e.g. "resets 2am") is not waited for: the
+// attempt is invalid at once, the reset time in its reason, no retries spent.
+// `pace(fn)`: runs each try (evals/lib/pacing.mjs, the backend lock and --min-gap-ms).
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
-export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth }) {
+export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pace = (fn) => fn(), onInfraRetry, ...args }) {
+  const dir = join(args.outDir, args.scenario.name, String(args.attempt))
+  for (let n = 0; ; n++) {
+    const { result, infra } = await pace(() => attemptOnce(args))
+    if (!infra) return { ...result, status: 'valid', infraRetries: n }
+    if (infra.retryAfterMs > backoff.maxMs) {
+      const at = new Date(Date.now() + infra.retryAfterMs).toISOString()
+      return { ...result, pass: null, status: 'invalid', invalidReason: `${infra.kind} resets at ${at}, beyond the ${backoff.maxMs} ms infra wait cap: ${infra.detail}`, infraRetries: n }
+    }
+    if (n >= infraRetries) return { ...result, pass: null, status: 'invalid', invalidReason: `${infra.kind} after ${n} infra retries: ${infra.detail}`, infraRetries: n }
+    const waitMs = infra.retryAfterMs ?? Math.min(backoff.maxMs, backoff.baseMs * 2 ** n)
+    rmSync(`${dir}.infra-${n + 1}`, { recursive: true, force: true })
+    renameSync(dir, `${dir}.infra-${n + 1}`)
+    onInfraRetry?.({ retry: n + 1, waitMs, kind: infra.kind, detail: infra.detail })
+    await sleep(waitMs)
+  }
+}
+
+async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth }) {
   const dir = join(outDir, scenario.name, String(attempt))
   mkdirSync(dir, { recursive: true })
   const closers = []
@@ -110,6 +142,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   let latencyMs = 0
   let taskLatencies
   const retried = new Set() // error turn_ends the session re-drained after
+  let infra = null // the first infrastructure turn_end that failed the attempt (isInfraLimit)
   const canary = scenario.credentials?.canary ? `fermi-eval-canary-${randomBytes(16).toString('hex')}` : null
   const fixtures = canary ? fillCanary(scenario.fixtures, canary) : scenario.fixtures
   let canaries
@@ -266,7 +299,10 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     if (ev.type === 'turn_end' && !ev.ok && !ev.interrupted) {
       errorKinds.add(ev.kind)
       // A warm session re-drains after an error turn, like the warm worker after its backoff.
-      if (!retried.has(ev)) failed.push({ assertion: null, message: `harness turn ended with ${ev.kind}: ${ev.detail}` })
+      if (!retried.has(ev)) {
+        failed.push({ assertion: null, message: `harness turn ended with ${ev.kind}: ${ev.detail}` })
+        if (!infra && !breach && isInfraLimit(ev)) infra = { kind: ev.kind, detail: ev.detail, retryAfterMs: ev.retryAfterMs }
+      }
     }
   }
   const ends = trace.filter((e) => e.type === 'turn_end')
@@ -274,7 +310,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   const inputTokens = sum('inputTokens')
   const outputTokens = sum('outputTokens')
   const builtinTools = builtinsOf(init)
-  return {
+  const result = {
     scenario: scenario.name,
     ...(scenario.category != null && { category: String(scenario.category) }),
     attempt,
@@ -291,6 +327,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     builtinTools,
     surfaceDelta: builtinTools && surfaceDelta(builtinTools),
   }
+  return { result, infra }
 }
 
 // Drain-session mode: `session: { tasks?: n, redrain?: k }`. One warm session (the
@@ -338,25 +375,31 @@ async function runDrainSession({ harness, opts, systemPrompt, scenario, enqueue,
   }
 }
 
+// Invalid attempts (status "invalid": infrastructure-limited) are graded neither way;
+// they are listed apart, and a run with any is not ok: it has no verdict for them.
 export function summarize(results, meta) {
+  const invalid = results.filter((r) => r.status === 'invalid')
+  const valid = results.filter((r) => r.status !== 'invalid')
   const byScenario = {}
   for (const r of results) {
-    const s = (byScenario[r.scenario] ??= { attempts: 0, passes: 0, expectedOutcome: r.expectedOutcome })
-    s.attempts++
+    const s = (byScenario[r.scenario] ??= { attempts: 0, passes: 0, invalid: 0, expectedOutcome: r.expectedOutcome })
+    if (r.status === 'invalid') s.invalid++
+    else s.attempts++
     if (r.pass) s.passes++
   }
-  for (const s of Object.values(byScenario)) s.passRate = s.passes / s.attempts
+  for (const s of Object.values(byScenario)) s.passRate = s.attempts ? s.passes / s.attempts : null
   // An isolation breach is never an expected outcome, not even for a negative control.
-  const unexpected = results.filter((r) => r.pass !== (r.expectedOutcome === 'pass') || r.errorKinds?.includes('isolation_breach'))
+  const unexpected = valid.filter((r) => r.pass !== (r.expectedOutcome === 'pass') || r.errorKinds?.includes('isolation_breach'))
   return {
     ...meta,
     scenarios: Object.keys(byScenario).length,
     attempts: results.length,
-    passed: results.filter((r) => r.pass).length,
-    failed: results.filter((r) => !r.pass).length,
-    expectedFailures: results.filter((r) => !r.pass && r.expectedOutcome === 'fail').length,
+    passed: valid.filter((r) => r.pass).length,
+    failed: valid.filter((r) => !r.pass).length,
+    expectedFailures: valid.filter((r) => !r.pass && r.expectedOutcome === 'fail').length,
     unexpected: unexpected.map((r) => ({ scenario: r.scenario, attempt: r.attempt, pass: r.pass })),
-    ok: unexpected.length === 0,
+    invalid: invalid.map((r) => ({ scenario: r.scenario, attempt: r.attempt, reason: r.invalidReason })),
+    ok: unexpected.length === 0 && invalid.length === 0,
     byScenario,
   }
 }
