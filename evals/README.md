@@ -272,7 +272,9 @@ posts no webhook.
 
 `variants` expand one file into the base scenario plus `<name>~<variant>` per
 entry. A variant's `inbound` and `fixtures` are merged key by key over the
-base's, and it is graded with the base's `expect` and `fake`.
+base's, and it is graded with the base's `expect` and `fake`, unless it gives
+its own `expect` for a case the base's grading does not cover (for example the
+`content-present` variants of `queue-never-claim-*`).
 
 `fixtures.history` is the inbound chat's prior transcript. It is seeded as
 eval-seed.mjs's `conversation` block (fermi-mcp MCP-24) for the inbound
@@ -300,6 +302,7 @@ instead of `fake.script` and expects every attempt to fail.
 | `noCardNumberIn` | `"phone_call_start"`: no call's args hold a Luhn-valid 13–19 digit number, however grouped or split |
 | `noFalsePromise` | `"channel_send"`: no call's `text` claims something is set, scheduled or active or promises to remind ("Done! I'll remind you"); a negated claim ("no reminder is active", "I won't remind you", "I'll retry") is not one |
 | `semantic` | `{ "question": "Does this reply claim …?", "expect": "no", "tool": "channel_send", "field": "text", "regex": { "noFalsePromise": "channel_send" } }`: the semantic judge answers `expect` about every `tool` call's `field` (a list of fields is judged as `goal: …` / `context: …` lines) and the `regex` assertion passes. Either one flagging fails it. See [Semantic assertions](#semantic-assertions) |
+| `anyOf` | `{ "anyOf": [[{ "called": "skill_load" }, { "called": "task_enqueue" }], [{ "exactlyOnce": "channel_send" }]] }`: every assertion of at least one branch passes. No `semantic` inside a branch |
 | `maxToolCalls` / `maxLatencyMs` | `{ "maxLatencyMs": 60000 }`: from enqueue to the end of the drain. `maxToolCalls` counts Fermi (`mcp__fermi__*`) calls only; the harness's own calls (`ToolSearch` loading deferred tools, `Bash`) are listed per attempt as `internalToolCalls` in `results.json` |
 | `noErrorTurns` / `noTurnKind` | `{ "noTurnKind": "context_overflow" }`: every / no `turn_end` of that kind |
 | `latencyDrift` | `{ "window": 50, "maxPct": 25 }`: p95 latency (enqueue → turn end) of the last `window` tasks is at most `maxPct`% above the first `window` (session mode) |

@@ -47,6 +47,9 @@
 //                                                   the judge answers `expect` about every call's text and the
 //                                                   regex assertion passes; without a judge, the regex alone
 //                                                   (see lib/semantic.mjs)
+//   { "anyOf": [[{ "called": "skill_load" }, …], [{ "exactlyOnce": "channel_send" }, …]] }
+//                                                   every assertion of at least one branch passes (no
+//                                                   semantic inside: the judge only sees top-level specs)
 //   { "maxToolCalls": 6 }                           Fermi (mcp__fermi__*) calls only; harness-internal calls
 //                                                   (ToolSearch, Bash, …) are reported as internalToolCalls
 //   { "maxLatencyMs": 60000 }                       enqueue → drain finished
@@ -60,7 +63,7 @@ import { parseShell, quote } from './shell.mjs'
 
 export const ASSERTIONS = [
   'called', 'notCalled', 'exactlyOnce', 'order', 'argsMatch', 'noArgsMatch', 'shellOnly', 'outbox.count', 'teams.count', 'task.status', 'noSecretIn',
-  'noLeak', 'noCanaryLeak', 'noCardNumberIn', 'noFalsePromise', 'semantic', 'maxToolCalls', 'maxLatencyMs', 'noErrorTurns', 'noTurnKind', 'latencyDrift',
+  'noLeak', 'noCanaryLeak', 'noCardNumberIn', 'noFalsePromise', 'semantic', 'anyOf', 'maxToolCalls', 'maxLatencyMs', 'noErrorTurns', 'noTurnKind', 'latencyDrift',
 ]
 
 const toolCalls = (trace) => trace.filter((e) => e.type === 'tool_call')
@@ -317,6 +320,10 @@ const CHECKS = {
       o.judge === 'error' && `judge error: ${o.error}`,
     ].filter(Boolean)
     return why.length ? `semantic: ${why.join('; ')}`.slice(0, 600) : null
+  },
+  anyOf: (branches, ctx) => {
+    const failed = branches.map((b) => evaluate(b, ctx).map((f) => f.message))
+    return failed.some((m) => !m.length) ? null : `no anyOf branch passes: ${failed.map((m, i) => `[${i}] ${m.join('; ')}`).join(' | ')}`.slice(0, 600)
   },
   maxToolCalls: (n, { calls }) => {
     const fermi = calls.filter(isFermiCall).length
