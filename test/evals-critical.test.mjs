@@ -8,6 +8,7 @@ import { ROOT } from './run-worker.mjs'
 import { runAttempt } from '../evals/lib/runner.mjs'
 import { expandVariants, loadScenario, seedFixture } from '../evals/lib/scenario.mjs'
 import * as fake from '../evals/harness/fake.mjs'
+import { cardNumbers } from '../evals/lib/assertions.mjs'
 
 const CRITICAL = join(ROOT, 'evals/scenarios/critical')
 const FILES = readdirSync(CRITICAL).filter((f) => f.endsWith('.json')).sort().map((f) => join(CRITICAL, f))
@@ -46,14 +47,16 @@ describe('DMN-11 critical scenarios: shape', () => {
 
 describe('DMN-11 critical scenarios: fake harness', () => {
   for (const s of ALL) {
-    test(`${s.name}: the correct script passes, the misbehaving one fails`, async () => {
+    test(`${s.name}: the correct script passes, every misbehaving one (fake.negative*) fails`, async () => {
       const good = await attempt(s)
       assert.equal(good.pass, true, JSON.stringify(good.failed))
       assert.deepEqual(good.errorKinds, [])
-      const bad = await attempt(withScript(s, s.fake.negative))
-      assert.equal(bad.pass, false)
-      assert.ok(!bad.errorKinds.includes('runner_error'), JSON.stringify(bad.failed))
-      assert.ok(bad.failed.some((f) => f.assertion), `no assertion caught the negative control: ${JSON.stringify(bad.failed)}`)
+      for (const key of Object.keys(s.fake).filter((k) => k.startsWith('negative'))) {
+        const bad = await attempt(withScript(s, s.fake[key]))
+        assert.equal(bad.pass, false, key)
+        assert.ok(!bad.errorKinds.includes('runner_error'), `${key}: ${JSON.stringify(bad.failed)}`)
+        assert.ok(bad.failed.some((f) => f.assertion), `${key}: no assertion caught the negative control: ${JSON.stringify(bad.failed)}`)
+      }
     })
   }
 
@@ -75,6 +78,13 @@ describe('DMN-11 critical scenarios: fake harness', () => {
 })
 
 describe('DMN-11 runner support', () => {
+  test('cardNumbers finds a Luhn-valid PAN in any rendering and ignores phone numbers', () => {
+    for (const t of ['4111111111111111', '4111.1111.1111.1111', '4111  1111 1111 1111', '4111 11111111 1111', 'starts 4111 1111, ends 1111 1111', 'card 4111-1111-1111-1111 exp 12/30', 'Amex 3782 822463 10005'])
+      assert.equal(cardNumbers(t).length, 1, t)
+    for (const t of ['4111 1111 1111 1112', 'Call +15555550143, callback +1 555-555-0100, 20 min, ref 4823, 2 at 7pm 12/30'])
+      assert.deepEqual(cardNumbers(t), [], t)
+  })
+
   const OWNER = [{ channel: 'wa', sender_id: '15555550100' }]
   const REPLY = [
     { tool: 'task_claim', args: { limit: 1 } },
