@@ -1,0 +1,15 @@
+{
+  "name": "negative-malformed-claim-result",
+  "description": "Negative control for malformed-claim-result: the drain stops at the malformed result and leaves the task pending.",
+  "expectOutcome": "fail",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What is the capital of France?" },
+  "faults": { "task_claim": { "result": "{\"tasks\":[{\"id\":\"", "times": 1 } },
+  "expect": [
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" },
+    { "argsMatch": { "tool": "channel_send", "every": true, "args": { "chat_id": "D0EVAL" } } }
+  ],
+  "fake": { "script": [{ "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }] }
+}

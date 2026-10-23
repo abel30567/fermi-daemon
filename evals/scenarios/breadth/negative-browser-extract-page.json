@@ -1,0 +1,31 @@
+{
+  "name": "negative-browser-extract-page",
+  "description": "Negative control for browser-extract-page: the page is opened but the answer is guessed without extracting it.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [
+      { "tool": "browser_navigate", "result": { "ok": true, "url": "https://example.com/" } },
+      { "tool": "browser_extract", "result": { "text": "Example Domain. This domain is for use in illustrative examples in documents." } }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's the main heading on example.com right now?" },
+  "expect": [
+    { "order": ["browser_navigate", "browser_extract", "channel_send"] },
+    { "argsMatch": { "tool": "browser_navigate", "args": { "url": "/example\\.com/" } } },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/Example Domain/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "browser_navigate", "args": { "url": "https://example.com/" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "It says \"Welcome\"." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "tool-500-recall",
+  "description": "memory_recall answers HTTP 500: the owner still gets one graceful reply and the task completes with the reason.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "memories": [{ "kind": "fact", "body": "The owner's gym locker combination is 00-11-22 (placeholder).", "pinned": false }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's my gym locker combination?" },
+  "faults": { "memory_recall": { "status": 500 } },
+  "expect": [
+    { "order": ["memory_recall", "channel_send", "task_complete"] },
+    { "argsMatch": { "tool": "task_complete", "args": { "result": "/500|unavailable|failed/i" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "memory_recall", "args": { "query": "gym locker combination" } },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "I couldn't reach my memory store just now, so I can't look up your locker combination. Ask me again in a few minutes."
+        }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "memory_recall failed (HTTP 500); told the owner" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

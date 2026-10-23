@@ -1,0 +1,35 @@
+{
+  "name": "connector-missing-graceful",
+  "description": "When no connector covers the request, the reply says so and how to add one instead of inventing data.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [{ "tool": "connector_list", "result": { "connectors": [] } }, { "tool": "retriever_list", "result": { "retrievers": [] } }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's on my work calendar tomorrow?" },
+  "expect": [
+    { "called": "connector_list" },
+    { "notCalled": "retriever_run" },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/connect/i" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "connector_list", "args": {  } },
+      { "tool": "retriever_list", "args": {  } },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "I don't have a calendar connected yet. Connect one (Google or Outlook) and I can read tomorrow's events."
+        }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "no calendar connector" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

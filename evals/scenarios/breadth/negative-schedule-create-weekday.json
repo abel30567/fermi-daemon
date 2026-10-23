@@ -1,0 +1,26 @@
+{
+  "name": "negative-schedule-create-weekday",
+  "description": "Negative control for schedule-create-weekday: the recurring job is promised without schedule_create.",
+  "expectOutcome": "fail",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Every weekday at 8am, send me a one-line weather summary for Austin." },
+  "expect": [
+    { "argsMatch": { "tool": "schedule_create", "args": { "chat_id": "D0EVAL", "cron": "/1-5/" } } },
+    { "order": ["schedule_create", "channel_send"] },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Sure, I'll send you the weather every weekday at 8am." }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "promised schedule" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

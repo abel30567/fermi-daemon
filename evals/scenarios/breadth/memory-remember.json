@@ -1,0 +1,26 @@
+{
+  "name": "memory-remember",
+  "description": "An explicit \"remember\" is saved with memory_write before the confirmation, not just acknowledged.",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Remember that my parking spot at the office is B-12." },
+  "expect": [
+    { "argsMatch": { "tool": "memory_write", "args": { "body": "/B-12/" } } },
+    { "order": ["task_claim", "memory_write", "channel_send", "task_complete"] },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "memory_write", "args": { "kind": "fact", "body": "The owner's office parking spot is B-12." } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Saved: your office parking spot is B-12." }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "saved parking spot to memory" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

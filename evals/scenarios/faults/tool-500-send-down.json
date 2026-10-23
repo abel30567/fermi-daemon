@@ -1,0 +1,26 @@
+{
+  "name": "tool-500-send-down",
+  "description": "channel_send keeps answering HTTP 500: after one retry the task is failed with the reason, not marked done.",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What is the capital of France?" },
+  "faults": { "channel_send": { "status": 500 } },
+  "expect": [
+    { "outbox.count": 0 },
+    { "task.status": "failed" },
+    { "argsMatch": { "tool": "task_complete", "args": { "status": "failed", "result": "/channel_send|500/i" } } },
+    { "maxToolCalls": 6 }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Paris." } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Paris." } },
+      {
+        "tool": "task_complete",
+        "args": { "id": "${task.id}", "status": "failed", "result": "channel_send failed twice (HTTP 500); reply not delivered" }
+      },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "api-error-before-send",
+  "description": "The model API fails (529 overloaded) mid-turn before the reply. The warm session re-drains, replies once and completes the task.",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "session": { "redrain": 1 },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What is the capital of France?" },
+  "expect": [
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" },
+    { "order": ["task_claim", "channel_send", "task_complete"] }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 }, "onTurn": 1 },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" }, "onTurn": 1 },
+      { "apiError": { "status": 529, "text": "API Error: 529 {\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}" }, "onTurn": 1 },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Paris." }, "onTurn": 2 },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered (after an API error)" }, "onTurn": 2 },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 }, "onTurn": 2 }
+    ]
+  }
+}

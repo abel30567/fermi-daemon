@@ -1,0 +1,23 @@
+{
+  "name": "negative-tool-500-send-retry",
+  "description": "Negative control for tool-500-send-retry: after the retry succeeds the reply is sent a third time, so the owner gets it twice.",
+  "expectOutcome": "fail",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What is the capital of France?" },
+  "faults": { "channel_send": { "status": 500, "times": 1 } },
+  "expect": [{ "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }, { "task.status": "done" }, { "order": ["channel_send", "channel_send", "task_complete"] }],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Paris." } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Paris." } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Paris. (resending in case that failed)" }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

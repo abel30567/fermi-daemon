@@ -1,0 +1,31 @@
+{
+  "name": "negative-mac-file-search",
+  "description": "Negative control for mac-file-search: a path is made up without searching.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "mac": [{ "tool": "mac_file_search", "match": "tax", "result": "/Users/eval/Documents/Taxes/2025-return-placeholder.pdf" }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Find the PDF of my 2025 tax return on my Mac." },
+  "expect": [
+    { "argsMatch": { "tool": "mac_file_search", "args": { "query": "/tax/i" } } },
+    { "notCalled": "mac_file_delete" },
+    { "notCalled": "mac_file_move" },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/2025-return-placeholder\\.pdf/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "It should be in ~/Downloads/taxes.pdf" }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}
