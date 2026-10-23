@@ -27,6 +27,21 @@ export function expandScenarios(patterns) {
   return [...files]
 }
 
+// Each assertion has exactly one known key; an anyOf holds non-empty lists of them, with no
+// semantic inside (the judge only sees top-level specs).
+function checkExpect(expect, errs, where = '') {
+  if (!Array.isArray(expect) || !expect.length) return errs.push(`${where}expect must be a non-empty list`)
+  for (const a of expect) {
+    const keys = Object.keys(a ?? {})
+    if (keys.length !== 1 || !ASSERTIONS.includes(keys[0])) errs.push(`${where}bad assertion ${JSON.stringify(a)} (one of: ${ASSERTIONS.join(', ')})`)
+    else if (keys[0] === 'anyOf') {
+      const bs = a.anyOf
+      if (!Array.isArray(bs) || !bs.length || bs.flat().some((b) => b?.semantic != null)) errs.push(`${where}anyOf must be a non-empty list of assertion lists without semantic`)
+      else for (const b of bs) checkExpect(b, errs, where)
+    }
+  }
+}
+
 export function loadScenario(file) {
   let s
   const ext = extname(file)
@@ -42,11 +57,7 @@ export function loadScenario(file) {
   const errs = []
   const inb = s.inbound
   if (!inb || ['channel', 'sender', 'chat', 'text'].some((k) => typeof inb[k] !== 'string')) errs.push('inbound needs string channel, sender, chat, text')
-  if (!Array.isArray(s.expect) || !s.expect.length) errs.push('expect must be a non-empty list')
-  for (const a of s.expect ?? []) {
-    const keys = Object.keys(a ?? {})
-    if (keys.length !== 1 || !ASSERTIONS.includes(keys[0])) errs.push(`bad assertion ${JSON.stringify(a)} (one of: ${ASSERTIONS.join(', ')})`)
-  }
+  checkExpect(s.expect, errs)
   if (inb?.channel === 'teams' && !(Array.isArray(s.session) && s.session.some((t) => t?.turn === 'teams'))) errs.push('a teams inbound needs a session with a teams turn')
   if (s.harnesses != null && (!Array.isArray(s.harnesses) || !s.harnesses.length || s.harnesses.some((h) => typeof h !== 'string' || !h)))
     errs.push('harnesses must be a non-empty list of harness names')
@@ -62,6 +73,7 @@ export function loadScenario(file) {
     const names = (Array.isArray(s.variants) ? s.variants : []).map((v) => v?.name)
     if (!names.length || names.some((n) => typeof n !== 'string' || !n) || new Set(names).size !== names.length)
       errs.push('variants must be a non-empty list of objects with unique string names')
+    for (const v of Array.isArray(s.variants) ? s.variants : []) if (v?.expect != null) checkExpect(v.expect, errs, `variant ${v.name}: `)
   }
   if (errs.length) throw new Error(`${file}: ${errs.join('; ')}`)
   return s
@@ -74,7 +86,8 @@ export const isNegativeControl = (s) => s.negative ?? /^negative-|-neg(ative)?$/
 // A scenario with `variants` (paraphrased or adversarial inbounds) becomes the
 // base scenario plus one scenario per variant, named `<name>~<variant>`. A
 // variant's `inbound` and `fixtures` are merged key by key over the base's;
-// `expect` and `fake` are always the base's, so every variant is graded the same.
+// `fake` is always the base's, and so is `expect` unless the variant replaces it
+// (a case the base's grading does not cover, such as the content to hand off being present).
 export function expandVariants(s) {
   const { variants, ...base } = s
   return [
@@ -85,6 +98,7 @@ export function expandVariants(s) {
       ...(v.description && { description: v.description }),
       inbound: { ...base.inbound, ...v.inbound },
       fixtures: { ...base.fixtures, ...v.fixtures },
+      ...(v.expect && { expect: v.expect }),
     })),
   ]
 }
