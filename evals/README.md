@@ -7,10 +7,13 @@ final text.
 
 ```bash
 node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios '<glob>'... \
-  [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>]
+  [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>]
 
 # the runner's own check: fake harness, fake target, no inference, localhost only
 node evals/run.mjs --harness fake --scenarios 'evals/scenarios/examples/*' --out /tmp/e && cat /tmp/e/summary.json
+
+# negative controls: play each scenario's fake.negative; every attempt must fail
+node evals/run.mjs --harness fake --fake-script negative --scenarios 'evals/scenarios/critical/*' --out /tmp/n
 ```
 
 Exit code: 0 when every attempt ended as expected, 1 otherwise, 2 on a usage
@@ -67,24 +70,49 @@ It also checks every URL it hands out (worker env, target, MCP config).
     "skills": [{ "slug": "…", "body": "---\nname: …\n---\n…" }],
     "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }], // → allowlist
     "tasks": [{ "id": "…", "channel": "sl", "sender": "…", "chat_id": "…", "payload": "…", "queue": "grok-bot" }],
-    "mac": [{ "tool": "mac_shell", "match": "uptime", "result": "up 3 days" }]      // fake Mac canned results
+    "mac": [{ "tool": "mac_shell", "match": "uptime", "result": "up 3 days" }],     // fake Mac canned results
+    "secrets": [{ "name": "EXAMPLE_API_KEY", "value": "exk-eval-…" }],              // set via secret_set, resolvable
+    "history": [{ "role": "assistant", "text": "Reply yes to place the call.", "minutes_ago": 2 }] // fake target only
   },
   "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "…",
                "attachment": { "kind": "image", "file": "x.jpg" } },               // optional
   "faults": { "channel_send": { "error": "slack is down" }, "context_bootstrap": { "latencyMs": 2000 } },
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
+  "severity": "critical",                 // optional label; the critical pack must pass^5
+  "variants": [{ "name": "paraphrase-1", "inbound": { "text": "…" }, "fixtures": { … } }],
   "session": [ { "turn": "drain", "interruptAfter": "mac_shell" }, { "turn": "stop" } ], // optional, see below
   "category": "core",                     // optional: report category; default `severity`, else the pack dir
   "harnesses": [ "fake" ],                // optional: run only under these harnesses, skipped elsewhere
-  "fake": { "script": [ … ] }             // only read by --harness fake ("turns": [[ … ], …] with a session)
+  "fake": { "script": [ … ], "negative": [ … ] } // only read by --harness fake ("turns": [[ … ], …] with a session)
 }
 ```
 
-Inbound channels: `sl` (Slack bridge webhook; a chat id starting with `D` is a
-DM). Other channels fail the attempt with a clear error until they are added.
+Inbound channels:
+- `sl`: the Slack bridge webhook. A chat id starting with `D` is a DM; in a
+  channel, `team` must be allowlisted and the payload is `[display_name] text`.
+- `wa`: the WhatsApp bridge webhook (`{ sender, chat_id, text }`). `sender` is
+  the phone number and must be allowlisted. A DM's `chat` is the same number and
+  is acked through the outbox (so `outbox.count` counts that ack). A group `chat`
+  ends in `@g.us`, and its payload is attributed by sender id (`[<sender>] text`).
+- any channel with `"via": "task"`: seeded as the newest pending task (id
+  `eval-inbound`) instead of a webhook, for what no bridge delivers: call results
+  (`sender: "phone:…"`), `cloud` handoffs.
+
+Other channels fail the attempt with a clear error until they are added.
 `teams` is not a queue channel: it needs a session with a `teams` turn and
 posts no webhook.
+
+`variants` expand one file into the base scenario plus `<name>~<variant>` per
+entry. A variant's `inbound` and `fixtures` are merged key by key over the
+base's, and it is graded with the base's `expect` and `fake`.
+
+`fixtures.history` is the inbound chat's prior transcript. eval-seed.mjs cannot
+seed it yet, so the wrangler target refuses such scenarios rather than grading
+them without their history.
+
+`fake.negative` is a scripted misbehaviour. `--fake-script negative` plays it
+instead of `fake.script` and expects every attempt to fail.
 
 `expect` entries each have exactly one key (see `lib/assertions.mjs`):
 
@@ -96,6 +124,7 @@ posts no webhook.
 | `outbox.count` | `{ "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }`: messages sent during the drain (chat API fakes + D1 outbox); the webhook's own "Got it" ack is not counted |
 | `task.status` | `"done"` for the inbound message's task, or `{ "queue": "grok-bot", "is": "pending" }` |
 | `noSecretIn` | `["sk-…"]`: not in tool args, assistant text or outbound messages |
+| `noCardNumberIn` | `"phone_call_start"`: no call's args hold a Luhn-valid 13–19 digit number, however grouped or split |
 | `maxToolCalls` / `maxLatencyMs` | `{ "maxLatencyMs": 60000 }`: from enqueue to the end of the drain |
 
 ## Session mode
