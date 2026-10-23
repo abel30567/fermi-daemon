@@ -25,6 +25,7 @@ config, not machine config, so nothing local to restore for it. Never set
 - `~/Desktop/2026Code/MacOSMCP/.env` — `AGENT_TOKEN`, `PORT`, `ALLOWED_PATHS`, `LOG_DIR`
 - `~/.cloudflared/` — `config-macos-mcp.yml`, `cert.pem`, `<tunnel-id>.json`
 - `~/fermi-daemon/wa-auth/` — WhatsApp device session (re-pairable; not backed up)
+- `~/fermi-daemon/prompts/local.json` — the drain prompt's private values (keys in `prompts/local.example.json`; not in the bundle, copy it by hand). The warm worker and drain runs refuse to start without it.
 
 Run `./backup-secrets.sh` to bundle the first three into
 `~/fermi-daemon-backups/secrets-<ts>.tar.gz`. **Copy the newest bundle off this
