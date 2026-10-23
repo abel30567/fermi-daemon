@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ROOT } from './run-worker.mjs'
 import { evaluate } from '../evals/lib/assertions.mjs'
-import { runAttempt } from '../evals/lib/runner.mjs'
+import { DRAIN_PROMPT, EVAL_OVERLAY, runAttempt } from '../evals/lib/runner.mjs'
+import { loadPrompt } from '../lib/prompt.mjs'
 import { loadScenario, webhookRequest } from '../evals/lib/scenario.mjs'
 import { TURNS } from '../evals/lib/session.mjs'
 import * as fake from '../evals/harness/fake.mjs'
@@ -89,7 +90,7 @@ describe('session mode (evals/lib/session.mjs)', () => {
     assert.deepEqual(trace.filter((e) => e.type === 'text').map((e) => e.text), ['OK'])
   })
 
-  test('the session gets drain.md as its system prompt and the warm-worker turn texts in order', async () => {
+  test('the session gets the rendered drain.md as its system prompt and the warm-worker turn texts in order', async () => {
     const seen = { sends: [] }
     const spy = {
       startSession: (o) => {
@@ -103,7 +104,7 @@ describe('session mode (evals/lib/session.mjs)', () => {
     const scenario = loadScenario(join(CONTROL, 'emergency-stop-mid-task.json'))
     const r = await runAttempt({ scenario, attempt: 1, harness: spy, timeoutMs: 10_000, outDir: tmp() })
     assert.equal(r.pass, true, JSON.stringify(r.failed))
-    assert.equal(seen.opts.systemPrompt, readFileSync(join(ROOT, 'prompts/drain.md'), 'utf8'))
+    assert.equal(seen.opts.systemPrompt, loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY))
     assert.deepEqual(seen.opts.allowedTools, ['mcp__fermi__*'])
     assert.deepEqual(seen.sends, [TURNS.drain(), TURNS.stop(scenario.inbound), TURNS.keepalive()])
     assert.match(seen.sends[1], /channel "sl" chat_id "D0EVAL"/)
