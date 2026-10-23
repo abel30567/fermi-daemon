@@ -62,6 +62,42 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    its MCP servers from `~/.pi/agent/mcp.json`, so the pi adapter runs with that
    HOME, writes the MCP config there (refusing any non-localhost URL) and copies
    in only `~/.pi/agent/auth.json`, deleted when pi exits (`harness/pi.mjs`).
+   Claude Code also gets `--setting-sources project,local` (as the production
+   lanes: never the user's settings, hooks or plugins), `--strict-mcp-config`,
+   `--permission-mode default` (never `bypassPermissions`) and
+   `--tools Bash,ToolSearch`: the production surface, a shell next to Fermi,
+   unless the scenario narrows `tools` (`[]` → `--tools ToolSearch`).
+   `ToolSearch` only loads deferred tool schemas: without it Claude Code sends
+   every Fermi schema up front instead of deferring them as production does.
+   `--allowedTools mcp__fermi__*` only auto-approves; it restricts nothing.
+   Every harness process (claude-code, hbar, pi, codex) runs in the same OS
+   sandbox (`harness/sandbox.mjs`): `sandbox-exec` with a generated Seatbelt
+   profile on macOS, `bwrap` on Linux, and a real harness refuses to start (exit 2)
+   without one. It may write only to the attempt's sandbox dir (its `HOME`, with
+   `tmp/` as `TMPDIR`), may not read the real `$HOME` beyond the harness binary's
+   directory, the node runtime and the attempt dir, and may connect only to the
+   MCP proxy's 127.0.0.1 port, a localhost `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`
+   (CLIProxyAPI) and the egress proxy (`lib/egress-proxy.mjs`, its `HTTPS_PROXY`),
+   which tunnels only to the model endpoints (`api.anthropic.com`, `chatgpt.com`,
+   `api.openai.com`, `auth.openai.com`, `api.x.ai`) and notes every refusal in the
+   trace (`source: "egress"`). On Linux only the filesystem part is enforced: an
+   unshared network namespace could not reach the runner's 127.0.0.1 servers
+   (follow-up DMN-29). codex runs with its own sandbox off (`sandbox_mode =
+   "danger-full-access"` in the per-attempt `CODEX_HOME`), and only ever inside ours.
+   **Isolation assertion** (`lib/isolation.mjs`): the harness's `init` (pi and
+   codex adapters report their always-on built-ins in one) may list no built-in
+   beyond the scenario's `tools` (default `["Bash"]`) plus that harness's
+   irreducible built-ins (pi: `read`, `bash`, `edit`, `write`; codex: `Bash`,
+   `apply_patch`; claude-code: its internal `ToolSearch`, never counted in
+   `surfaceDelta`), which are allowed and recorded per attempt in `results.json` as
+   `builtinTools` and `surfaceDelta` (`{ added, removed }` against production's
+   `["Bash"]`). Its MCP servers must be exactly `{fermi}` (the config itself must
+   be `{fermi → 127.0.0.1}`). Each attempt also plants a sandbox canary, a random
+   token in a file under the real `$HOME`; the token showing up in any event means
+   the sandbox let the harness read there. On any of these, or on a tool call
+   before any init, the harness is killed and the attempt fails with errorKind
+   `isolation_breach`, which is never an expected outcome, not even for a
+   negative control.
 4. Enqueues `inbound` through the channel webhook, the same way the bridge does.
 5. Runs one drain through the adapter (`runOnce`, `prompts/drain.md` as the
    prompt, rendered with the eval overlay `fixtures/prompt-overlay.json`: owner
@@ -106,6 +142,7 @@ It also checks every URL it hands out (worker env, target, MCP config).
               "memory_recall": { "status": 500 }, "task_claim": { "result": "{\"tasks\":[{", "times": 1 } },
   "session": { "tasks": 200, "redrain": 1 }, // optional: one warm drain session (below)
   "credentials": { "canary": true },     // optional: plant a canary (below)
+  "tools": [],                            // optional: narrows the built-ins from production's ["Bash"]
   "schedule": "weekly",                   // optional: only run with --weekly
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
@@ -114,7 +151,7 @@ It also checks every URL it hands out (worker env, target, MCP config).
   "session": [ { "turn": "drain", "interruptAfter": "mac_shell" }, { "turn": "stop" } ], // or a list of turns, see Session mode
   "category": "core",                     // optional: report category; default `severity`, else the pack dir
   "harnesses": [ "fake" ],                // optional: run only under these harnesses, skipped elsewhere
-  "fake": { "script": [ … ], "negative": [ … ] } // only read by --harness fake ("turns": [[ … ], …] with a session)
+  "fake": { "script": [ … ], "negative": [ … ], "builtins": [ "Bash" ] } // only read by --harness fake ("turns": [[ … ], …] with a session)
 }
 ```
 
@@ -213,9 +250,12 @@ listed under `skipped` in `summary.json`.
 
 `--harness fake` (`harness/fake.mjs`) runs no model. It plays the scenario's
 `fake.script` against the `fermi` server in its MCP config and emits the same
-normalized events a real adapter does. A step is `{ "tool", "args" }`,
+normalized events a real adapter does; its init lists the fermi tools plus
+`fake.builtins`. A step is `{ "tool", "args" }`,
 `{ "text" }`, `{ "shell", "result" }` (a call to the harness's own shell tool,
-traced as `Bash`; nothing runs), `{ "internal", "args", "result" }` (another of the
+traced as `Bash`; nothing runs), `{ "shell", "exec": true }` (the same call, but
+`/bin/sh -c` really runs it inside the attempt's sandbox: the breach canaries in
+`test/eval-isolation.test.mjs`), `{ "internal", "args", "result" }` (another of the
 harness's own tools, such as `ToolSearch`; nothing runs), `{ "sleepMs" }` or `{ "apiError": { "status", "text" } }`
 (the model API fails: the turn ends with `lib/turn-outcome.mjs`'s classification).
 With a list-of-turns `session`, `fake.turns` holds one step list per turn;
@@ -250,8 +290,9 @@ node evals/judge.mjs <run dir> --scenarios '<glob>'... [--fake]   # → <run dir
 - Rubric (1-5 each, score = mean / 5): helpful, tone (no "as an AI"), format
   (Slack mrkdwn: no pipe tables, `#` headers or `**`).
 - Judge harness and model are fixed in `evals/judge.config.json`. The call goes
-  through the harness adapter like an eval attempt (same credential env, no MCP
-  servers, one turn).
+  through the harness adapter like an eval attempt (same credential env, one
+  turn) with the same isolation: `--tools ""`, strict MCP with no servers,
+  `--setting-sources project,local`, inside the OS sandbox behind the egress proxy.
 - The judge sees only the channel, the inbound text and the `channel_send` texts,
   never the harness, model, trace or cost.
 - `--fake` uses the deterministic rule-based `fakeJudge` (no inference).

@@ -3,18 +3,24 @@
 // harness adapter with prompts/drain.md (rendered with the eval overlay), then dump state and grade the trace.
 // A scenario with `session` runs in one warm session instead: a list of turns
 // (session.mjs runSession) or { tasks, redrain } (runDrainSession below).
+// Every harness process runs in the attempt's OS sandbox (harness/sandbox.mjs),
+// reaching the model endpoints only through the egress proxy, and its init must
+// pass the isolation assertion (isolation.mjs) or the attempt is aborted.
 import { randomBytes } from 'node:crypto'
 import { appendFileSync, fstatSync, mkdirSync, mkdtempSync, readSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
 import { evaluate } from './assertions.mjs'
+import { startEgressProxy } from './egress-proxy.mjs'
+import { INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
 import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
-import { assertLocalUrls } from './net.mjs'
+import { assertLocalUrls, isLocalUrl } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
 import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
@@ -92,7 +98,12 @@ async function seedSecrets(url, secrets = []) {
 
 const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v))))
 
-export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir }) {
+// A localhost model endpoint the harness is pointed at (CLIProxyAPI via ANTHROPIC_BASE_URL / OPENAI_BASE_URL).
+export const localModelPorts = (env = process.env) =>
+  ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL'].filter((k) => isLocalUrl(env[k])).map((k) => new URL(env[k]).port || '80')
+
+// `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
+export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [] }) {
   const dir = join(outDir, scenario.name, String(attempt))
   mkdirSync(dir, { recursive: true })
   const closers = []
@@ -108,6 +119,26 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   const note = (ev) => {
     trace.push(ev)
     appendFileSync(join(dir, 'trace.jsonl'), JSON.stringify(ev) + '\n')
+  }
+  // The isolation assertion, on the harness's first init (or a tool call before any),
+  // and on every event for the sandbox canary.
+  let init = null
+  let breach = null
+  let allowed = PRODUCTION_BUILTINS
+  let sandboxCanary = null
+  let onBreach
+  const breached = new Promise((r) => (onBreach = r))
+  let kill = () => {} // the running harness, killed the moment a breach shows
+  const isolate = (ev) => {
+    if (breach) return
+    if (ev.type === 'init' && !init) breach = isolationBreach((init = ev), { allowed })
+    else if (ev.type === 'tool_call' && !init) breach = 'a tool call before the harness reported its tool list'
+    else if (sandboxCanary?.seen(ev)) breach = `the harness read the sandbox canary ${sandboxCanary.path} outside its sandbox`
+    if (breach) {
+      note({ type: 'note', source: 'isolation', detail: breach })
+      kill()
+      onBreach()
+    }
   }
   try {
     const fakes = await startFakes({ mac: { canned: fixtures?.mac } })
@@ -127,6 +158,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     closers.push(proxy.close)
     const mcpConfig = { mcpServers: { fermi: { type: 'http', url: `${proxy.url}/mcp` } } }
     assertLocalUrls(Object.fromEntries(Object.entries(mcpConfig.mcpServers).map(([k, s]) => [`mcp:${k}`, s.url])))
+    checkMcpConfig(mcpConfig)
     const mcpConfigFile = join(dir, 'mcp.json')
     writeFileSync(mcpConfigFile, JSON.stringify(mcpConfig, null, 2))
 
@@ -144,17 +176,34 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     }
 
     const drainPrompt = loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY)
+    allowed = allowedBuiltins(harness.name, scenario.tools)
+    sandboxCanary = plantSandboxCanary()
+    closers.push(async () => sandboxCanary.remove())
     // A per-attempt HOME for adapters that read MCP servers from it (pi); others ignore it.
     const sandboxHome = mkdtempSync(join(tmpdir(), 'eval-home-'))
     closers.push(async () => rmSync(sandboxHome, { recursive: true, force: true }))
+    const egress = await startEgressProxy({ onDeny: (detail) => note({ type: 'note', source: 'egress', detail }) })
+    closers.push(egress.close)
+    const sandbox = createSandbox({ root: sandboxHome, readable: [dir, ...sandboxReadable], localPorts: [proxy.port, ...localModelPorts()], egressProxy: egress.url })
     const opts = {
       model,
       cwd: dir,
       mcpConfig: mcpConfigFile,
       sandboxHome,
-      allowedTools: ['mcp__fermi__*'],
-      env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }, // no claude.ai connectors (the production Fermi) next to the eval server
-      script: scenario.fake?.script, // the fake harness's script; real adapters ignore it
+      sandbox,
+      allowedTools: ['mcp__fermi__*'], // auto-approves only; `tools` decides which built-ins exist
+      // claude-code: --tools Bash,ToolSearch: production's shell, unless the scenario narrows it,
+      // plus ToolSearch so the fermi tools stay deferred as in production
+      tools: [...(scenario.tools ?? PRODUCTION_BUILTINS), ...INTERNAL_TOOLS],
+      settingSources: 'project,local', // as the production lanes; never the user's settings, hooks or plugins
+      strictMcpConfig: true,
+      permissionMode: 'default', // never bypassPermissions
+      env: {
+        ENABLE_CLAUDEAI_MCP_SERVERS: 'false', // no claude.ai connectors (the production Fermi) next to the eval server
+        CLAUDE_CONFIG_DIR: join(sandbox.root, '.claude'), // not an inherited real config dir
+      },
+      script: scenario.fake?.script, // the fake harness's script and built-ins; real adapters ignore them
+      builtins: scenario.fake?.builtins,
     }
     if (canary) {
       await plantCanary(canary, { opts, target })
@@ -162,20 +211,23 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     }
     const record = (events) => {
       events.on('event', note)
+      events.on('event', isolate)
       events.on('raw', (line) => appendFileSync(join(dir, 'raw.log'), line + '\n'))
       events.on('stderr', (s) => appendFileSync(join(dir, 'stderr.log'), s))
     }
-    // Wait for a runOnce-shaped handle, killing it at the timeout; → timed out?
+    // Wait for a runOnce-shaped handle, killing it at the timeout or on a breach; → timed out?
     const finish = async (run) => {
+      kill = () => run.close('SIGKILL')
       record(run.events)
       let timer
       const late = await Promise.race([
         run.done.then(() => false),
+        breached.then(() => 'breach'),
         new Promise((r) => (timer = setTimeout(() => r(true), timeoutMs))),
       ])
       clearTimeout(timer)
-      if (late) run.close('SIGTERM')
-      return late
+      if (late === true) run.close('SIGTERM')
+      return late === true
     }
     let timedOut
     if (Array.isArray(scenario.session)) {
@@ -183,7 +235,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
       await enqueue(scenario.inbound)
       timedOut = await finish(runSession(harness, { ...opts, systemPrompt: drainPrompt, script: scenario.fake?.turns }, { turns: scenario.session, inbound: scenario.inbound }))
     } else if (scenario.session) {
-      ;({ timedOut, taskLatencies } = await runDrainSession({ harness, opts, systemPrompt: drainPrompt, scenario, enqueue, record, retried, deadline: t0 + timeoutMs }))
+      ;({ timedOut, taskLatencies } = await runDrainSession({ harness, opts, systemPrompt: drainPrompt, scenario, enqueue, record, retried, breached, onKill: (k) => (kill = k), deadline: t0 + timeoutMs }))
     } else {
       await enqueue(scenario.inbound)
       timedOut = await finish(harness.runOnce({ prompt: drainPrompt, ...opts }))
@@ -201,6 +253,10 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     for (const close of closers.reverse()) await close().catch(() => {})
   }
 
+  if (breach) {
+    errorKinds.add('isolation_breach')
+    failed.push({ assertion: null, message: `isolation breach, attempt aborted: ${breach}` })
+  }
   // A run that never finished cleanly is never graded green, whatever its trace.
   if (errorKinds.has('timeout')) failed.push({ assertion: null, message: `harness timed out after ${timeoutMs} ms` })
   for (const ev of trace) {
@@ -215,6 +271,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   const sum = (k) => (ends.some((e) => e[k] != null) ? ends.reduce((a, e) => a + (e[k] ?? 0), 0) : null)
   const inputTokens = sum('inputTokens')
   const outputTokens = sum('outputTokens')
+  const builtinTools = builtinsOf(init)
   return {
     scenario: scenario.name,
     ...(scenario.category != null && { category: String(scenario.category) }),
@@ -227,6 +284,9 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     tokens: inputTokens == null && outputTokens == null ? null : { input: inputTokens, output: outputTokens },
     costUsd: sum('costUsd'),
     errorKinds: [...errorKinds],
+    // The harness's reported built-ins and how they differ from production's (null without an init).
+    builtinTools,
+    surfaceDelta: builtinTools && surfaceDelta(builtinTools),
   }
 }
 
@@ -235,12 +295,16 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
 // messages one at a time (`${n}` in inbound.text is the message's number), one
 // DRAIN_TURN each. After an error turn it re-sends the drain turn, up to k times
 // per message. → { timedOut, taskLatencies } (enqueue → that message's last turn_end).
-async function runDrainSession({ harness, opts, systemPrompt, scenario, enqueue, record, retried, deadline }) {
+async function runDrainSession({ harness, opts, systemPrompt, scenario, enqueue, record, retried, breached, onKill, deadline }) {
   const { tasks = 1, redrain = 0 } = scenario.session
   const session = harness.startSession({ ...opts, systemPrompt })
+  onKill(() => session.close('SIGKILL'))
   record(session.events)
+  let aborted = false
+  breached.then(() => (aborted = true))
   const turn = () =>
     new Promise((resolve) => {
+      breached.then(() => (session.events.off('event', on), clearTimeout(timer), resolve(null)))
       const timer = setTimeout(() => (session.events.off('event', on), resolve(null)), Math.max(0, deadline - Date.now()))
       const on = (ev) => {
         if (ev.type !== 'turn_end') return
@@ -261,12 +325,13 @@ async function runDrainSession({ harness, opts, systemPrompt, scenario, enqueue,
         retried.add(end)
         end = await turn()
       }
+      if (aborted) return { timedOut: false, taskLatencies }
       if (!end) return { timedOut: true, taskLatencies }
       taskLatencies.push(Date.now() - t)
     }
     return { timedOut: false, taskLatencies }
   } finally {
-    session.close('SIGTERM')
+    if (!aborted) session.close('SIGTERM')
   }
 }
 
@@ -278,7 +343,8 @@ export function summarize(results, meta) {
     if (r.pass) s.passes++
   }
   for (const s of Object.values(byScenario)) s.passRate = s.passes / s.attempts
-  const unexpected = results.filter((r) => r.pass !== (r.expectedOutcome === 'pass'))
+  // An isolation breach is never an expected outcome, not even for a negative control.
+  const unexpected = results.filter((r) => r.pass !== (r.expectedOutcome === 'pass') || r.errorKinds?.includes('isolation_breach'))
   return {
     ...meta,
     scenarios: Object.keys(byScenario).length,
