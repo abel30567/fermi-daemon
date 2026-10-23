@@ -64,6 +64,7 @@ WantedBy=default.target
   with it** (don't run two boxes on the same session — WhatsApp will log both out).
   Fresh box alternative: re-pair (`npm run pair -- <E164>`; QR fallback in socket.ts).
 - `warm-model` — persisted model choice (optional; defaults to sonnet)
+- `prompts/local.json` — the drain prompt's private values (keys in `prompts/local.example.json`); required
 - `models/` — whisper models (optional; auto-redownload)
 - `prompts/`, `tools/`, `narrator.py`, `poll.sh`, `warm-worker.mjs` (+ `lib/`, `harness/`) — code
 - claude CLI auth: `claude login` on the box (interactive, one-time)
