@@ -103,7 +103,9 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    profile on macOS, `bwrap` on Linux, and a real harness refuses to start (exit 2)
    without one. It may write only to the attempt's sandbox dir (its `HOME`, with
    `tmp/` as `TMPDIR`), may not read the real `$HOME` beyond the harness binary's
-   directory, the node runtime and the attempt dir, and may connect only to the
+   directory (its whole `node_modules` tree when it is a node package, as pi is:
+   it reads its `package.json` and dependencies at startup), the node runtime and
+   the attempt dir, and may connect only to the
    MCP proxy's 127.0.0.1 port, CLIProxyAPI's `127.0.0.1:8317` (with `--auth proxy`
    only) and the egress proxy (`lib/egress-proxy.mjs`, its `HTTPS_PROXY`),
    which tunnels only to the model endpoints (`api.anthropic.com`, `chatgpt.com`,
