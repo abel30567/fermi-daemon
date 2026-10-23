@@ -1,6 +1,8 @@
 {
   "OWNER_SENDER": "U0EXAMPLEOWNER",
   "OWNER_CHANNEL": "sl",
+  "OWNER_NAME": "Example",
+  "OWNER_EXTRA_RULES": "On the owner's calls the voice may call them by their nickname, Ex.\nOn the owner's calls the voice may switch to Spanish if the callee prefers it.",
   "FINANCE_CHANNEL": "C0EXAMPLEFIN",
   "CALL_LIST": "Example Owner +15555550100; Example Contact +15555550101"
 }
