@@ -10,6 +10,7 @@
     "required": ["scenario", "attempt", "pass", "expectedOutcome", "failed", "latencyMs", "toolCalls", "tokens", "costUsd", "errorKinds"],
     "properties": {
       "scenario": { "type": "string", "minLength": 1 },
+      "category": { "type": "string", "minLength": 1 },
       "attempt": { "type": "integer", "minimum": 1 },
       "pass": { "type": "boolean" },
       "expectedOutcome": { "enum": ["pass", "fail"] },

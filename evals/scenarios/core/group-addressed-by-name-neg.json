@@ -1,0 +1,85 @@
+{
+  "name": "group-addressed-by-name-neg",
+  "description": "Negative control for group-addressed-by-name: The answer goes to a DM with the asker instead of the group.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      },
+      {
+        "channel": "sl",
+        "sender_id": "T0EVAL",
+        "note": "workspace"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALFRIEND",
+    "display_name": "Example Friend",
+    "team": "T0EVAL",
+    "chat": "C0EVAL",
+    "text": "Fermi, settle this for us: is a tomato a fruit?"
+  },
+  "expect": [
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "outbox.count": {
+        "eq": 1,
+        "chat_id": "C0EVAL"
+      }
+    },
+    {
+      "outbox.count": 1
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "D0FRIEND",
+          "text": "Botanically, yes: it is a fruit."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "answered"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

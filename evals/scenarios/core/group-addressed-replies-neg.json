@@ -1,0 +1,87 @@
+{
+  "name": "group-addressed-replies-neg",
+  "description": "Negative control for group-addressed-replies: The drain completes the task without replying.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      },
+      {
+        "channel": "sl",
+        "sender_id": "T0EVAL",
+        "note": "workspace"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALFRIEND",
+    "display_name": "Example Friend",
+    "team": "T0EVAL",
+    "chat": "C0EVAL",
+    "text": "@Fermi what's the boiling point of water in Fahrenheit?"
+  },
+  "expect": [
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "every": true,
+        "args": {
+          "channel": "sl",
+          "chat_id": "C0EVAL"
+        }
+      }
+    },
+    {
+      "outbox.count": {
+        "eq": 1,
+        "chat_id": "C0EVAL"
+      }
+    },
+    {
+      "task.status": "done"
+    },
+    {
+      "maxToolCalls": 6
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "stayed silent"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

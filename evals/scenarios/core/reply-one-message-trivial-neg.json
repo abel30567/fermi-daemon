@@ -1,0 +1,80 @@
+{
+  "name": "reply-one-message-trivial-neg",
+  "description": "Negative control for reply-one-message-trivial: An \"On it\" preamble before the answer makes two messages.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "How many days are in a leap year?"
+  },
+  "expect": [
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "outbox.count": 1
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "🔧 On it — checking."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "366."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "answered"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "name": "scheduled-run-delivers",
+  "description": "A scheduled run whose delivery condition is met sends one message, saves the new state and completes.",
+  "fixtures": {
+    "memories": [
+      {
+        "kind": "fact",
+        "body": "sched:example-status:last-seen = operational",
+        "pinned": false
+      }
+    ],
+    "tasks": [
+      {
+        "id": "eval-sched-1",
+        "channel": "sl",
+        "sender": "schedule:abc12345",
+        "chat_id": "D0EVAL",
+        "payload": "Goal: tell the owner when https://status.example.com changes state. Steps: memory_recall sched:example-status:last-seen; run mac_shell `curl -s https://status.example.com/api`; memory_write the new state if it changed. Delivery: only message the owner when the state differs from last-seen; otherwise stay silent."
+      }
+    ],
+    "mac": [
+      {
+        "tool": "mac_shell",
+        "match": "status\\.example\\.com",
+        "result": "degraded"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALSTRANGER",
+    "chat": "D0STRANGER",
+    "text": "hello?"
+  },
+  "expect": [
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "outbox.count": {
+        "eq": 1,
+        "chat_id": "D0EVAL"
+      }
+    },
+    {
+      "argsMatch": {
+        "tool": "memory_write",
+        "args": {
+          "body": "/sched:example-status:last-seen/"
+        }
+      }
+    },
+    {
+      "order": [
+        "mac_shell",
+        "channel_send",
+        "task_complete"
+      ]
+    },
+    {
+      "task.status": {
+        "id": "eval-sched-1",
+        "is": "done"
+      }
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "memory_recall",
+        "args": {
+          "query": "sched:example-status:last-seen"
+        }
+      },
+      {
+        "tool": "mac_shell",
+        "args": {
+          "command": "curl -s https://status.example.com/api"
+        }
+      },
+      {
+        "tool": "memory_write",
+        "args": {
+          "kind": "fact",
+          "body": "sched:example-status:last-seen = degraded"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "status.example.com is now degraded (was operational)."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "delivered status change"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

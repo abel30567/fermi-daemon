@@ -2,6 +2,7 @@
 import { existsSync, globSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { ASSERTIONS } from './assertions.mjs'
+import { TURNS } from './session.mjs'
 
 const WILD = /[*?[{]/
 
@@ -32,6 +33,8 @@ export function loadScenario(file) {
     throw new Error(`${file}: ${err.message}`)
   }
   s.name ??= basename(file, '.json')
+  // The report's category: an explicit `category`, else `severity` (critical packs), else the pack dir.
+  s.category ??= s.severity ?? basename(dirname(file))
   const errs = []
   const inb = s.inbound
   if (!inb || ['channel', 'sender', 'chat', 'text'].some((k) => typeof inb[k] !== 'string')) errs.push('inbound needs string channel, sender, chat, text')
@@ -40,6 +43,11 @@ export function loadScenario(file) {
     const keys = Object.keys(a ?? {})
     if (keys.length !== 1 || !ASSERTIONS.includes(keys[0])) errs.push(`bad assertion ${JSON.stringify(a)} (one of: ${ASSERTIONS.join(', ')})`)
   }
+  if (s.session != null && (!Array.isArray(s.session) || !s.session.length || s.session.some((t) => !TURNS[t?.turn])))
+    errs.push(`session must be a non-empty list of { turn: ${Object.keys(TURNS).join(' | ')}, interruptAfter? }`)
+  if (inb?.channel === 'teams' && !s.session?.some((t) => t?.turn === 'teams')) errs.push('a teams inbound needs a session with a teams turn')
+  if (s.harnesses != null && (!Array.isArray(s.harnesses) || !s.harnesses.length || s.harnesses.some((h) => typeof h !== 'string' || !h)))
+    errs.push('harnesses must be a non-empty list of harness names')
   if (s.expectOutcome != null && !['pass', 'fail'].includes(s.expectOutcome)) errs.push('expectOutcome must be "pass" or "fail"')
   if (inb?.via != null && !['webhook', 'task'].includes(inb.via)) errs.push('inbound.via must be "webhook" or "task"')
   if (s.variants != null) {
@@ -97,10 +105,11 @@ export function seedFixture(fixtures = {}, inbound = null) {
   }
 }
 
-// The channel webhook request that enqueues the inbound message, as a bridge
-// sends it; null for an inbound seeded as a task.
+// The channel webhook request that enqueues the inbound message, as a bridge sends it.
+// null for an inbound seeded as a task, and for Teams: the warm worker takes it
+// as a session turn, not a queue task.
 export function webhookRequest(inbound, secrets) {
-  if (inbound.via === 'task') return null
+  if (inbound.via === 'task' || inbound.channel === 'teams') return null
   const text = inbound.attachment
     ? `${inbound.text}\n[${inbound.attachment.kind} attachment saved to ~/fermi-daemon/media/${inbound.attachment.file}]`
     : inbound.text
