@@ -1,7 +1,8 @@
 // One scenario attempt: fresh fakes + eval target + fault proxy, enqueue the
 // inbound message through the channel webhook, run one drain through the
 // harness adapter with prompts/drain.md, then dump state and grade the trace.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { evaluate } from './assertions.mjs'
@@ -64,10 +65,14 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     fakes.setPhase('drain')
 
     const drainPrompt = readFileSync(DRAIN_PROMPT, 'utf8')
+    // A per-attempt HOME for adapters that read MCP servers from it (pi); others ignore it.
+    const sandboxHome = mkdtempSync(join(tmpdir(), 'eval-home-'))
+    closers.push(async () => rmSync(sandboxHome, { recursive: true, force: true }))
     const harnessOpts = {
       model,
       cwd: dir,
       mcpConfig: mcpConfigFile,
+      sandboxHome,
       allowedTools: ['mcp__fermi__*'],
       env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }, // no claude.ai connectors (the production Fermi) next to the eval server
     }

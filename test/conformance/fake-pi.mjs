@@ -12,6 +12,9 @@
 //     $FAKE_DIR/cred.json, run a bash-tool child (inheriting the environment, as
 //     pi's bash tool does) that dumps its environment to $FAKE_DIR/child-env.json,
 //     and stream that tool execution.
+//   {"$fake":"mcp_probe"}      MCP probe: resolve the agent dir as pi does
+//     (PI_CODING_AGENT_DIR, else $HOME/.pi/agent) and record HOME, that dir and
+//     the mcp.json and auth.json pi would load from it to $FAKE_DIR/mcp-seen.json.
 // An abort ends the in-flight run the way pi does: an aborted assistant message,
 // then agent_end and agent_settled, then the abort response.
 import { spawnSync } from 'node:child_process'
@@ -37,6 +40,7 @@ async function replay(name) {
     else if (d.$fake === 'hang') await new Promise(() => {})
     else if (d.$fake === 'exit') process.exit(d.code)
     else if (d.$fake === 'tool_env') toolEnv()
+    else if (d.$fake === 'mcp_probe') mcpProbe()
   }
   if (run === t) run = null
 }
@@ -50,6 +54,19 @@ function toolEnv() {
   writeFileSync(join(dir, 'child-env.json'), env)
   out({ type: 'tool_execution_start', toolCallId: 'toolu_env', toolName: 'bash', args: { command: 'env' } })
   out({ type: 'tool_execution_end', toolCallId: 'toolu_env', toolName: 'bash', result: { content: [{ type: 'text', text: env }], details: {} }, isError: false })
+}
+
+function mcpProbe() {
+  const agentDir = process.env.PI_CODING_AGENT_DIR || join(process.env.HOME, '.pi/agent')
+  const read = (f) => {
+    try {
+      return readFileSync(join(agentDir, f), 'utf8')
+    } catch {
+      return null
+    }
+  }
+  const seen = { home: process.env.HOME, agentDir, mcp: read('mcp.json'), auth: read('auth.json') }
+  writeFileSync(join(process.env.FAKE_DIR, 'mcp-seen.json'), JSON.stringify(seen))
 }
 
 const aborted = {
