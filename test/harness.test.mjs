@@ -72,6 +72,25 @@ describe('AC1: HARNESS unset spawns claude with today\'s argv', { concurrency: t
   })
 })
 
+describe('DMN-5: HARNESS=pi spawns pi in RPC mode', () => {
+  test('PI_BIN picks the binary; argv is the pi trial\'s', async () => {
+    const pi = script(join(tmp(), 'pi'), `FAKE_BIN=pi exec "${process.execPath}" "${FAKE}" "$@"`)
+    // Run until the fake has recorded its spawn (not a fixed window: slow under load).
+    const spawned = ({ home }) => until(() => existsSync(join(home, 'turns.log')) && records(home).some((e) => e.kind === 'spawn'), 15000).catch(() => {})
+    const { events, log } = await runWorker({ result: SUCCESS, pending: 0, durationMs: 0, env: { HARNESS: 'pi', PI_BIN: pi }, act: spawned })
+    const spawns = events.filter((e) => e.kind === 'spawn')
+    assert.equal(spawns.length, 1, log)
+    assert.equal(spawns[0].bin, 'pi')
+    assert.deepEqual(spawns[0].argv, [
+      '--mode', 'rpc',
+      '--model', 'anthropic/claude-sonnet-5',
+      '--append-system-prompt', 'test prompt\n',
+    ])
+    assert.match(spawns[0].cwd, /\/fermi-daemon$/)
+    assert.equal((await loadHarness('pi')).name, 'pi')
+  })
+})
+
 describe('AC2: recorded Claude stream → normalized events (golden)', () => {
   const lines = readFileSync(STREAM, 'utf8').trim().split('\n')
 
