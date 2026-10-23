@@ -41,6 +41,13 @@ codex keeps its own copied `auth.json` and only takes `--auth none`.
 The sandbox may connect to the proxy's port, and the egress proxy may tunnel to
 it, only in `proxy` mode. A non-localhost proxy URL is refused.
 
+The harness env is an allowlist (`harness/sandbox.mjs`): `PATH`, `LANG`, `LC_*`
+and `TERM` from the runner, `HOME` and `TMPDIR` in the sandbox, the egress proxy
+variables, the runner's own settings (`CLAUDE_CONFIG_DIR`,
+`ENABLE_CLAUDEAI_MCP_SERVERS`, …) and exactly what the `--auth` mode adds. Nothing
+else from the runner's environment gets through: no `ANTHROPIC_*`, `OPENAI_*` or
+`CLAUDE_*`, so a local model endpoint is reachable only with `--auth proxy`.
+
 ## Packs
 
 | pack | what it covers |
@@ -304,14 +311,14 @@ allowlisted, so the webhook drops it and the drain sees only the seeded
 assertions decide pass/fail).
 
 ```bash
-node evals/judge.mjs <run dir> --scenarios '<glob>'... [--fake]   # → <run dir>/judge.json
+node evals/judge.mjs <run dir> --scenarios '<glob>'... [--fake] [--auth none|fd|keychain|proxy]   # → <run dir>/judge.json
 ```
 
 - Rubric (1-5 each, score = mean / 5): helpful, tone (no "as an AI"), format
   (Slack mrkdwn: no pipe tables, `#` headers or `**`).
 - Judge harness and model are fixed in `evals/judge.config.json`. The call goes
-  through the harness adapter like an eval attempt (same credential env, one
-  turn) with the same isolation: `--tools ""`, strict MCP with no servers,
+  through the harness adapter like an eval attempt (the same allowlisted env and
+  `--auth` modes, one turn) with the same isolation: `--tools ""`, strict MCP with no servers,
   `--setting-sources project,local`, inside the OS sandbox behind the egress proxy.
 - The judge sees only the channel, the inbound text and the `channel_send` texts,
   never the harness, model, trace or cost.
