@@ -58,28 +58,80 @@ async function attempts({ auth, env, scenario = {}, k = 1 }) {
 }
 
 describe('keychain: the access token from "Claude Code-credentials", through an injectable `security`', () => {
-  const fakeSecurity = (payload, code = 0) => {
+  // A fake `security` holding generic-password items for KEYCHAIN_ITEM, keyed by account:
+  // find-generic-password -a <acct> -w prints that item (exit 44 if absent; without -a, the
+  // first item, like the real one), dump-keychain lists their attributes. Every call is logged.
+  const fakeSecurity = (items, { dumpCode = 0 } = {}) => {
     const dir = tmp()
-    writeFileSync(join(dir, 'payload'), payload)
-    return { dir, bin: script('security', `printf '%s\\n' "$@" > "${dir}/argv"; cat "${dir}/payload"; exit ${code}`) }
+    const accounts = Object.keys(items)
+    accounts.forEach((acct, i) => writeFileSync(join(dir, `item${i}`), items[acct]))
+    writeFileSync(join(dir, 'accounts'), accounts.map((a) => a + '\n').join(''))
+    const record = (acct) => {
+      const hex = !/^[\x20-\x7e]*$/.test(acct)
+      const value = hex ? `0x${Buffer.from(acct).toString('hex').toUpperCase()}  "${acct}"` : `"${acct}"`
+      return `keychain: "${dir}/login.keychain-db"\nversion: 512\nclass: "genp"\nattributes:\n    0x00000007 <blob>="${KEYCHAIN_ITEM}"\n    "acct"<blob>=${value}\n    "svce"<blob>="${KEYCHAIN_ITEM}"\n`
+    }
+    const other = `keychain: "${dir}/login.keychain-db"\nversion: 512\nclass: "genp"\nattributes:\n    "acct"<blob>="decoy"\n    "svce"<blob>="Other-credentials"\n`
+    writeFileSync(join(dir, 'dump'), other + accounts.map(record).join(''))
+    const bin = script(
+      'security',
+      `printf '%s\\n' "$*" >> "${dir}/calls"
+case "$1" in
+  dump-keychain) cat "${dir}/dump"; exit ${dumpCode} ;;
+esac
+acct=; while [ $# -gt 0 ]; do [ "$1" = -a ] && acct="$2"; shift; done
+i=0; while IFS= read -r a; do
+  if [ -z "$acct" ] || [ "$a" = "$acct" ]; then cat "${dir}/item$i"; exit 0; fi; i=$((i+1))
+done < "${dir}/accounts"
+exit 44`,
+    )
+    return { dir, bin, calls: () => readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n') }
   }
+  const login = (accessToken, refreshToken) => JSON.stringify({ claudeAiOauth: { accessToken, refreshToken, expiresAt: 1 } }) + '\n'
+  const mcpOnly = (secret) => JSON.stringify({ mcpOAuth: { 'srv|1': { accessToken: secret } } }) + '\n'
 
-  test('reads claudeAiOauth.accessToken with find-generic-password -w; the refresh token stays out', () => {
+  test("reads claudeAiOauth.accessToken from the user's account with -a <user> -w; the refresh token stays out", () => {
     const access = fakeToken('access')
-    const refresh = fakeToken('refresh')
-    const { dir, bin } = fakeSecurity(JSON.stringify({ claudeAiOauth: { accessToken: access, refreshToken: refresh, expiresAt: 1 } }) + '\n')
-    assert.equal(keychainToken({ security: bin }), access)
-    assert.deepEqual(readFileSync(join(dir, 'argv'), 'utf8').trim().split('\n'), ['find-generic-password', '-s', KEYCHAIN_ITEM, '-w'])
+    const { bin, calls } = fakeSecurity({ alice: login(access, fakeToken('refresh')) })
+    assert.equal(keychainToken({ security: bin, user: 'alice' }), access)
+    assert.deepEqual(calls(), [`find-generic-password -s ${KEYCHAIN_ITEM} -a alice -w`], 'the user account hits first: no dump')
   })
 
-  test('a missing item or one without an access token fails without echoing the item', () => {
-    const refresh = fakeToken('refresh')
-    assert.throws(() => keychainToken({ security: fakeSecurity('', 44).bin }), /no "Claude Code-credentials" item/)
-    for (const payload of [JSON.stringify({ claudeAiOauth: { refreshToken: refresh } }), `not json ${refresh}`])
-      assert.throws(
-        () => keychainToken({ security: fakeSecurity(payload).bin }),
-        (e) => /holds no claudeAiOauth.accessToken/.test(e.message) && !e.message.includes(refresh),
-      )
+  test("DMN-31 AC1: two items, the first account mcpOAuth only, the user's account claudeAiOauth → the user's token", () => {
+    const access = fakeToken('access')
+    const { bin, calls } = fakeSecurity({ 'Claude Code': mcpOnly(fakeToken('mcp')), alice: login(access, fakeToken('refresh')) })
+    assert.equal(keychainToken({ security: bin, user: 'alice' }), access)
+    assert.equal(calls().length, 1)
+  })
+
+  test("the user's item without an access token falls back to the other accounts dump-keychain lists, first match wins", () => {
+    const access = fakeToken('access')
+    const { bin, calls } = fakeSecurity({ alice: mcpOnly(fakeToken('mcp')), 'Claude Code': mcpOnly(fakeToken('mcp')), 'bób': login(access), later: login(fakeToken('x')) })
+    assert.equal(keychainToken({ security: bin, user: 'alice' }), access)
+    assert.deepEqual(calls(), [
+      `find-generic-password -s ${KEYCHAIN_ITEM} -a alice -w`,
+      'dump-keychain',
+      `find-generic-password -s ${KEYCHAIN_ITEM} -a Claude Code -w`,
+      `find-generic-password -s ${KEYCHAIN_ITEM} -a bób -w`,
+    ])
+  })
+
+  test('DMN-31 AC2: no item holds an access token → an error counting the items tried, naming no account or value', () => {
+    const secrets = [fakeToken('mcp'), fakeToken('refresh'), fakeToken('mcp')]
+    const { bin } = fakeSecurity({ 'Claude Code': mcpOnly(secrets[0]), alice: JSON.stringify({ claudeAiOauth: { refreshToken: secrets[1] } }), zed: `not json ${secrets[2]}` })
+    assert.throws(
+      () => keychainToken({ security: bin, user: 'alice' }),
+      (e) =>
+        /none of the 3 "Claude Code-credentials" item\(s\) tried holds a claudeAiOauth.accessToken \(account name lengths: 5, 11, 3\)/.test(e.message) &&
+        !['alice', 'zed', 'Claude Code '].some((a) => e.message.includes(a)) &&
+        secrets.every((v) => !e.message.includes(v)),
+    )
+  })
+
+  test('no item at all (or a failing security) is "no item", not an empty token', () => {
+    assert.throws(() => keychainToken({ security: fakeSecurity({}).bin, user: 'alice' }), /no "Claude Code-credentials" item in the login keychain/)
+    assert.throws(() => keychainToken({ security: fakeSecurity({}, { dumpCode: 1 }).bin, user: 'alice' }), /no "Claude Code-credentials" item/)
+    assert.throws(() => keychainToken({ security: '/nonexistent/security', user: 'alice' }), /no "Claude Code-credentials" item/)
   })
 })
 
@@ -174,7 +226,7 @@ describe('AC2: --auth proxy for claude-code', () => {
     for (const proxyUrl of ['https://proxy.example:8317', 'http://10.0.0.5:8317', 'http://127.0.0.1.evil.example:8317'])
       assert.throws(() => createAuth({ mode: 'proxy', harness: 'claude-code', model: MODEL, proxyUrl, readProxyToken: () => 'x' }), /non-localhost/, proxyUrl)
     assert.throws(() => createAuth({ mode: 'proxy', harness: 'claude-code', readProxyToken: () => 'x' }), /needs --model/)
-    assert.throws(() => createAuth({ mode: 'proxy', harness: 'codex', model: MODEL, readProxyToken: () => 'x' }), /codex keeps its own auth.json/)
+    assert.throws(() => createAuth({ mode: 'proxy', harness: 'fake', model: MODEL, readProxyToken: () => 'x' }), /needs --harness claude-code or pi or codex/)
     assert.throws(() => createAuth({ mode: 'bogus', harness: 'claude-code' }), /--auth must be one of none, fd, keychain, proxy/)
   })
 
