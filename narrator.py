@@ -44,6 +44,13 @@ TOOL_MAP = {
     "mac_browser_action": ("🌐", "Browsing", "url"),
     "skill_search": ("📚", "Finding a skill for", "query"),
     "skill_load": ("📚", "Loading skill", "slug"),
+    # pi harness built-ins (lowercase names, `path` instead of `file_path`)
+    "read": ("📖", "Reading", "path"),
+    "write": ("✏️", "Writing", "path"),
+    "edit": ("✏️", "Editing", "path"),
+    "bash": ("⚙️", "Running", "command"),
+    "grep": ("🔎", "Searching", "pattern"),
+    "find": ("🔎", "Searching", "pattern"),
 }
 # Control/own-output tools we never narrate.
 SKIP = {
@@ -52,7 +59,7 @@ SKIP = {
     "memory_write", "memory_recall", "memory_update", "memory_list_recent",
     "profile_update",
     # Deferred-tool loading & introspection — pure plumbing, not user-meaningful.
-    "ToolSearch", "meta_list_capabilities",
+    "ToolSearch", "tool_search", "meta_list_capabilities",
 }
 
 

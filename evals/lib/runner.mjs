@@ -1,7 +1,8 @@
 // One scenario attempt: fresh fakes + eval target + fault proxy, enqueue the
 // inbound message through the channel webhook, run one drain through the
 // harness adapter with prompts/drain.md, then dump state and grade the trace.
-// A scenario with `session` runs in one warm session instead (see runSession).
+// A scenario with `session` runs in one warm session instead: a list of turns
+// (session.mjs runSession) or { tasks, redrain } (runDrainSession below).
 import { randomBytes } from 'node:crypto'
 import { appendFileSync, fstatSync, mkdirSync, readFileSync, readSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -13,6 +14,7 @@ import { mcpConnect } from './mcp-client.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
 import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
+import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
@@ -102,14 +104,18 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
 
     const t0 = Date.now()
     // Enqueue one inbound message the way the bridge does; later traffic is the drain's.
+    // A Teams message has no webhook: the warm worker takes it as a session turn.
     const enqueue = async (inbound) => {
       fakes.setPhase('inbound')
       const hook = webhookRequest(inbound, EVAL_SECRETS)
-      const res = await fetch(target.url + hook.path, { method: 'POST', headers: hook.headers, body: JSON.stringify(hook.body) })
-      if (!res.ok) throw new Error(`webhook ${hook.path} → HTTP ${res.status}`)
+      if (hook) {
+        const res = await fetch(target.url + hook.path, { method: 'POST', headers: hook.headers, body: JSON.stringify(hook.body) })
+        if (!res.ok) throw new Error(`webhook ${hook.path} → HTTP ${res.status}`)
+      }
       fakes.setPhase('drain')
     }
 
+    const drainPrompt = readFileSync(DRAIN_PROMPT, 'utf8')
     const opts = {
       model,
       cwd: dir,
@@ -130,20 +136,28 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
       events.on('raw', (line) => appendFileSync(join(dir, 'raw.log'), line + '\n'))
       events.on('stderr', (s) => appendFileSync(join(dir, 'stderr.log'), s))
     }
-    let timedOut
-    if (scenario.session) {
-      ;({ timedOut, taskLatencies } = await runSession({ harness, opts, scenario, enqueue, record, retried, deadline: t0 + timeoutMs }))
-    } else {
-      await enqueue(scenario.inbound)
-      const run = harness.runOnce({ prompt: readFileSync(DRAIN_PROMPT, 'utf8'), ...opts })
+    // Wait for a runOnce-shaped handle, killing it at the timeout; → timed out?
+    const finish = async (run) => {
       record(run.events)
       let timer
-      timedOut = await Promise.race([
+      const late = await Promise.race([
         run.done.then(() => false),
         new Promise((r) => (timer = setTimeout(() => r(true), timeoutMs))),
       ])
       clearTimeout(timer)
-      if (timedOut) run.close('SIGTERM')
+      if (late) run.close('SIGTERM')
+      return late
+    }
+    let timedOut
+    if (Array.isArray(scenario.session)) {
+      // A list of warm-worker turns in one session with drain.md as the system prompt (session.mjs).
+      await enqueue(scenario.inbound)
+      timedOut = await finish(runSession(harness, { ...opts, systemPrompt: drainPrompt, script: scenario.fake?.turns }, { turns: scenario.session, inbound: scenario.inbound }))
+    } else if (scenario.session) {
+      ;({ timedOut, taskLatencies } = await runDrainSession({ harness, opts, scenario, enqueue, record, retried, deadline: t0 + timeoutMs }))
+    } else {
+      await enqueue(scenario.inbound)
+      timedOut = await finish(harness.runOnce({ prompt: drainPrompt, ...opts }))
     }
     if (timedOut) errorKinds.add('timeout')
     latencyMs = Date.now() - t0
@@ -162,7 +176,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   if (errorKinds.has('timeout')) failed.push({ assertion: null, message: `harness timed out after ${timeoutMs} ms` })
   for (const ev of trace) {
     if (ev.type === 'tool_result' && !ev.ok) errorKinds.add('tool_error')
-    if (ev.type === 'turn_end' && !ev.ok) {
+    if (ev.type === 'turn_end' && !ev.ok && !ev.interrupted) {
       errorKinds.add(ev.kind)
       // A warm session re-drains after an error turn, like the warm worker after its backoff.
       if (!retried.has(ev)) failed.push({ assertion: null, message: `harness turn ended with ${ev.kind}: ${ev.detail}` })
@@ -187,12 +201,12 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   }
 }
 
-// Session mode: `session: { tasks?: n, redrain?: k }`. One warm session (the
+// Drain-session mode: `session: { tasks?: n, redrain?: k }`. One warm session (the
 // warm worker's shape: prompts/drain.md as the system prompt) gets n inbound
 // messages one at a time (`${n}` in inbound.text is the message's number), one
 // DRAIN_TURN each. After an error turn it re-sends the drain turn, up to k times
 // per message. → { timedOut, taskLatencies } (enqueue → that message's last turn_end).
-async function runSession({ harness, opts, scenario, enqueue, record, retried, deadline }) {
+async function runDrainSession({ harness, opts, scenario, enqueue, record, retried, deadline }) {
   const { tasks = 1, redrain = 0 } = scenario.session
   const session = harness.startSession({ ...opts, systemPrompt: readFileSync(DRAIN_PROMPT, 'utf8') })
   record(session.events)

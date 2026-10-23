@@ -1,0 +1,110 @@
+{
+  "name": "flush-over-budget-retry",
+  "description": "When profile_update returns over_budget, the doc is consolidated (replace/remove) and the save retried before task_complete.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ],
+    "profile": {
+      "agent": "Eval instance.",
+      "user": "Name: Eval Owner.\nPrefers short answers.\nNotes: Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words."
+    }
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Please stop signing your messages with an emoji."
+  },
+  "expect": [
+    {
+      "order": [
+        "profile_update",
+        "profile_update",
+        "task_complete"
+      ]
+    },
+    {
+      "argsMatch": {
+        "tool": "profile_update",
+        "args": {
+          "target": "user",
+          "action": "/^(replace|remove)$/"
+        }
+      }
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "profile_update",
+        "args": {
+          "target": "user",
+          "action": "add",
+          "content": "No emoji sign-offs."
+        }
+      },
+      {
+        "tool": "profile_update",
+        "args": {
+          "target": "user",
+          "action": "replace",
+          "match": "Notes:",
+          "content": "Notes: likes concise summaries of long threads."
+        }
+      },
+      {
+        "tool": "profile_update",
+        "args": {
+          "target": "user",
+          "action": "add",
+          "content": "No emoji sign-offs."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Noted: no more emoji sign-offs."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "saved preference after consolidating"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

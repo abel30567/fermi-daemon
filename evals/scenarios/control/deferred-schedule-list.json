@@ -1,0 +1,25 @@
+{
+  "name": "deferred-schedule-list",
+  "description": "\"What scheduled jobs do I have?\" needs schedule_list, a Fermi tool outside any direct tool set: the agent finds it (for example through deferred tool search) and answers from it instead of guessing.",
+  "fixtures": {
+    "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}]
+  },
+  "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What scheduled jobs do I have?"},
+  "expect": [
+    {"order": ["task_claim", "context_bootstrap", "schedule_list", "channel_send", "task_complete"]},
+    {"notCalled": "schedule_create"},
+    {"notCalled": "schedule_delete"},
+    {"exactlyOnce": "channel_send"},
+    {"task.status": "done"}
+  ],
+  "fake": {
+    "script": [
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}},
+      {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
+      {"tool": "schedule_list", "args": {}},
+      {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "You have no scheduled jobs."}},
+      {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "listed schedules"}},
+      {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}}
+    ]
+  }
+}
