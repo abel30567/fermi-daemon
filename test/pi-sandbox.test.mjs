@@ -3,7 +3,7 @@
 // production URL and is unreadable (chmod 000), so any read of it throws.
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -60,9 +60,17 @@ describe('AC1: pi sees only the eval MCP server', () => {
 
   test('through the eval runner: the runner passes sandboxHome and pi gets the runner proxy only', async () => {
     const fakeDir = tmp()
-    const harness = { runOnce: (o) => pi.runOnce({ ...o, bin, prompt: 'mcp', env: { ...o.env, FAKE_DIR: fakeDir } }) }
-    const scenario = { name: 'pi-sandbox', inbound: { channel: 'sl', sender: 'U0', chat: 'D0', text: 'hi' }, expect: [] }
-    const r = await runAttempt({ scenario, attempt: 1, harness, timeoutMs: 10_000, outDir: tmp() })
+    // Under the runner's OS sandbox pi can only write inside it, so the fake records there and the record is copied out.
+    const harness = {
+      runOnce: (o) => {
+        const run = pi.runOnce({ ...o, bin, prompt: 'mcp', env: { ...o.env, FAKE_DIR: o.sandbox.root } })
+        run.done.then(() => copyFileSync(join(o.sandbox.root, 'mcp-seen.json'), join(fakeDir, 'mcp-seen.json')))
+        return run
+      },
+    }
+    // pi's always-on built-ins are declared, so the isolation assertion lets it run.
+    const scenario = { name: 'pi-sandbox', inbound: { channel: 'sl', sender: 'U0', chat: 'D0', text: 'hi' }, tools: pi.PI_BUILTINS, expect: [] }
+    const r = await runAttempt({ scenario, attempt: 1, harness, timeoutMs: 10_000, outDir: tmp(), sandboxReadable: [dirname(fileURLToPath(import.meta.url))] })
     assert.deepEqual(r.errorKinds, [], JSON.stringify(r.failed))
     const seen = seenIn(fakeDir)
     const servers = JSON.parse(seen.mcp).mcpServers

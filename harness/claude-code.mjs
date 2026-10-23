@@ -6,6 +6,11 @@
 //   configDir           → CLAUDE_CONFIG_DIR
 //   tokenFd             → CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR; the fd is passed to the child as-is
 //   scrubSubprocessEnv  → CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+//   tools               → --tools: the built-in tools that exist at all ([] → --tools "", none);
+//                         unlike --allowedTools, which only auto-approves
+//   permissionMode      → --permission-mode
+//   strictMcpConfig     sessions: --strict-mcp-config (runOnce always adds it with mcpConfig)
+//   sandbox             spawn through harness/sandbox.mjs (eval mode)
 //   runOnce only: skipPermissions (--dangerously-skip-permissions), maxTurns (--max-turns),
 //                 settingSources (--setting-sources), resume (--resume <session id>)
 
@@ -19,19 +24,26 @@ export const name = 'claude-code'
 
 const toolList = (t) => (Array.isArray(t) ? t.join(',') : t)
 
+const restrictArgs = (a, { tools, permissionMode }) => {
+  if (tools != null) a.push('--tools', toolList(tools))
+  if (permissionMode) a.push('--permission-mode', permissionMode)
+}
+
 // The warm worker's duplex session flags.
-export function sessionArgs({ model, systemPrompt, allowedTools, mcpConfig }) {
+export function sessionArgs({ model, systemPrompt, allowedTools, mcpConfig, strictMcpConfig, tools, permissionMode }) {
   const a = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
   if (model) a.push('--model', model)
   a.push('--setting-sources', 'project,local') // skip global user hooks (they block/latency)
   if (systemPrompt != null) a.push('--append-system-prompt', systemPrompt)
   if (allowedTools) a.push('--allowedTools', toolList(allowedTools))
+  restrictArgs(a, { tools, permissionMode })
   if (mcpConfig) a.push('--mcp-config', mcpConfig)
+  if (mcpConfig && strictMcpConfig) a.push('--strict-mcp-config')
   return a
 }
 
 // One-shot flags, prompt on stdin (box-runner's shape).
-export function oneShotArgs({ model, systemPrompt, allowedTools, mcpConfig, skipPermissions, maxTurns, settingSources, resume }) {
+export function oneShotArgs({ model, systemPrompt, allowedTools, mcpConfig, skipPermissions, maxTurns, settingSources, resume, tools, permissionMode }) {
   const a = ['-p']
   if (skipPermissions) a.push('--dangerously-skip-permissions')
   a.push('--output-format', 'stream-json', '--verbose')
@@ -41,12 +53,13 @@ export function oneShotArgs({ model, systemPrompt, allowedTools, mcpConfig, skip
   if (settingSources) a.push('--setting-sources', settingSources)
   if (resume) a.push('--resume', resume)
   if (allowedTools) a.push('--allowedTools', toolList(allowedTools))
+  restrictArgs(a, { tools, permissionMode })
   if (systemPrompt != null) a.push('--append-system-prompt', systemPrompt)
   return a
 }
 
 function spawnHarness(args, o) {
-  const env = { ...process.env, ...o.env }
+  const env = { ...process.env, ...o.env, ...o.sandbox?.env }
   if (o.configDir) env.CLAUDE_CONFIG_DIR = o.configDir
   if (o.tokenFd != null) env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR = String(o.tokenFd)
   if (o.scrubSubprocessEnv) env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1'
@@ -57,7 +70,8 @@ function spawnHarness(args, o) {
     stdio[o.tokenFd] = o.tokenFd
   }
   const bin = o.bin || process.env.CLAUDE_BIN || join(process.env.HOME, '.local/bin/claude')
-  return spawn(bin, args, { cwd: o.cwd, env, stdio })
+  const [cmd, argv] = o.sandbox ? o.sandbox.wrap(bin, args) : [bin, args]
+  return spawn(cmd, argv, { cwd: o.cwd, env, stdio })
 }
 
 const contentText = (c) =>
@@ -67,7 +81,7 @@ const contentText = (c) =>
 // turn started, used for durationMs when the result carries no duration_ms.
 export function normalizeEvent(j, { since } = {}) {
   if (j?.type === 'system' && j.subtype === 'init')
-    return [{ type: 'init', harness: name, version: j.claude_code_version ?? null, model: j.model ?? null, tools: j.tools ?? [] }]
+    return [{ type: 'init', harness: name, version: j.claude_code_version ?? null, model: j.model ?? null, tools: j.tools ?? [], ...(Array.isArray(j.mcp_servers) && { mcpServers: j.mcp_servers.map((s) => s?.name) }) }]
   // turn completion: the result event (type:result, or has num_turns+is_error)
   if (j?.type === 'result' || (j?.num_turns !== undefined && j?.is_error !== undefined)) {
     return [

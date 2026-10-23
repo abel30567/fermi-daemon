@@ -11,6 +11,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadHarness } from '../harness/index.mjs'
+import { sandboxBackend } from '../harness/sandbox.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
 import { runAttempt, summarize } from './lib/runner.mjs'
 import { expandScenarios, expandVariants, loadScenario } from './lib/scenario.mjs'
@@ -46,6 +47,8 @@ function parseArgs(argv) {
   // Only the fake harness may run against the in-process fake target; real grades need the eval worker.
   if (o.harness !== 'fake' && !o.worker) throw new Error(`--harness ${o.harness} needs --worker <fermi-mcp checkout>`)
   if (o.fakeScript && o.harness !== 'fake') throw new Error('--fake-script needs --harness fake')
+  // A real harness only ever runs inside the OS sandbox (harness/sandbox.mjs).
+  if (o.harness !== 'fake' && !sandboxBackend()) throw new Error(`--harness ${o.harness} needs an OS sandbox (sandbox-exec on macOS, bwrap on Linux); none found`)
   return o
 }
 

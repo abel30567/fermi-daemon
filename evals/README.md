@@ -62,6 +62,32 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    its MCP servers from `~/.pi/agent/mcp.json`, so the pi adapter runs with that
    HOME, writes the MCP config there (refusing any non-localhost URL) and copies
    in only `~/.pi/agent/auth.json`, deleted when pi exits (`harness/pi.mjs`).
+   Claude Code also gets `--setting-sources project,local` (as the production
+   lanes: never the user's settings, hooks or plugins), `--strict-mcp-config`,
+   `--permission-mode default` (never `bypassPermissions`) and `--tools ""`: no
+   built-in tools at all unless the scenario declares `tools` (e.g. `["Bash"]`).
+   `--allowedTools mcp__fermi__*` only auto-approves; it restricts nothing.
+   Every harness process (claude-code, hbar, pi, codex) runs in the same OS
+   sandbox (`harness/sandbox.mjs`): `sandbox-exec` with a generated Seatbelt
+   profile on macOS, `bwrap` on Linux, and a real harness refuses to start (exit 2)
+   without one. It may write only to the attempt's sandbox dir (its `HOME`, with
+   `tmp/` as `TMPDIR`), may not read the real `$HOME` beyond the harness binary's
+   directory, the node runtime and the attempt dir, and may connect only to the
+   MCP proxy's 127.0.0.1 port, a localhost `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`
+   (CLIProxyAPI) and the egress proxy (`lib/egress-proxy.mjs`, its `HTTPS_PROXY`),
+   which tunnels only to the model endpoints (`api.anthropic.com`, `chatgpt.com`,
+   `api.openai.com`, `auth.openai.com`, `api.x.ai`) and notes every refusal in the
+   trace (`source: "egress"`). On Linux only the filesystem part is enforced: an
+   unshared network namespace could not reach the runner's 127.0.0.1 servers.
+   **Isolation assertion** (`lib/isolation.mjs`): the harness's `init` (pi and
+   codex adapters report their always-on built-ins in one) may list no built-in
+   tool beyond the scenario's `tools`, and its MCP servers must be exactly
+   `{fermi}` (the config itself must be `{fermi → 127.0.0.1}`). Otherwise, or on a
+   tool call before any init, the harness is killed and the attempt fails with
+   errorKind `isolation_breach`, which is never an expected outcome, not even for
+   a negative control. pi (`read`, `bash`, `edit`, `write`) and codex (`Bash`,
+   `apply_patch`) cannot drop their built-ins yet, so their attempts breach unless
+   the scenario declares them.
 4. Enqueues `inbound` through the channel webhook, the same way the bridge does.
 5. Runs one drain through the adapter (`runOnce`, `prompts/drain.md` as the
    prompt, rendered with the eval overlay `fixtures/prompt-overlay.json`: owner
@@ -106,6 +132,7 @@ It also checks every URL it hands out (worker env, target, MCP config).
               "memory_recall": { "status": 500 }, "task_claim": { "result": "{\"tasks\":[{", "times": 1 } },
   "session": { "tasks": 200, "redrain": 1 }, // optional: one warm drain session (below)
   "credentials": { "canary": true },     // optional: plant a canary (below)
+  "tools": [ "Bash" ],                    // optional: built-in tools the harness may have (default none)
   "schedule": "weekly",                   // optional: only run with --weekly
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
@@ -114,7 +141,7 @@ It also checks every URL it hands out (worker env, target, MCP config).
   "session": [ { "turn": "drain", "interruptAfter": "mac_shell" }, { "turn": "stop" } ], // or a list of turns, see Session mode
   "category": "core",                     // optional: report category; default `severity`, else the pack dir
   "harnesses": [ "fake" ],                // optional: run only under these harnesses, skipped elsewhere
-  "fake": { "script": [ … ], "negative": [ … ] } // only read by --harness fake ("turns": [[ … ], …] with a session)
+  "fake": { "script": [ … ], "negative": [ … ], "builtins": [ "Bash" ] } // only read by --harness fake ("turns": [[ … ], …] with a session)
 }
 ```
 
@@ -209,9 +236,12 @@ listed under `skipped` in `summary.json`.
 
 `--harness fake` (`harness/fake.mjs`) runs no model. It plays the scenario's
 `fake.script` against the `fermi` server in its MCP config and emits the same
-normalized events a real adapter does. A step is `{ "tool", "args" }`,
+normalized events a real adapter does; its init lists the fermi tools plus
+`fake.builtins`. A step is `{ "tool", "args" }`,
 `{ "text" }`, `{ "shell", "result" }` (a call to the harness's own shell tool,
-traced as `Bash`; nothing runs), `{ "sleepMs" }` or `{ "apiError": { "status", "text" } }`
+traced as `Bash`; nothing runs), `{ "shell", "exec": true }` (the same call, but
+`/bin/sh -c` really runs it inside the attempt's sandbox: the breach canaries in
+`test/eval-isolation.test.mjs`), `{ "sleepMs" }` or `{ "apiError": { "status", "text" } }`
 (the model API fails: the turn ends with `lib/turn-outcome.mjs`'s classification).
 With a list-of-turns `session`, `fake.turns` holds one step list per turn;
 otherwise a session plays `fake.script` every turn, and a step with
