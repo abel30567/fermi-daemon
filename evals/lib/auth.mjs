@@ -8,9 +8,10 @@
 //             "Claude Code-credentials", re-read before each attempt (the user's own
 //             Claude Code refreshes it), on a fresh pipe. The refresh token stays there.
 //   proxy     CLIProxyAPI on 127.0.0.1:8317 with ~/.cli-proxy-api/.proxy-token
-//             (claude-code and hbar: ANTHROPIC_BASE_URL; pi: a models.json provider)
+//             (claude-code and hbar: ANTHROPIC_BASE_URL; pi: a models.json provider;
+//             codex: a config.toml model provider)
 // createAuth(...).attempt() → the per-attempt additions to the harness options:
-//   { tokenPipe?, env?, scrubSubprocessEnv?, provider? (pi), localPorts?, egressAllow?, secrets }
+//   { tokenPipe?, env?, scrubSubprocessEnv?, provider? (pi, codex), localPorts?, egressAllow?, secrets }
 import { execFileSync } from 'node:child_process'
 import { closeSync, readFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
@@ -21,8 +22,8 @@ export const AUTH_MODES = ['none', 'fd', 'keychain', 'proxy']
 export const PROXY_URL = 'http://127.0.0.1:8317'
 export const KEYCHAIN_ITEM = 'Claude Code-credentials'
 // Where each mode can deliver a credential: a pipe needs CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
-// (hbar is claude-code with CLAUDE_BIN); codex keeps its own copied auth.json.
-const HARNESSES = { fd: ['claude-code'], keychain: ['claude-code'], proxy: ['claude-code', 'pi'] }
+// (hbar is claude-code with CLAUDE_BIN); codex has no fd handoff, only a proxy provider.
+const HARNESSES = { fd: ['claude-code'], keychain: ['claude-code'], proxy: ['claude-code', 'pi', 'codex'] }
 const TIERS = ['HAIKU', 'SONNET', 'OPUS']
 
 // The current access token from the login keychain. `security` and `user` are injectable (tests).
@@ -114,7 +115,7 @@ export function createAuth({ mode = 'none', harness, model, env = process.env, r
   if (!AUTH_MODES.includes(mode)) throw new Error(`--auth must be one of ${AUTH_MODES.join(', ')}`)
   if (mode === 'none') return { mode, attempt: () => ({ secrets: [] }) }
   if (!HARNESSES[mode].includes(harness))
-    throw new Error(`--auth ${mode} needs --harness ${HARNESSES[mode].join(' or ')}${harness === 'codex' ? ' (codex keeps its own auth.json)' : ''}`)
+    throw new Error(`--auth ${mode} needs --harness ${HARNESSES[mode].join(' or ')}`)
   if (mode === 'fd') {
     const token = fdToken(env)
     return { mode, attempt: () => ({ tokenPipe: token, secrets: [token] }) }
@@ -132,7 +133,7 @@ export function createAuth({ mode = 'none', harness, model, env = process.env, r
   const token = readProxyToken()
   const { host, port } = new URL(proxyUrl)
   const reach = { localPorts: [port || '80'], egressAllow: [host], secrets: [token] }
-  if (harness === 'pi') return { mode, attempt: () => ({ ...reach, provider: { baseUrl: `${proxyUrl}/v1`, apiKey: token } }) }
+  if (harness === 'pi' || harness === 'codex') return { mode, attempt: () => ({ ...reach, provider: { baseUrl: `${proxyUrl}/v1`, apiKey: token } }) }
   const tiers = Object.fromEntries(TIERS.map((t) => [`ANTHROPIC_DEFAULT_${t}_MODEL`, model]))
   const proxyEnv = {
     ANTHROPIC_BASE_URL: proxyUrl,
