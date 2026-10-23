@@ -14,7 +14,7 @@
 //   { tokenPipe?, env?, scrubSubprocessEnv?, provider? (pi, codex), localPorts?, egressAllow?, secrets }
 import { execFileSync } from 'node:child_process'
 import { closeSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { assertLocalUrls } from './net.mjs'
 
@@ -26,21 +26,58 @@ export const KEYCHAIN_ITEM = 'Claude Code-credentials'
 const HARNESSES = { fd: ['claude-code'], keychain: ['claude-code'], proxy: ['claude-code', 'pi', 'codex'] }
 const TIERS = ['HAIKU', 'SONNET', 'OPUS']
 
-// The current access token from the login keychain. `security` is injectable (tests).
-// Errors never carry the item's contents.
-export function keychainToken({ security = '/usr/bin/security' } = {}) {
-  let raw
-  try {
-    raw = execFileSync(security, ['find-generic-password', '-s', KEYCHAIN_ITEM, '-w'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-  } catch {
-    throw new Error(`--auth keychain: no "${KEYCHAIN_ITEM}" item in the login keychain (log in to Claude Code first)`)
+// The current access token from the login keychain. `security` and `user` are injectable (tests).
+// A Mac can hold several "Claude Code-credentials" items (one per account, some holding only
+// mcpOAuth); Claude Code keeps the Claude.ai login under the macOS username, so that account is
+// tried first, then every other account `dump-keychain` lists for the service, in order.
+// Errors never carry an item's contents or an account name (only its length).
+export function keychainToken({ security = '/usr/bin/security', user = userInfo().username } = {}) {
+  const run = (args) => execFileSync(security, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 })
+  const tried = []
+  const read = (account) => {
+    let raw
+    try {
+      raw = run(['find-generic-password', '-s', KEYCHAIN_ITEM, '-a', account, '-w'])
+    } catch {
+      return
+    }
+    tried.push(account.length)
+    let token
+    try {
+      token = JSON.parse(raw)?.claudeAiOauth?.accessToken
+    } catch {}
+    if (typeof token === 'string' && token) return token
   }
-  let token
+  let token = read(user)
+  if (token) return token
+  for (const account of keychainAccounts(run)) if (account !== user && (token = read(account))) return token
+  if (!tried.length) throw new Error(`--auth keychain: no "${KEYCHAIN_ITEM}" item in the login keychain (log in to Claude Code first)`)
+  throw new Error(
+    `--auth keychain: none of the ${tried.length} "${KEYCHAIN_ITEM}" item(s) tried holds a claudeAiOauth.accessToken (account name lengths: ${tried.join(', ')})`,
+  )
+}
+
+// The accounts of every generic-password item for KEYCHAIN_ITEM, from `dump-keychain`'s
+// attribute listing (no -d: no secrets). An account prints as "name" or, if not plain ASCII,
+// as 0x<hex>  "<escaped>". [] if the dump fails.
+function keychainAccounts(run) {
+  let dump
   try {
-    token = JSON.parse(raw)?.claudeAiOauth?.accessToken
-  } catch {}
-  if (typeof token !== 'string' || !token) throw new Error(`--auth keychain: "${KEYCHAIN_ITEM}" holds no claudeAiOauth.accessToken`)
-  return token
+    dump = run(['dump-keychain'])
+  } catch {
+    return []
+  }
+  const attr = (record, key) => {
+    const m = record.match(new RegExp(`^\\s*"${key}"<blob>=(?:0x([0-9A-Fa-f]+)|"(.*)")`, 'm'))
+    return m && (m[1] ? Buffer.from(m[1], 'hex').toString('utf8') : m[2])
+  }
+  const accounts = []
+  for (const record of dump.split(/^keychain: /m)) {
+    if (!/^class: "genp"$/m.test(record) || attr(record, 'svce') !== KEYCHAIN_ITEM) continue
+    const account = attr(record, 'acct')
+    if (account != null && !accounts.includes(account)) accounts.push(account)
+  }
+  return accounts
 }
 
 // The token on the inherited fd, read to the end (a CI pipe cannot be re-read), then
