@@ -1,0 +1,84 @@
+{
+  "name": "flush-profile-before-complete-neg",
+  "description": "Negative control for flush-profile-before-complete: The preference is acknowledged but never saved.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ],
+    "profile": {
+      "agent": "Eval instance.",
+      "user": "Name: Eval Owner. Prefers short answers."
+    }
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Please always use metric units with me from now on."
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "profile_update",
+        "args": {
+          "target": "user"
+        }
+      }
+    },
+    {
+      "order": [
+        "profile_update",
+        "task_complete"
+      ]
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Got it: metric from now on."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "acknowledged"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

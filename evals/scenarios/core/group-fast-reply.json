@@ -1,0 +1,86 @@
+{
+  "name": "group-fast-reply",
+  "description": "A casual group message is answered within a few tool calls.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      },
+      {
+        "channel": "sl",
+        "sender_id": "T0EVAL",
+        "note": "workspace"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALFRIEND",
+    "display_name": "Example Friend",
+    "team": "T0EVAL",
+    "chat": "C0EVAL",
+    "text": "anyone have a quick dinner idea for tonight?"
+  },
+  "expect": [
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "args": {
+          "chat_id": "C0EVAL"
+        }
+      }
+    },
+    {
+      "maxToolCalls": 6
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Sheet-pan chicken and veg: 30 minutes, one tray."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "suggested dinner"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

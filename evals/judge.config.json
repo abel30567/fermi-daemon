@@ -1,0 +1,5 @@
+{
+  "harness": "claude-code",
+  "model": "claude-opus-5-5",
+  "timeoutMs": 120000
+}

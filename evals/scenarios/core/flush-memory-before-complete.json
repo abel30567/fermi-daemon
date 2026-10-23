@@ -1,0 +1,86 @@
+{
+  "name": "flush-memory-before-complete",
+  "description": "An episodic fact is saved with memory_write before task_complete, not after.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "FYI my dentist appointment moved to the 14th."
+  },
+  "expect": [
+    {
+      "argsMatch": {
+        "tool": "memory_write",
+        "args": {
+          "body": "/14th/"
+        }
+      }
+    },
+    {
+      "order": [
+        "memory_write",
+        "task_complete"
+      ]
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "memory_write",
+        "args": {
+          "kind": "event",
+          "body": "Dentist appointment moved to the 14th."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Noted: dentist on the 14th."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "saved appointment change"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

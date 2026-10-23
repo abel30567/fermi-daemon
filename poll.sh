@@ -22,9 +22,7 @@ MAX_RUNS_PER_HOUR="${MAX_RUNS_PER_HOUR:-0}"  # 0/unset = unlimited; set >0 to ca
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-1800}"
 MAX_TURNS="${MAX_TURNS:-50}"
 MODEL="${MODEL:-claude-opus-4-6[1m]}"        # model for daemon claude -p runs (1M-context Opus 4.6)
-# Server-level grants: all Fermi tools via the claude.ai connector (no local
-# MCP config or OAuth) + all Playwright tools (user-scope MCP, local browser).
-ALLOWED_TOOLS="${ALLOWED_TOOLS:-mcp__claude_ai_Fermi,mcp__playwright,mcp__claude_ai_Google_Calendar}"
+# Allowed tools and setting sources match the warm worker (lib/run-policy.mjs).
 LANE_DIR="$DAEMON_HOME/lanes"
 mkdir -p "$LANE_DIR"
 rm -f "$DAEMON_HOME/run.lock" 2>/dev/null # legacy single-lock cleanup
@@ -56,7 +54,10 @@ for lane in "$LANE_DIR"/*(N/); do
 		rm -rf "$lane"
 	fi
 done
-live=$(ls -d "$LANE_DIR"/*(N/) 2>/dev/null | wc -l | tr -d ' ')
+# Count the glob itself: with no lanes it expands to nothing, and a bare
+# `ls -d` would then list "." and count one phantom lane.
+lanes=("$LANE_DIR"/*(N/))
+live=${#lanes}
 
 # --- 2. Optional run budget guardrail (opt-in via MAX_RUNS_PER_HOUR > 0) -----
 if ((MAX_RUNS_PER_HOUR > 0)); then
@@ -81,36 +82,44 @@ acquire_lane() {
 	return 1
 }
 
-# Detached nohup spawn from the clean dir (EINTR-safe). Each worker owns its
-# lane and removes it on exit. Only heartbeat runs persist a session id for
-# --resume (concurrent drain runs must not race on session.id).
+# bin/run-once.mjs needs node >= 22: $NODE_BIN (from .env), else node on PATH.
+# This is the fallback for a down warm worker, so it must not fail silently:
+# on a missing or old node, log it and exit before claiming a lane.
+require_node() {
+	local node="${NODE_BIN:-$(command -v node)}" ver
+	ver=$("$node" -v 2>/dev/null)
+	if [[ -z "$node" || "$ver" != v<->.* ]] || (( ${${ver#v}%%.*} < 22 )); then
+		log "ERROR: node '${node:-<not found>}' is ${ver:-not runnable}; bin/run-once.mjs needs node >= 22 (set NODE_BIN in .env) — not spawning $1"
+		exit 1
+	fi
+	NODE="$node"
+}
+
+# Detached nohup spawn from the clean dir (EINTR-safe) of bin/run-once.mjs,
+# which runs the harness, enforces the MAX_RUN_SECONDS watchdog and removes the
+# lane on exit. Only heartbeat runs pass --session (resume from and store
+# session.id): concurrent drain runs must not race on it.
 spawn_run() {
 	local prompt_file="$1"
 	shift
-	local extra_args="$*"
+	require_node "$prompt_file"
 	local lane
 	lane=$(acquire_lane) || { log "all $MAX_CONCURRENT lanes busy — deferring $prompt_file"; return 1; }
-	local ts capture="" narrator=""
+	local ts
 	ts="$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
-	if [[ "$prompt_file" == heartbeat.md ]]; then
-		capture="sid=\$(grep -oE '\"session_id\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' runs/$ts.log | head -1 | cut -d'\"' -f4); [[ -n \"\$sid\" ]] && echo \"\$sid\" >session.id"
-	fi
 	# Drain runs get a narrator that tails their stream-json and posts per-step
 	# progress to the task's channel (best-effort; never affects the executor).
 	if [[ "$prompt_file" == drain.md ]]; then
-		narrator="python3 '$DAEMON_HOME/narrator.py' 'runs/$ts.log' >/dev/null 2>&1 &"
+		nohup python3 "$DAEMON_HOME/narrator.py" "runs/$ts.log" >/dev/null 2>&1 &
 	fi
-	nohup zsh -c "
-		cd '$DAEMON_HOME'
-		$narrator
-		claude -p \"\$(cat prompts/$prompt_file)\" \
-			--model '$MODEL' \
-			--max-turns $MAX_TURNS \
-			--allowedTools '$ALLOWED_TOOLS' \
-			$extra_args >runs/$ts.log 2>&1
-		$capture
-		rm -rf '$lane'
-	" >/dev/null 2>&1 &
+	nohup "$NODE" "$DAEMON_HOME/bin/run-once.mjs" \
+		--prompt "prompts/$prompt_file" \
+		--log "runs/$ts.log" \
+		--lane "$lane" \
+		--model "$MODEL" \
+		--max-turns "$MAX_TURNS" \
+		--timeout-s "$MAX_RUN_SECONDS" \
+		"$@" >>"runs/$ts.log" 2>&1 &
 	echo $! >"$lane/pid"
 	log "spawned $prompt_file in lane ${lane:t} (pid $(cat "$lane/pid"), log runs/$ts.log)"
 }
@@ -132,7 +141,7 @@ if ! pgrep -f 'warm-worker\.mjs' >/dev/null 2>&1; then
 		if (( to_spawn > 0 )); then
 			log "reactive (fallback, warm worker down): $pending pending, spawning $to_spawn"
 			for (( k = 0; k < to_spawn; k++ )); do
-				spawn_run drain.md --output-format stream-json --verbose
+				spawn_run drain.md
 			done
 		fi
 		exit 0
@@ -149,10 +158,8 @@ if ! pgrep -f 'warm-worker\.mjs' >/dev/null 2>&1; then
 		last_heartbeat=0
 		[[ -f last-heartbeat ]] && last_heartbeat=$(stat -f %m last-heartbeat)
 		if (( now - last_heartbeat > HEARTBEAT_SECONDS )); then
-			resume_args=""
-			[[ -s session.id ]] && resume_args="--resume $(cat session.id)"
 			log "heartbeat: spawning check-in (warm worker down — fallback sweep)"
-			spawn_run heartbeat.md --output-format json $resume_args
+			spawn_run heartbeat.md --session session.id
 			touch last-heartbeat
 		fi
 	fi
