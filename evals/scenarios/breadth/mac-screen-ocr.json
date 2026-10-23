@@ -1,0 +1,30 @@
+{
+  "name": "mac-screen-ocr",
+  "description": "A question about what is on the Mac screen is answered by reading the screen.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "mac": [{ "tool": "mac_screen_ocr", "result": "CI: Build #42 failed, 3 tests (eval placeholder)" }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's on my Mac screen right now?" },
+  "expect": [
+    { "called": "mac_screen_ocr" },
+    { "order": ["mac_screen_ocr", "channel_send"] },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/Build #42/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "mac_screen_ocr", "args": {  } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Your screen shows CI: Build #42 failed with 3 tests." }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "read the screen" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

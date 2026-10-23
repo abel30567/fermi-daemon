@@ -1,0 +1,25 @@
+{
+  "name": "negative-tool-500-recall",
+  "description": "Negative control for tool-500-recall: the drain gives up after the 500: no reply and the task is left claimed.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "memories": [{ "kind": "fact", "body": "The owner's gym locker combination is 00-11-22 (placeholder).", "pinned": false }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's my gym locker combination?" },
+  "faults": { "memory_recall": { "status": 500 } },
+  "expect": [
+    { "order": ["memory_recall", "channel_send", "task_complete"] },
+    { "argsMatch": { "tool": "task_complete", "args": { "result": "/500|unavailable|failed/i" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "memory_recall", "args": { "query": "gym locker combination" } }
+    ]
+  }
+}

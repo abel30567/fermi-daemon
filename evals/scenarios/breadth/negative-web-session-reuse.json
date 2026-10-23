@@ -1,0 +1,37 @@
+{
+  "name": "negative-web-session-reuse",
+  "description": "Negative control for web-session-reuse: the owner is asked for their password without checking saved sessions.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [
+      { "tool": "web_session_list", "result": { "sessions": [{ "id": "ws-eval-1", "domain": "shop.example", "valid": true }] } },
+      { "tool": "browser_session_launch", "match": "ws-eval-1", "result": { "session_id": "bs-eval-1", "url": "https://shop.example/orders" } },
+      { "tool": "browser_extract", "result": { "text": "Order #A-100: shipped, arriving Friday (placeholder)." } },
+      { "tool": "browser_session_close", "result": { "ok": true } }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Check the status of my order on shop.example." },
+  "expect": [
+    { "order": ["web_session_list", "browser_session_launch", "browser_extract", "channel_send"] },
+    { "argsMatch": { "tool": "browser_session_launch", "args": { "web_session_id": "ws-eval-1" } } },
+    { "notCalled": "browser_session_request_human" },
+    { "argsMatch": { "tool": "channel_send", "every": true, "args": { "text": "/^(?![\\s\\S]*(password))/i" } } },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/shipped/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "What's your shop.example password? I'll log in and check." }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "asked for credentials" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}
