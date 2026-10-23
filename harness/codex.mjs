@@ -17,6 +17,13 @@
 //              server URL must be localhost, else the adapter throws. Without
 //              mcpConfig codex runs with the real CODEX_HOME (user config, MCP
 //              servers, connectors); the eval runner and judge always pass one.
+//   provider   with mcpConfig: { baseUrl, apiKey }, an OpenAI Responses endpoint
+//              (CLIProxyAPI, evals --auth proxy) as the only model provider: config.toml
+//              sets model_provider = "cliproxy" and model = <model>, the key reaches
+//              codex only as PROXY_ENV_KEY (kept out of its shell tool's env), and no
+//              auth.json is copied. With a custom provider codex makes no ChatGPT
+//              startup calls (model refresh, workspace routing); its first request is
+//              the turn's POST <baseUrl>/responses. A non-localhost baseUrl is refused.
 //   sandbox    spawn through harness/sandbox.mjs (eval mode); the per-run CODEX_HOME
 //              is then made inside the sandbox dir, and its config turns codex's own
 //              sandbox off (sandbox_mode = "danger-full-access"): a nested sandbox-exec
@@ -54,6 +61,8 @@ import { bareToolName } from './index.mjs'
 export const name = 'codex'
 
 const UNSUPPORTED = ['tokenFd', 'tokenPipe', 'configDir', 'scrubSubprocessEnv']
+export const PROXY_PROVIDER = 'cliproxy'
+export const PROXY_ENV_KEY = 'CLIPROXY_API_KEY'
 // Features that reach past the eval's MCP servers: ChatGPT connectors, plugins, the user's browser and desktop.
 const DISABLED_FEATURES = ['apps', 'plugins', 'browser_use', 'computer_use']
 // codex's always-on built-ins as the normalized stream names them (its shell is `Bash`).
@@ -72,13 +81,22 @@ export function oneShotArgs({ model, systemPrompt, skipPermissions }) {
 
 // mcp.json → codex config.toml. Throws on a non-http or non-localhost server.
 // `sandboxMode` sets codex's own sandbox_mode (spawnCodex: only inside our sandbox).
-export function codexConfig(mcpConfig, { sandboxMode } = {}) {
+// `provider` ({ baseUrl }) makes it the only model provider, for `model`; throws if not localhost.
+export function codexConfig(mcpConfig, { sandboxMode, provider, model } = {}) {
   if (typeof mcpConfig !== 'string' && (typeof mcpConfig !== 'object' || mcpConfig === null))
     throw new Error('codex adapter: mcpConfig must be a path, a JSON string or an object')
   const parsed = typeof mcpConfig === 'object' ? mcpConfig : JSON.parse(mcpConfig.trim().startsWith('{') ? mcpConfig : readFileSync(mcpConfig, 'utf8'))
   const servers = parsed.mcpServers ?? {}
   const s = JSON.stringify // a JSON string is a TOML basic string
-  const out = [...(sandboxMode ? [`sandbox_mode = ${s(sandboxMode)}`, ''] : []), `[features]`, ...DISABLED_FEATURES.map((f) => `${f} = false`)]
+  const out = sandboxMode ? [`sandbox_mode = ${s(sandboxMode)}`] : []
+  if (provider) {
+    if (!isLocalUrl(provider.baseUrl)) throw new Error(`codex adapter: refusing non-localhost provider ${provider.baseUrl}`)
+    out.push(`model_provider = ${s(PROXY_PROVIDER)}`, ...(model ? [`model = ${s(model)}`] : []))
+    out.push('', `[model_providers.${PROXY_PROVIDER}]`, `name = ${s(PROXY_PROVIDER)}`, `base_url = ${s(provider.baseUrl)}`, `env_key = ${s(PROXY_ENV_KEY)}`, `wire_api = "responses"`)
+    out.push('', '[shell_environment_policy]', `exclude = [${s(PROXY_ENV_KEY)}]`)
+  }
+  if (out.length) out.push('')
+  out.push(`[features]`, ...DISABLED_FEATURES.map((f) => `${f} = false`))
   for (const [key, srv] of Object.entries(servers)) {
     if (!srv?.url) throw new Error(`codex adapter: MCP server "${key}" has no url (only http servers are supported)`)
     if (!isLocalUrl(srv.url)) throw new Error(`codex adapter: refusing non-localhost MCP URL ${key}=${srv.url}`)
@@ -91,15 +109,17 @@ export function codexConfig(mcpConfig, { sandboxMode } = {}) {
 
 function spawnCodex(args, o) {
   const bad = UNSUPPORTED.filter((k) => o[k] != null)
+  if (o.provider != null && !o.mcpConfig) bad.push('provider without mcpConfig')
   if (bad.length) throw new Error(`codex adapter: unsupported option(s) ${bad.join(', ')} (see harness/codex.mjs)`)
   const env = { ...(o.sandbox ? {} : process.env), ...o.env, ...o.sandbox?.env } // sandboxed: nothing ambient
   let home = null
   if (o.mcpConfig) {
-    const config = codexConfig(o.mcpConfig, o.sandbox ? { sandboxMode: 'danger-full-access' } : {})
+    const config = codexConfig(o.mcpConfig, { ...(o.sandbox && { sandboxMode: 'danger-full-access' }), provider: o.provider, model: o.model })
     const auth = join(env.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
     home = mkdtempSync(join(o.sandbox?.root ?? tmpdir(), 'codex-home-'))
     writeFileSync(join(home, 'config.toml'), config)
-    if (existsSync(auth)) copyFileSync(auth, join(home, 'auth.json'))
+    if (o.provider) env[PROXY_ENV_KEY] = o.provider.apiKey
+    else if (existsSync(auth)) copyFileSync(auth, join(home, 'auth.json'))
     env.CODEX_HOME = home
   }
   const cleanup = () => home && rmSync(home, { recursive: true, force: true })
