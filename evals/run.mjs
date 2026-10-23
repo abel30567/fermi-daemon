@@ -4,11 +4,13 @@
 //
 //   node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios <glob>... \
 //     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
-//     [--auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>]
+//     [--auth none|fd|keychain|proxy] [--judge-auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>]
 //
 // --auth decides how the sandboxed harness gets inference credentials (lib/auth.mjs).
 // When a scenario has semantic assertions, the semantic judge (lib/semantic.mjs) is
 // calibrated first; below its accuracy threshold they grade on their regex alone.
+// The judge has its own credential, --judge-auth (createJudgeAuth: default keychain on
+// macOS for a Claude judge model), so the same judge grades every harness's run.
 // --harness fake uses the fake judge (calibration labels, no inference).
 // An attempt that hits a rate/spend limit or a 5xx is re-run up to --infra-retries times
 // (default 3), then recorded as status "invalid" (lib/runner.mjs runAttempt). Attempts on
@@ -22,7 +24,7 @@ import { loadHarness } from '../harness/index.mjs'
 import { sandboxBackend } from '../harness/sandbox.mjs'
 import { internalToolCalls } from './lib/assertions.mjs'
 import { CONFIG as JUDGE, semanticAsk, semanticCacheFile } from './judge.mjs'
-import { createAuth } from './lib/auth.mjs'
+import { createAuth, createJudgeAuth } from './lib/auth.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
 import { createPacer } from './lib/pacing.mjs'
 import { runAttempt, summarize } from './lib/runner.mjs'
@@ -50,6 +52,7 @@ function parseArgs(argv) {
     else if (a === '--weekly') o.weekly = true
     else if (a === '--fake-script') o.fakeScript = val()
     else if (a === '--auth') o.auth = val()
+    else if (a === '--judge-auth') o.judgeAuth = val()
     else if (a === '--infra-retries') o.infraRetries = Number(val())
     else if (a === '--min-gap-ms') o.minGapMs = Number(val())
     else if (a === '--scenarios') {
@@ -133,22 +136,24 @@ async function main() {
   mkdirSync(out, { recursive: true })
   const pacer = createPacer({ backend: auth.mode, minGapMs: opts.minGapMs })
   let semantic = null
+  let judgeAuth = null
   if (scenarios.some((s) => semanticSpecs(s.expect).length)) {
     let ask
     if (opts.harness === 'fake') ask = fakeAsk()
     else {
-      // The judge's own credential, for its fixed model: a proxy credential pins every tier to one model.
-      let judgeAuth = auth
+      // The judge's own credential for its fixed model, whatever --auth the harness runs on.
       try {
-        if (auth.mode === 'proxy') judgeAuth = createAuth({ mode: 'proxy', harness: JUDGE.harness, model: JUDGE.model })
+        judgeAuth = createJudgeAuth({ mode: opts.judgeAuth, harness: JUDGE.harness, model: JUDGE.model, harnessAuth: auth })
       } catch (err) {
         console.error(`evals: semantic judge: ${err.message}`)
         return 2
       }
       ask = semanticAsk({ auth: judgeAuth })
     }
-    // Calibration's inference holds the backend lock like an attempt.
-    semantic = await pacer.run(() => prepareSemantic({ ask, cacheFile: opts.harness === 'fake' ? null : semanticCacheFile() }))
+    // Calibration's inference holds the judge backend's lock like an attempt.
+    const judgePacer = createPacer({ backend: judgeAuth?.mode ?? 'none', minGapMs: 0 })
+    const model = opts.harness === 'fake' ? 'fake' : `${JUDGE.harness}-${JUDGE.model}`
+    semantic = await judgePacer.run(() => prepareSemantic({ ask, model, cacheFile: opts.harness === 'fake' ? null : semanticCacheFile() }))
   }
 
   const startedAt = new Date().toISOString()
@@ -166,6 +171,7 @@ async function main() {
     harness: opts.harness,
     model: opts.model ?? null,
     authMode: auth.mode,
+    judgeAuthMode: judgeAuth?.mode ?? null, // null: no real semantic judge in this run
     k: opts.k,
     target: opts.worker ? 'wrangler' : 'fake',
     startedAt,
