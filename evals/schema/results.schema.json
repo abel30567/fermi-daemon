@@ -32,6 +32,7 @@
       },
       "latencyMs": { "type": "integer", "minimum": 0 },
       "toolCalls": { "type": "array", "items": { "type": "string" } },
+      "effectiveToolCalls": { "type": "array", "items": { "type": "string" }, "description": "toolCalls without the calls a guardrail stopped: result {\"status\":\"pending_approval\"|\"denied\"} or {\"error\":\"plan_mode_restricted\"}" },
       "internalToolCalls": { "type": "array", "items": { "type": "string" } },
       "regradedAt": { "type": "string", "minLength": 1, "description": "regraded.json only (judge.mjs --regrade): when the entry was graded again" },
       "assertionsVersion": { "type": "string", "minLength": 1, "description": "regraded.json only: hash of the grading code and the scenario's expect it was graded with" },
