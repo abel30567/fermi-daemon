@@ -7,7 +7,7 @@
   },
   "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Save this grocery list to notes/groceries.md: eggs, oats, coffee." },
   "expect": [
-    { "argsMatch": { "tool": "fs_write", "args": { "path": "/groceries\\.md$/", "content": "/eggs[\\s\\S]*oats[\\s\\S]*coffee/" } } },
+    { "argsMatch": { "tool": "fs_write", "args": { "path": "/groceries\\.md$/", "body": "/eggs[\\s\\S]*oats[\\s\\S]*coffee/" } } },
     { "order": ["fs_write", "channel_send"] },
     { "exactlyOnce": "channel_send" },
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
@@ -17,7 +17,7 @@
     "script": [
       { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
       { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
-      { "tool": "fs_write", "args": { "path": "notes/groceries.md", "content": "- eggs\n- oats\n- coffee\n" } },
+      { "tool": "fs_write", "args": { "path": "notes/groceries.md", "body": "- eggs\n- oats\n- coffee\n" } },
       { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Saved to notes/groceries.md." } },
       { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "wrote notes/groceries.md" } },
       { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }

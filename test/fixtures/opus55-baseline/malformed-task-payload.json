@@ -1,0 +1,159 @@
+{
+ "scenario": "malformed-task-payload",
+ "class": "OVERSTRICT",
+ "recorded": {
+  "pass": false,
+  "failed": [
+   "task(s) b5ed2d3a-e6b1-47c6-9981-7dcc598b3595=failed; expected done"
+  ]
+ },
+ "latencyMs": 19357,
+ "trace": [
+  {
+   "type": "tool_call",
+   "id": "toolu_01De3CgTqKpt7RRG8Pw2he6m",
+   "name": "ToolSearch",
+   "rawName": "ToolSearch",
+   "input": {
+    "query": "select:mcp__fermi__task_claim,mcp__fermi__task_complete,mcp__fermi__context_bootstrap,mcp__fermi__channel_send",
+    "max_results": 4
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01De3CgTqKpt7RRG8Pw2he6m",
+   "ok": true,
+   "content": "   "
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_019zBmMJoJASYH3hewrK27An",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_019zBmMJoJASYH3hewrK27An",
+   "ok": true,
+   "content": "{\"tasks\":[{\"id\":\"b5ed2d3a-e6b1-47c6-9981-7dcc598b3595\",\"channel\":\"sl\",\"sender\":\"U0EVALOWNER\",\"chat_id\":\"D0EVAL\",\"payload\":\"\\u0000\\u0007{\\\"text\\\": \\\"pls resched the den\",\"created_at\":1792734008661,\"queue\":\"main\"}],\"total\":1}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01QXDz9hA584xRXWwW2dsT22",
+   "name": "context_bootstrap",
+   "rawName": "mcp__fermi__context_bootstrap",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01QXDz9hA584xRXWwW2dsT22",
+   "ok": true,
+   "content": "{\"agent_doc\":{\"body\":\"\",\"usage\":0,\"limit\":2200},\"user_doc\":{\"body\":\"\",\"usage\":0,\"limit\":1375},\"prior_summary\":null,\"history\":[{\"role\":\"user\",\"body\":\"\\u0000\\u0007{\\\"text\\\": \\\"pls resched the den\",\"created_at\":1792734008660}],\"pinned_memories\":[{\"kind\":\"fact\",\"body\":\"Fermi is a personal MCP agent with cross-host memory.\"}]}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01DDsHZVhS3k5p9JaRSmyVG2",
+   "name": "channel_send",
+   "rawName": "mcp__fermi__channel_send",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL",
+    "text": "Your message came through garbled and cut off: I only got \"pls resched the den…\". Did you mean the dentist appointment? If so, what's the current date/time and when do you want to move it to?"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01DDsHZVhS3k5p9JaRSmyVG2",
+   "ok": true,
+   "content": "{\"ok\":true,\"channel\":\"sl\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01MVy6niWSya8TPG6qhxGoAf",
+   "name": "task_complete",
+   "rawName": "mcp__fermi__task_complete",
+   "input": {
+    "id": "b5ed2d3a-e6b1-47c6-9981-7dcc598b3595",
+    "status": "failed",
+    "result": "Malformed/truncated payload (\"pls resched the den\"); asked owner to clarify"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01MVy6niWSya8TPG6qhxGoAf",
+   "ok": true,
+   "content": "{\"ok\":true}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01QK7KWeG9UPuYgaH3YLUPrQ",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01QK7KWeG9UPuYgaH3YLUPrQ",
+   "ok": true,
+   "content": "{\"tasks\":[],\"total\":0}"
+  },
+  {
+   "type": "text",
+   "text": "The queue had one task. It came through garbled, so I couldn't act on it and asked the owner to clarify instead.\n\n- *Task:* a message from the owner (`U0EVALOWNER`) in Slack DM `D0EVAL`. The payload started with stray control bytes and cut off mid-word, leaving only `pls resched the den`.\n- *Context:* bootstrap returned nothing to fill the gap. The profile docs were empty, there was no earlier conversation and no relevant memories.\n- *Action:* I didn't guess (probably \"dentist\", but nothing confirms it). I sent one clarifying question: whether they meant the dentist appointment, when it is now, and when they want it moved to.\n- *Status:* I marked the task `failed` (\"malformed/truncated payload; asked owner to clarify\"). When they reply, it will arrive as a new task.\n\nThe queue is now empty, so I've stopped."
+  },
+  {
+   "type": "turn_end",
+   "ok": true,
+   "kind": "ok"
+  }
+ ],
+ "state": {
+  "profile": {},
+  "tasks": [
+   {
+    "id": "b5ed2d3a-e6b1-47c6-9981-7dcc598b3595",
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat_id": "D0EVAL",
+    "status": "failed",
+    "queue": "main",
+    "result": "Malformed/truncated payload (\"pls resched the den\"); asked owner to clarify"
+   }
+  ],
+  "outbox": [],
+  "fakes": {
+   "slack": [
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it — working on it."
+     },
+     "phase": "inbound"
+    },
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Your message came through garbled and cut off: I only got \"pls resched the den…\". Did you mean the dentist appointment? If so, what's the current date/time and when do you want to move it to?"
+     },
+     "phase": "drain"
+    }
+   ],
+   "telegram": [],
+   "discord": []
+  }
+ }
+}

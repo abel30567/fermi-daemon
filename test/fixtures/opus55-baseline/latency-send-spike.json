@@ -1,0 +1,159 @@
+{
+ "scenario": "latency-send-spike",
+ "class": "OVERSTRICT",
+ "recorded": {
+  "pass": false,
+  "failed": [
+   "latency 16277 ms > 10000 ms"
+  ]
+ },
+ "latencyMs": 16277,
+ "trace": [
+  {
+   "type": "tool_call",
+   "id": "toolu_01KorqSDSx5QV6zCc98uxToX",
+   "name": "ToolSearch",
+   "rawName": "ToolSearch",
+   "input": {
+    "query": "select:mcp__fermi__task_claim,mcp__fermi__task_complete,mcp__fermi__context_bootstrap,mcp__fermi__channel_send",
+    "max_results": 4
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01KorqSDSx5QV6zCc98uxToX",
+   "ok": true,
+   "content": "   "
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01LimtSx3RHDe1bhKFEu9XoC",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01LimtSx3RHDe1bhKFEu9XoC",
+   "ok": true,
+   "content": "{\"tasks\":[{\"id\":\"3e6ca5f0-e829-4353-aad9-b9b454006321\",\"channel\":\"sl\",\"sender\":\"U0EVALOWNER\",\"chat_id\":\"D0EVAL\",\"payload\":\"What is the capital of France?\",\"created_at\":1792733941807,\"queue\":\"main\"}],\"total\":1}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01AE7BRunuxn57Lm4WAxWJS3",
+   "name": "context_bootstrap",
+   "rawName": "mcp__fermi__context_bootstrap",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01AE7BRunuxn57Lm4WAxWJS3",
+   "ok": true,
+   "content": "{\"agent_doc\":{\"body\":\"\",\"usage\":0,\"limit\":2200},\"user_doc\":{\"body\":\"\",\"usage\":0,\"limit\":1375},\"prior_summary\":null,\"history\":[{\"role\":\"user\",\"body\":\"What is the capital of France?\",\"created_at\":1792733941806}],\"pinned_memories\":[{\"kind\":\"fact\",\"body\":\"Fermi is a personal MCP agent with cross-host memory.\"}]}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01WLhfTiwHM2GezZxyKNY4NN",
+   "name": "channel_send",
+   "rawName": "mcp__fermi__channel_send",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL",
+    "text": "Paris."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01WLhfTiwHM2GezZxyKNY4NN",
+   "ok": true,
+   "content": "{\"ok\":true,\"channel\":\"sl\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01HnNPaea2JVZSpoz3FVoSUu",
+   "name": "task_complete",
+   "rawName": "mcp__fermi__task_complete",
+   "input": {
+    "id": "3e6ca5f0-e829-4353-aad9-b9b454006321",
+    "status": "done",
+    "result": "Answered: capital of France is Paris"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01HnNPaea2JVZSpoz3FVoSUu",
+   "ok": true,
+   "content": "{\"ok\":true}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_016UHNH1ERbui66Jn5sDg7Mp",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_016UHNH1ERbui66Jn5sDg7Mp",
+   "ok": true,
+   "content": "{\"tasks\":[],\"total\":0}"
+  },
+  {
+   "type": "text",
+   "text": "The queue is empty. There was one task: the owner asked on Slack (`D0EVAL`) \"What is the capital of France?\" I replied \"Paris.\" and marked the task done. Nothing came up that needed saving to memory."
+  },
+  {
+   "type": "turn_end",
+   "ok": true,
+   "kind": "ok"
+  }
+ ],
+ "state": {
+  "profile": {},
+  "tasks": [
+   {
+    "id": "3e6ca5f0-e829-4353-aad9-b9b454006321",
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat_id": "D0EVAL",
+    "status": "done",
+    "queue": "main",
+    "result": "Answered: capital of France is Paris"
+   }
+  ],
+  "outbox": [],
+  "fakes": {
+   "slack": [
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it — working on it."
+     },
+     "phase": "inbound"
+    },
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Paris."
+     },
+     "phase": "drain"
+    }
+   ],
+   "telegram": [],
+   "discord": []
+  }
+ }
+}

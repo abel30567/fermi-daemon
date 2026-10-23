@@ -1,0 +1,175 @@
+{
+ "scenario": "fs-write-save",
+ "class": "OVERSTRICT",
+ "recorded": {
+  "pass": false,
+  "failed": [
+   "no fs_write call matches {\"path\":\"/groceries\\\\.md$/\",\"content\":\"/eggs[\\\\s\\\\S]*oats[\\\\s\\\\S]*coffee/\"}; inputs: [{\"path\":\"notes/groceries.md\",\"body\":\"# Groceries\\n\\n- eggs\\n- oats\\n- coffee\\n\"}]"
+  ]
+ },
+ "latencyMs": 15823,
+ "trace": [
+  {
+   "type": "tool_call",
+   "id": "toolu_01Xv7ykWe5SW7EhPzXQ4GvnL",
+   "name": "ToolSearch",
+   "rawName": "ToolSearch",
+   "input": {
+    "query": "select:mcp__fermi__task_claim,mcp__fermi__task_complete,mcp__fermi__context_bootstrap,mcp__fermi__channel_send,mcp__fermi__fs_write,mcp__fermi__mac_file_write",
+    "max_results": 6
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01Xv7ykWe5SW7EhPzXQ4GvnL",
+   "ok": true,
+   "content": "     "
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01AeCkiJMU4K2aPpW7TVN7T5",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01AeCkiJMU4K2aPpW7TVN7T5",
+   "ok": true,
+   "content": "{\"tasks\":[{\"id\":\"7361db79-f621-408c-8436-d8936588fdde\",\"channel\":\"sl\",\"sender\":\"U0EVALOWNER\",\"chat_id\":\"D0EVAL\",\"payload\":\"Save this grocery list to notes/groceries.md: eggs, oats, coffee.\",\"created_at\":1792728665418,\"queue\":\"main\"}],\"total\":1}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01BzKpCyQdESVquNwVyhkYUY",
+   "name": "context_bootstrap",
+   "rawName": "mcp__fermi__context_bootstrap",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01BzKpCyQdESVquNwVyhkYUY",
+   "ok": true,
+   "content": "{\"agent_doc\":{\"body\":\"\",\"usage\":0,\"limit\":2200},\"user_doc\":{\"body\":\"\",\"usage\":0,\"limit\":1375},\"prior_summary\":null,\"history\":[{\"role\":\"user\",\"body\":\"Save this grocery list to notes/groceries.md: eggs, oats, coffee.\",\"created_at\":1792728665418}],\"pinned_memories\":[{\"kind\":\"fact\",\"body\":\"Fermi is a personal MCP agent with cross-host memory.\"}]}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01AVLzihwQZvmWQrru9tAPox",
+   "name": "fs_write",
+   "rawName": "mcp__fermi__fs_write",
+   "input": {
+    "path": "notes/groceries.md",
+    "body": "# Groceries\n\n- eggs\n- oats\n- coffee\n"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01AVLzihwQZvmWQrru9tAPox",
+   "ok": true,
+   "content": "{\"path\":\"notes/groceries.md\",\"size\":36,\"written\":true}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01W1xpiLHxzKW5KyMK4PBAv7",
+   "name": "channel_send",
+   "rawName": "mcp__fermi__channel_send",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL",
+    "text": "✅ Saved to `notes/groceries.md`:\n• eggs\n• oats\n• coffee"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01W1xpiLHxzKW5KyMK4PBAv7",
+   "ok": true,
+   "content": "{\"ok\":true,\"channel\":\"sl\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01D2TUM38m1yVbNrjMcBbrgW",
+   "name": "task_complete",
+   "rawName": "mcp__fermi__task_complete",
+   "input": {
+    "id": "7361db79-f621-408c-8436-d8936588fdde",
+    "status": "done",
+    "result": "Saved grocery list (eggs, oats, coffee) to notes/groceries.md"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01D2TUM38m1yVbNrjMcBbrgW",
+   "ok": true,
+   "content": "{\"ok\":true}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01UjazW7Cya5Qr24zvcnUJKS",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01UjazW7Cya5Qr24zvcnUJKS",
+   "ok": true,
+   "content": "{\"tasks\":[],\"total\":0}"
+  },
+  {
+   "type": "text",
+   "text": "The queue is empty. There was one task, and it's done:\n\n- *Owner (`sl` / D0EVAL):* \"Save this grocery list to notes/groceries.md: eggs, oats, coffee.\" I wrote the file to Fermi storage as a list of eggs, oats and coffee under a \"Groceries\" heading. I told the owner on Slack and marked the task done.\n\nI didn't save any new memory or profile note, because nothing in the exchange would matter later."
+  },
+  {
+   "type": "turn_end",
+   "ok": true,
+   "kind": "ok"
+  }
+ ],
+ "state": {
+  "profile": {},
+  "tasks": [
+   {
+    "id": "7361db79-f621-408c-8436-d8936588fdde",
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat_id": "D0EVAL",
+    "status": "done",
+    "queue": "main",
+    "result": "Saved grocery list (eggs, oats, coffee) to notes/groceries.md"
+   }
+  ],
+  "outbox": [],
+  "fakes": {
+   "slack": [
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it — working on it."
+     },
+     "phase": "inbound"
+    },
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "✅ Saved to `notes/groceries.md`:\n• eggs\n• oats\n• coffee"
+     },
+     "phase": "drain"
+    }
+   ],
+   "telegram": [],
+   "discord": []
+  }
+ }
+}
