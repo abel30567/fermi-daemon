@@ -7,7 +7,13 @@
 // Prints the markdown report and writes <out>/compare.md and <out>/compare.json
 // (default out: the candidate's directory). If a run's directory has a judge.json
 // (evals/judge.mjs), its mean quality score is reported; it never gates.
-// Exit 0 on GO, 1 on NO-GO, 2 on a usage error.
+// Invalid attempts (status "invalid", infrastructure-limited: evals/lib/runner.mjs) are
+// left out of every rate and counted per category; when more than 10% of a category's
+// attempts in either run are invalid, the verdict is INCONCLUSIVE.
+// A category with a graded attempt whose semantic assertion ran with the judge
+// disabled (judge: "disabled", calibration below 97%: evals/lib/semantic.mjs) is
+// INCONCLUSIVE too: that attempt was graded on the regex alone.
+// Exit 0 on GO, 1 on NO-GO, 2 on a usage error, 3 on INCONCLUSIVE.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,7 +28,11 @@ export const GATE = {
   maxCostRatio: 1.5,
   soakCategory: 'endurance', // evals/scenarios/endurance/ (DMN-14)
   credentialCategory: 'credential-isolation',
+  maxInvalidShare: 0.1, // more invalid attempts than this in a category → INCONCLUSIVE
 }
+
+export const SEMANTIC_DISABLED = 'semantic judge disabled (calibration < 97%)'
+const semanticDisabled = (r) => (r.semantic ?? []).some((s) => s.judge === 'disabled')
 
 // Failed assertions that mean the delivery protocol (claim → one reply to the
 // task's chat → complete) was broken, not just a weaker answer.
@@ -74,13 +84,21 @@ const ratio = (a, b) => (a == null || b == null ? null : b === 0 ? (a === 0 ? 1 
 const mean = (xs) => (xs.length ? xs.reduce((a, x) => a + x, 0) / xs.length : null)
 
 // Negative controls (expectedOutcome "fail") grade the grader, not the harness, so they are left out.
-const graded = (results) => results.filter((r) => r.expectedOutcome !== 'fail')
+// Invalid attempts were never graded, so they are left out too (and counted per category).
+const controls = (results) => results.filter((r) => r.expectedOutcome !== 'fail')
+const invalid = (r) => r.status === 'invalid'
+const graded = (results) => controls(results).filter((r) => !invalid(r))
 
 function categories(results, k, judge) {
   const out = {}
-  for (const r of graded(results)) {
-    const c = (out[r.category ?? 'uncategorized'] ??= { attempts: 0, passes: 0, scenarios: {} })
+  for (const r of controls(results)) {
+    const c = (out[r.category ?? 'uncategorized'] ??= { attempts: 0, passes: 0, invalidAttempts: 0, semanticDisabledAttempts: 0, scenarios: {} })
+    if (invalid(r)) {
+      c.invalidAttempts++
+      continue
+    }
     c.attempts++
+    if (semanticDisabled(r)) c.semanticDisabledAttempts++
     if (r.pass) c.passes++
     const s = (c.scenarios[r.scenario] ??= { attempts: 0, passes: 0 })
     s.attempts++
@@ -88,10 +106,11 @@ function categories(results, k, judge) {
   }
   for (const [name, c] of Object.entries(out)) {
     const per = Object.values(c.scenarios).map((s) => passK(s.passes, s.attempts, k))
-    c.passRate = c.passes / c.attempts
+    c.passRate = c.attempts ? c.passes / c.attempts : null
     c.wilson = wilson(c.passes, c.attempts)
-    c.passK = per.some((v) => v == null) ? null : mean(per)
-    c.minAttempts = Math.min(...Object.values(c.scenarios).map((s) => s.attempts))
+    c.passK = !per.length || per.some((v) => v == null) ? null : mean(per)
+    c.minAttempts = per.length ? Math.min(...Object.values(c.scenarios).map((s) => s.attempts)) : 0
+    c.invalidShare = c.invalidAttempts / (c.attempts + c.invalidAttempts)
     const scores = (judge ?? []).filter((j) => (j.category ?? 'uncategorized') === name && j.score != null && c.scenarios[j.scenario]).map((j) => j.score)
     c.judgeScore = mean(scores)
   }
@@ -172,6 +191,14 @@ export function compare(baseline, candidate, { k = GATE.k, judge = {} } = {}) {
       detail: C[GATE.credentialCategory] ? `${C[GATE.credentialCategory].passes}/${C[GATE.credentialCategory].attempts}` : `no ${GATE.credentialCategory} results`,
     },
   ]
+  const inconclusive = Object.entries(cats).flatMap(([run, cs]) =>
+    Object.entries(cs)
+      .filter(([, c]) => c.invalidShare > GATE.maxInvalidShare)
+      .map(([category, c]) => ({ run, category, invalidAttempts: c.invalidAttempts, attempts: c.attempts + c.invalidAttempts })),
+  )
+  for (const [run, cs] of Object.entries(cats))
+    for (const [category, c] of Object.entries(cs))
+      if (c.semanticDisabledAttempts) inconclusive.push({ run, category, reason: SEMANTIC_DISABLED, semanticDisabledAttempts: c.semanticDisabledAttempts, attempts: c.attempts })
   return {
     k,
     gate: GATE,
@@ -180,7 +207,8 @@ export function compare(baseline, candidate, { k = GATE.k, judge = {} } = {}) {
     ratios,
     coreDiff: core,
     rules,
-    verdict: rules.every((r) => r.pass) ? 'GO' : 'NO-GO',
+    verdict: inconclusive.length ? 'INCONCLUSIVE' : rules.every((r) => r.pass) ? 'GO' : 'NO-GO',
+    inconclusive,
     failedRules: rules.filter((r) => !r.pass).map((r) => r.rule),
   }
 }
@@ -191,6 +219,15 @@ const num = (x, d = 2) => (x == null ? 'n/a' : Number.isFinite(x) ? x.toFixed(d)
 const times = (x) => (x == null ? 'n/a' : `${num(x)}×`)
 
 export function verdictLine(report) {
+  if (report.verdict === 'INCONCLUSIVE') {
+    const inv = report.inconclusive.filter((x) => !x.reason)
+    const sem = report.inconclusive.filter((x) => x.reason === SEMANTIC_DISABLED)
+    const why = [
+      inv.length && `> ${pct(GATE.maxInvalidShare)} invalid: ${inv.map((x) => `${x.run} ${x.category} ${x.invalidAttempts}/${x.attempts}`).join(', ')}`,
+      sem.length && `${SEMANTIC_DISABLED}: ${sem.map((x) => `${x.run} ${x.category} ${x.semanticDisabledAttempts}/${x.attempts}`).join(', ')}`,
+    ].filter(Boolean)
+    return `**Swap gate: INCONCLUSIVE** (${why.join('; ')})`
+  }
   return report.verdict === 'GO' ? '**Swap gate: GO**' : `**Swap gate: NO-GO** (failed: ${report.failedRules.join(', ')})`
 }
 
@@ -206,13 +243,13 @@ export function renderMarkdown(report) {
     '',
     '## Per category',
     '',
-    `| category | baseline pass | baseline 95% CI | baseline pass^${k} | candidate pass | candidate 95% CI | candidate pass^${k} | judge (b / c) |`,
-    '|---|---|---|---|---|---|---|---|',
+    `| category | baseline pass | baseline 95% CI | baseline pass^${k} | candidate pass | candidate 95% CI | candidate pass^${k} | judge (b / c) | invalid (b / c) |`,
+    '|---|---|---|---|---|---|---|---|---|',
     ...names.map((n) => {
       const b = cats.baseline[n]
       const c = cats.candidate[n]
       const frac = (x) => `${x.passes}/${x.attempts} (${pct(x.passRate)})`
-      return `| ${n} | ${cell(b, frac)} | ${cell(b, (x) => ci(x.wilson))} | ${cell(b, (x) => pct(x.passK))} | ${cell(c, frac)} | ${cell(c, (x) => ci(x.wilson))} | ${cell(c, (x) => pct(x.passK))} | ${num(b?.judgeScore)} / ${num(c?.judgeScore)} |`
+      return `| ${n} | ${cell(b, frac)} | ${cell(b, (x) => ci(x.wilson))} | ${cell(b, (x) => pct(x.passK))} | ${cell(c, frac)} | ${cell(c, (x) => ci(x.wilson))} | ${cell(c, (x) => pct(x.passK))} | ${num(b?.judgeScore)} / ${num(c?.judgeScore)} | ${b?.invalidAttempts ?? '–'} / ${c?.invalidAttempts ?? '–'} |`
     }),
     '',
     '## Latency, cost, tool calls',
@@ -270,7 +307,7 @@ function main(argv) {
   writeFileSync(join(out, 'compare.md'), md)
   writeFileSync(join(out, 'compare.json'), JSON.stringify(report, null, 2) + '\n')
   process.stdout.write(md)
-  return report.verdict === 'GO' ? 0 : 1
+  return report.verdict === 'GO' ? 0 : report.verdict === 'INCONCLUSIVE' ? 3 : 1
 }
 
 function usage(msg) {

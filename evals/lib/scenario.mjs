@@ -52,6 +52,7 @@ export function loadScenario(file) {
     errs.push('harnesses must be a non-empty list of harness names')
   if (s.tools != null && (!Array.isArray(s.tools) || s.tools.some((t) => t !== 'Bash'))) errs.push('tools may only narrow the production surface: a subset of ["Bash"]')
   if (s.expectOutcome != null && !['pass', 'fail'].includes(s.expectOutcome)) errs.push('expectOutcome must be "pass" or "fail"')
+  if (s.negative != null && typeof s.negative !== 'boolean') errs.push('negative must be a boolean')
   if (s.schedule != null && s.schedule !== 'weekly') errs.push('schedule must be "weekly"')
   const sess = s.session
   if (Array.isArray(sess) ? !sess.length || sess.some((t) => !TURNS[t?.turn]) : sess != null && (typeof sess !== 'object' || ['tasks', 'redrain'].some((k) => sess[k] != null && !(Number.isInteger(sess[k]) && sess[k] >= 0))))
@@ -65,6 +66,10 @@ export function loadScenario(file) {
   if (errs.length) throw new Error(`${file}: ${errs.join('; ')}`)
   return s
 }
+
+// A negative control: scripted misbehaviour for the fake harness, marked `negative: true`
+// or named negative-X, X-negative or X-neg (a variant by its base name).
+export const isNegativeControl = (s) => s.negative ?? /^negative-|-neg(ative)?$/.test(s.name.split('~')[0])
 
 // A scenario with `variants` (paraphrased or adversarial inbounds) becomes the
 // base scenario plus one scenario per variant, named `<name>~<variant>`. A

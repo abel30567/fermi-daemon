@@ -6,22 +6,28 @@
 // Every harness process runs in the attempt's OS sandbox (harness/sandbox.mjs),
 // reaching the model endpoints only through the egress proxy, and its init must
 // pass the isolation assertion (isolation.mjs) or the attempt is aborted.
+// Its HOME holds a sandbox daemon dir (createDaemonDir) and it gets the production
+// allowlist (lib/run-policy.mjs), so Bash-dependent behaviour (Teams replies,
+// transcription, media/out) is graded on the production tool surface.
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, fstatSync, mkdirSync, mkdtempSync, readSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, copyFileSync, cpSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
-import { evaluate } from './assertions.mjs'
+import { ALLOWED_TOOLS } from '../../lib/run-policy.mjs'
+import { evaluate, semanticOutcome } from './assertions.mjs'
 import { startEgressProxy } from './egress-proxy.mjs'
-import { INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
+import { EVAL_SERVER, INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
 import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
 import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
+import { judgeSemantic } from './semantic.mjs'
 import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
 
@@ -98,18 +104,83 @@ async function seedSecrets(url, secrets = []) {
 
 const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v))))
 
+// The production lanes' --allowedTools with the claude.ai Fermi connector's grant
+// pointed at the eval's `fermi` server. The Playwright and Calendar grants stay:
+// they only auto-approve, and --strict-mcp-config loads no such server.
+export const EVAL_ALLOWED_TOOLS = ALLOWED_TOOLS.split(',').map((t) => (t === 'mcp__claude_ai_Fermi' ? `mcp__${EVAL_SERVER}` : t))
+
+const shQuote = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`
+
+// The attempt's daemon dir, <home>/fermi-daemon, where the prompts' ~/fermi-daemon/…
+// paths resolve under the sandbox HOME: prompts/ from the repo (the eval overlay as
+// its local.json, never the private one), the real tools/teams-send.sh posting to
+// `teamsUrl` through teams-outbound.url, a fake tools/transcribe.sh that prints
+// `transcript` (the scenario's fixtures.transcript), and media/ + media/out/ with
+// the inbound attachment as an empty file. Throws, before any harness starts, when
+// the written teams-outbound.url is not a localhost URL. → the dir
+export function createDaemonDir(home, { teamsUrl, transcript, attachment } = {}) {
+  const dir = join(home, 'fermi-daemon')
+  cpSync(join(ROOT, 'prompts'), join(dir, 'prompts'), { recursive: true, filter: (src) => basename(src) !== 'local.json' })
+  copyFileSync(EVAL_OVERLAY, join(dir, 'prompts/local.json'))
+  mkdirSync(join(dir, 'tools'))
+  copyFileSync(join(ROOT, 'tools/teams-send.sh'), join(dir, 'tools/teams-send.sh'))
+  chmodSync(join(dir, 'tools/teams-send.sh'), 0o755)
+  const say = transcript == null ? `echo "transcribe: the scenario has no fixtures.transcript" >&2; exit 1` : `printf '%s\\n' ${shQuote(transcript)}`
+  const fakeTranscribe = `#!/bin/sh\n# Eval fake of tools/transcribe.sh: the scenario's fixture transcript, no whisper.\n[ -f "\${1:-}" ] || { echo "transcribe: no such file: \${1:-}" >&2; exit 2; }\n${say}\n`
+  writeFileSync(join(dir, 'tools/transcribe.sh'), fakeTranscribe, { mode: 0o755 })
+  mkdirSync(join(dir, 'media/out'), { recursive: true })
+  if (attachment?.file) writeFileSync(join(dir, 'media', basename(attachment.file)), '')
+  writeFileSync(join(dir, 'teams-outbound.url'), `${teamsUrl ?? ''}\n`)
+  assertLocalUrls({ 'teams-outbound.url': readFileSync(join(dir, 'teams-outbound.url'), 'utf8').trim() || 'missing' })
+  return dir
+}
+
+// Infrastructure outcomes: the subscription or the provider failed, not the harness.
+const SERVER_ERROR = /\b5\d\d\b|overloaded|internal server error/i
+export const isInfraLimit = (ev) => ev.kind === 'rate_limit' || ev.kind === 'spend_limit' || (ev.kind === 'api_error' && SERVER_ERROR.test(ev.detail ?? ''))
+export const INFRA_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
+
+// One graded attempt. An attempt whose turn ends with an infrastructure outcome
+// (isInfraLimit, not absorbed by a session re-drain) is re-run from scratch, up to
+// `infraRetries` times, after the reset time the error names (retryAfterMs) or else
+// `backoff` (30 s, doubling, capped at 10 min). The earlier tries' dirs are kept as
+// <n>.infra-<i>. Still limited after that → status "invalid", pass null: never graded.
+// A reset further away than backoff.maxMs (e.g. "resets 2am") is not waited for: the
+// attempt is invalid at once, the reset time in its reason, no retries spent.
+// `pace(fn)`: runs each try (evals/lib/pacing.mjs, the backend lock and --min-gap-ms).
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
-export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth }) {
+// `semanticJudge`: lib/semantic.mjs createSemanticJudge() for semantic assertions (default: none, regex only).
+export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pace = (fn) => fn(), onInfraRetry, ...args }) {
+  const dir = join(args.outDir, args.scenario.name, String(args.attempt))
+  for (let n = 0; ; n++) {
+    const { result, infra } = await pace(() => attemptOnce(args))
+    if (!infra) return { ...result, status: 'valid', infraRetries: n }
+    if (infra.retryAfterMs > backoff.maxMs) {
+      const at = new Date(Date.now() + infra.retryAfterMs).toISOString()
+      return { ...result, pass: null, status: 'invalid', invalidReason: `${infra.kind} resets at ${at}, beyond the ${backoff.maxMs} ms infra wait cap: ${infra.detail}`, infraRetries: n }
+    }
+    if (n >= infraRetries) return { ...result, pass: null, status: 'invalid', invalidReason: `${infra.kind} after ${n} infra retries: ${infra.detail}`, infraRetries: n }
+    const waitMs = infra.retryAfterMs ?? Math.min(backoff.maxMs, backoff.baseMs * 2 ** n)
+    rmSync(`${dir}.infra-${n + 1}`, { recursive: true, force: true })
+    renameSync(dir, `${dir}.infra-${n + 1}`)
+    onInfraRetry?.({ retry: n + 1, waitMs, kind: infra.kind, detail: infra.detail })
+    await sleep(waitMs)
+  }
+}
+
+async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth, semanticJudge }) {
   const dir = join(outDir, scenario.name, String(attempt))
   mkdirSync(dir, { recursive: true })
   const closers = []
   const trace = []
   const errorKinds = new Set()
   let failed = []
+  let semantic
   let latencyMs = 0
   let taskLatencies
   const retried = new Set() // error turn_ends the session re-drained after
+  let infra = null // the first infrastructure turn_end that failed the attempt (isInfraLimit)
   const canary = scenario.credentials?.canary ? `fermi-eval-canary-${randomBytes(16).toString('hex')}` : null
   const fixtures = canary ? fillCanary(scenario.fixtures, canary) : scenario.fixtures
   let canaries
@@ -176,22 +247,23 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     allowed = allowedBuiltins(harness.name, scenario.tools)
     sandboxCanary = plantSandboxCanary()
     closers.push(async () => sandboxCanary.remove())
-    // A per-attempt HOME for adapters that read MCP servers from it (pi); others ignore it.
+    // The per-attempt sandbox HOME (pi also reads its MCP servers from it), holding the daemon dir.
     const sandboxHome = mkdtempSync(join(tmpdir(), 'eval-home-'))
     closers.push(async () => rmSync(sandboxHome, { recursive: true, force: true }))
+    createDaemonDir(sandboxHome, { teamsUrl: `${fakes.apis.teams.url}/teams/outbound`, transcript: fixtures?.transcript, attachment: scenario.inbound?.attachment })
     // Read now, not at startup: a keychain token is short-lived. Never logged; only scanned for.
     const { secrets = [], localPorts = [], egressAllow = [], env: authEnv = {}, ...authOpts } = auth?.attempt() ?? {}
     assertLocalUrls(urlEntries(authEnv))
     const egress = await startEgressProxy({ local: egressAllow, onDeny: (detail) => note({ type: 'note', source: 'egress', detail }) })
     closers.push(egress.close)
-    const sandbox = createSandbox({ root: sandboxHome, readable: [dir, ...sandboxReadable], localPorts: [proxy.port, ...localPorts], egressProxy: egress.url })
+    const sandbox = createSandbox({ root: sandboxHome, readable: [dir, ...sandboxReadable], localPorts: [proxy.port, fakes.apis.teams.port, ...localPorts], egressProxy: egress.url })
     const opts = {
       model,
-      cwd: dir,
+      cwd: join(sandbox.root, 'fermi-daemon'), // Bash runs in the sandbox daemon dir, as the warm worker's in its DAEMON
       mcpConfig: mcpConfigFile,
       sandboxHome,
       sandbox,
-      allowedTools: ['mcp__fermi__*'], // auto-approves only; `tools` decides which built-ins exist
+      allowedTools: EVAL_ALLOWED_TOOLS, // auto-approves only; `tools` decides which built-ins exist
       // claude-code: --tools Bash,ToolSearch: production's shell, unless the scenario narrows it,
       // plus ToolSearch so the fermi tools stay deferred as in production
       tools: [...(scenario.tools ?? PRODUCTION_BUILTINS), ...INTERNAL_TOOLS],
@@ -247,7 +319,9 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
 
     const state = { ...(await target.dump()), fakes: fakes.record() }
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state, null, 2))
-    failed = evaluate(scenario.expect, { trace, state, scenario, latencyMs, taskLatencies, canaries })
+    const ctx = { trace, state, scenario, latencyMs, taskLatencies, canaries, semantic: await judgeSemantic(scenario.expect, trace, semanticJudge) }
+    failed = evaluate(scenario.expect, ctx)
+    if (ctx.semantic.size) semantic = [...ctx.semantic.keys()].map((spec) => semanticOutcome(spec, ctx))
   } catch (err) {
     errorKinds.add('runner_error')
     failed.push({ assertion: null, message: String(err?.message ?? err) })
@@ -266,7 +340,10 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     if (ev.type === 'turn_end' && !ev.ok && !ev.interrupted) {
       errorKinds.add(ev.kind)
       // A warm session re-drains after an error turn, like the warm worker after its backoff.
-      if (!retried.has(ev)) failed.push({ assertion: null, message: `harness turn ended with ${ev.kind}: ${ev.detail}` })
+      if (!retried.has(ev)) {
+        failed.push({ assertion: null, message: `harness turn ended with ${ev.kind}: ${ev.detail}` })
+        if (!infra && !breach && isInfraLimit(ev)) infra = { kind: ev.kind, detail: ev.detail, retryAfterMs: ev.retryAfterMs }
+      }
     }
   }
   const ends = trace.filter((e) => e.type === 'turn_end')
@@ -274,7 +351,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   const inputTokens = sum('inputTokens')
   const outputTokens = sum('outputTokens')
   const builtinTools = builtinsOf(init)
-  return {
+  const result = {
     scenario: scenario.name,
     ...(scenario.category != null && { category: String(scenario.category) }),
     attempt,
@@ -290,7 +367,9 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     // The harness's reported built-ins and how they differ from production's (null without an init).
     builtinTools,
     surfaceDelta: builtinTools && surfaceDelta(builtinTools),
+    ...(semantic && { semantic }), // both halves of every semantic assertion
   }
+  return { result, infra }
 }
 
 // Drain-session mode: `session: { tasks?: n, redrain?: k }`. One warm session (the
@@ -338,25 +417,31 @@ async function runDrainSession({ harness, opts, systemPrompt, scenario, enqueue,
   }
 }
 
+// Invalid attempts (status "invalid": infrastructure-limited) are graded neither way;
+// they are listed apart, and a run with any is not ok: it has no verdict for them.
 export function summarize(results, meta) {
+  const invalid = results.filter((r) => r.status === 'invalid')
+  const valid = results.filter((r) => r.status !== 'invalid')
   const byScenario = {}
   for (const r of results) {
-    const s = (byScenario[r.scenario] ??= { attempts: 0, passes: 0, expectedOutcome: r.expectedOutcome })
-    s.attempts++
+    const s = (byScenario[r.scenario] ??= { attempts: 0, passes: 0, invalid: 0, expectedOutcome: r.expectedOutcome })
+    if (r.status === 'invalid') s.invalid++
+    else s.attempts++
     if (r.pass) s.passes++
   }
-  for (const s of Object.values(byScenario)) s.passRate = s.passes / s.attempts
+  for (const s of Object.values(byScenario)) s.passRate = s.attempts ? s.passes / s.attempts : null
   // An isolation breach is never an expected outcome, not even for a negative control.
-  const unexpected = results.filter((r) => r.pass !== (r.expectedOutcome === 'pass') || r.errorKinds?.includes('isolation_breach'))
+  const unexpected = valid.filter((r) => r.pass !== (r.expectedOutcome === 'pass') || r.errorKinds?.includes('isolation_breach'))
   return {
     ...meta,
     scenarios: Object.keys(byScenario).length,
     attempts: results.length,
-    passed: results.filter((r) => r.pass).length,
-    failed: results.filter((r) => !r.pass).length,
-    expectedFailures: results.filter((r) => !r.pass && r.expectedOutcome === 'fail').length,
+    passed: valid.filter((r) => r.pass).length,
+    failed: valid.filter((r) => !r.pass).length,
+    expectedFailures: valid.filter((r) => !r.pass && r.expectedOutcome === 'fail').length,
     unexpected: unexpected.map((r) => ({ scenario: r.scenario, attempt: r.attempt, pass: r.pass })),
-    ok: unexpected.length === 0,
+    invalid: invalid.map((r) => ({ scenario: r.scenario, attempt: r.attempt, reason: r.invalidReason })),
+    ok: unexpected.length === 0 && invalid.length === 0,
     byScenario,
   }
 }
