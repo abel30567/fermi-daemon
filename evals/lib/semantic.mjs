@@ -135,7 +135,17 @@ export function formatConfusion(report) {
 
 // Calibrate the judge, print the table and gate it: → { judge, calibration }, where
 // judge is null (semantic assertions grade on their regex only) below MIN_ACCURACY.
-export async function prepareSemantic({ ask, cacheFile, cases = loadCalibration(), log = console.log, warn = console.error }) {
+// With `model` (the judge's identity), calibration runs once per process for that model
+// and calibration set: later calls get the first one's result.
+const calibrations = new Map()
+export function prepareSemantic({ model, cases = loadCalibration(), ...opts }) {
+  if (model == null) return calibrateAndGate({ cases, ...opts })
+  const key = createHash('sha256').update(JSON.stringify([model, cases])).digest('hex')
+  if (!calibrations.has(key)) calibrations.set(key, calibrateAndGate({ cases, ...opts }).catch((err) => (calibrations.delete(key), Promise.reject(err))))
+  return calibrations.get(key)
+}
+
+async function calibrateAndGate({ ask, cacheFile, cases, log = console.log, warn = console.error }) {
   const judge = createSemanticJudge({ ask, cacheFile })
   const report = await calibrate(judge, cases)
   const enabled = report.accuracy >= MIN_ACCURACY

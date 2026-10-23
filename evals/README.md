@@ -8,7 +8,7 @@ final text.
 ```bash
 node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios '<glob>'... \
   [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
-  [--auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>]
+  [--auth none|fd|keychain|proxy] [--judge-auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>]
 
 # the runner's own check: fake harness, fake target, no inference, localhost only
 node evals/run.mjs --harness fake --scenarios 'evals/scenarios/examples/*' --out /tmp/e && cat /tmp/e/summary.json
@@ -303,8 +303,8 @@ instead of `fake.script` and expects every attempt to fail.
 Regex grading of meaning misses paraphrases ("I'll let you know every Friday").
 A `semantic` assertion adds one yes/no question to a regex assertion, answered by
 the semantic judge (`lib/semantic.mjs`). It uses the judge model and harness fixed
-in `evals/judge.config.json` and the same sandboxed, tool-less, `--auth` turn as
-`judge.mjs`. The judge sees only the question and the text. A pass needs both the
+in `evals/judge.config.json` and the same sandboxed, tool-less turn as
+`judge.mjs`, with the judge's own credential (`--judge-auth`, below). The judge sees only the question and the text. A pass needs both the
 regex and the judge. `results.json` records both halves per attempt in `semantic`:
 `{ question, tool, expect, regex: pass|fail|null, judge: pass|fail|error|disabled, answers }`.
 
@@ -326,10 +326,37 @@ regex and the judge. `results.json` records both halves per attempt in `semantic
   calibration in `semanticJudge` (`{ enabled, accuracy, … }`).
 - `--harness fake` uses the fake judge, which answers from the calibration labels.
   It runs no inference.
+- Calibration runs once per process for a judge model and calibration set
+  (keyed by the model and the set's hash); a later call reuses its result.
+- `--judge-auth none|fd|keychain|proxy` is the judge's credential, independent of
+  `--auth` (`createJudgeAuth` in `lib/auth.mjs`), so the same judge model on the same
+  backend grades every harness's run: a GPT run on `--auth proxy` still has the
+  Claude judge on the keychain. Without it: `keychain` on macOS when the judge model
+  is a Claude model, otherwise the run exits 2 asking for it. CI passes `--judge-auth fd`;
+  with `--auth fd` too, both share the one fd token. `summary.json` records
+  `judgeAuthMode` (null without a real judge).
 
 ```bash
-node evals/judge.mjs --calibrate [--fake] [--auth none|fd|keychain|proxy]   # confusion table; exit 1 below 97%
+node evals/judge.mjs --calibrate [--fake] [--judge-auth none|fd|keychain|proxy]   # confusion table; exit 1 below 97%
 ```
+
+### Re-grading a run
+
+```bash
+node evals/judge.mjs --regrade <run dir> [--scenarios '<glob>'...] [--fake] [--judge-auth none|fd|keychain|proxy]
+```
+
+grades a finished run again from each attempt's recorded `trace.jsonl` and
+`state.json` with the scenarios' *current* `expect` and the current semantic judge
+(calibrated first), without re-running the harness (`lib/regrade.mjs`). It writes
+`<run dir>/regraded.json`: `results.json`'s schema, each entry plus `regradedAt`
+and `assertionsVersion` (a hash of the grading code and that scenario's `expect`),
+and prints every attempt whose pass/fail changed. Kept as recorded: the runner's
+own failures (timeout, error turns, isolation breach), invalid and runner-error
+attempts, and `noCanaryLeak` and `latencyDrift`, whose inputs (the canary, per-task
+latencies) are never written to the attempt dir. Scenarios default to every file
+under `evals/scenarios/`; a name in more than one file (or none) is a usage error
+(exit 2). Use `--fake` for a `--harness fake` run, whose judge was the fake one.
 
 ## Session mode
 
@@ -391,14 +418,14 @@ allowlisted, so the webhook drops it and the drain sees only the seeded
 assertions decide pass/fail).
 
 ```bash
-node evals/judge.mjs <run dir> --scenarios '<glob>'... [--fake] [--auth none|fd|keychain|proxy]   # → <run dir>/judge.json
+node evals/judge.mjs <run dir> --scenarios '<glob>'... [--fake] [--judge-auth none|fd|keychain|proxy]   # → <run dir>/judge.json
 ```
 
 - Rubric (1-5 each, score = mean / 5): helpful, tone (no "as an AI"), format
   (Slack mrkdwn: no pipe tables, `#` headers or `**`).
 - Judge harness and model are fixed in `evals/judge.config.json`. The call goes
   through the harness adapter like an eval attempt (the same allowlisted env and
-  `--auth` modes, one turn) with the same isolation: `--tools ""`, strict MCP with no servers,
+  auth modes, as `--judge-auth`, one turn) with the same isolation: `--tools ""`, strict MCP with no servers,
   `--setting-sources project,local`, inside the OS sandbox behind the egress proxy.
 - The judge sees only the channel, the inbound text and the `channel_send` texts,
   never the harness, model, trace or cost.
