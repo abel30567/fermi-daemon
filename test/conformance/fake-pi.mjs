@@ -14,7 +14,7 @@
 //     and stream that tool execution.
 //   {"$fake":"mcp_probe"}      MCP probe: resolve the agent dir as pi does
 //     (PI_CODING_AGENT_DIR, else $HOME/.pi/agent) and record HOME, that dir and
-//     the mcp.json and auth.json pi would load from it to $FAKE_DIR/mcp-seen.json.
+//     the mcp.json, auth.json and models.json pi would load (and its argv) from it to $FAKE_DIR/mcp-seen.json.
 // An abort ends the in-flight run the way pi does: an aborted assistant message,
 // then agent_end and agent_settled, then the abort response.
 import { spawnSync } from 'node:child_process'
@@ -65,7 +65,7 @@ function mcpProbe() {
       return null
     }
   }
-  const seen = { home: process.env.HOME, agentDir, mcp: read('mcp.json'), auth: read('auth.json') }
+  const seen = { home: process.env.HOME, agentDir, mcp: read('mcp.json'), auth: read('auth.json'), models: read('models.json'), argv: process.argv.slice(2) }
   writeFileSync(join(process.env.FAKE_DIR, 'mcp-seen.json'), JSON.stringify(seen))
 }
 

@@ -3,8 +3,10 @@
 // grade the normalized trace and the resulting state. See evals/README.md.
 //
 //   node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios <glob>... \
-//     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly]
+//     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
+//     [--auth none|fd|keychain|proxy]
 //
+// --auth decides how the sandboxed harness gets inference credentials (lib/auth.mjs).
 // Scenarios with `"schedule": "weekly"` (the soak) are skipped unless --weekly is given.
 // Exit 0 when every attempt's outcome is the expected one, 1 otherwise, 2 on a
 // usage error or a non-localhost URL.
@@ -13,6 +15,7 @@ import { join } from 'node:path'
 import { loadHarness } from '../harness/index.mjs'
 import { sandboxBackend } from '../harness/sandbox.mjs'
 import { internalToolCalls } from './lib/assertions.mjs'
+import { createAuth } from './lib/auth.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
 import { runAttempt, summarize } from './lib/runner.mjs'
 import { expandScenarios, expandVariants, loadScenario } from './lib/scenario.mjs'
@@ -22,7 +25,7 @@ import { expandScenarios, expandVariants, loadScenario } from './lib/scenario.mj
 const GUARDED_ENV = ['FERMI_URL', 'MACOS_MCP_URL', 'SLACK_API_BASE', 'TELEGRAM_API_BASE', 'DISCORD_API_BASE', 'TWILIO_API_BASE', 'ANTHROPIC_API_BASE']
 
 function parseArgs(argv) {
-  const o = { k: 1, scenarios: [], timeoutMs: 300_000 }
+  const o = { k: 1, scenarios: [], timeoutMs: 300_000, auth: 'none' }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     const val = () => {
@@ -37,6 +40,7 @@ function parseArgs(argv) {
     else if (a === '--timeout-ms') o.timeoutMs = Number(val())
     else if (a === '--weekly') o.weekly = true
     else if (a === '--fake-script') o.fakeScript = val()
+    else if (a === '--auth') o.auth = val()
     else if (a === '--scenarios') {
       o.scenarios.push(val())
       while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) o.scenarios.push(argv[++i])
@@ -69,10 +73,11 @@ function internalCalls(out, r) {
 }
 
 async function main() {
-  let opts
+  let opts, auth
   try {
     opts = parseArgs(process.argv.slice(2))
     assertLocalUrls(Object.fromEntries(GUARDED_ENV.map((k) => [k, process.env[k] || null])))
+    auth = createAuth({ mode: opts.auth, harness: opts.harness, model: opts.model })
   } catch (err) {
     console.error(`evals: ${err.message}`)
     return 2
@@ -113,7 +118,7 @@ async function main() {
   const results = []
   for (const scenario of scenarios)
     for (let attempt = 1; attempt <= opts.k; attempt++) {
-      const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out })
+      const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out, auth })
       r.internalToolCalls = internalCalls(out, r)
       results.push(r)
       const tag = r.pass ? 'PASS' : r.expectedOutcome === 'fail' ? 'FAIL (expected)' : 'FAIL'
@@ -122,6 +127,7 @@ async function main() {
   const summary = summarize(results, {
     harness: opts.harness,
     model: opts.model ?? null,
+    authMode: auth.mode,
     k: opts.k,
     target: opts.worker ? 'wrangler' : 'fake',
     startedAt,

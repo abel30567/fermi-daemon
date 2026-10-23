@@ -12,6 +12,7 @@
       "scenario": { "type": "string", "minLength": 1 },
       "category": { "type": "string", "minLength": 1 },
       "attempt": { "type": "integer", "minimum": 1 },
+      "authMode": { "enum": ["none", "fd", "keychain", "proxy"] },
       "pass": { "type": "boolean" },
       "expectedOutcome": { "enum": ["pass", "fail"] },
       "failed": {

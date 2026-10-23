@@ -2,15 +2,15 @@
 // Rubric-based quality score of the replies (channel_send texts) in an eval run.
 // The score is reported by evals/compare.mjs, never gated: assertions decide pass/fail.
 //
-//   node evals/judge.mjs <run dir> --scenarios <glob>... [--fake]
+//   node evals/judge.mjs <run dir> --scenarios <glob>... [--fake] [--auth none|fd|keychain|proxy]
 //
 // Writes <run dir>/judge.json: one entry per attempt in results.json,
 // { scenario, category, attempt, score (0..1, null without a reply), helpful, tone, format, notes }.
 //
 // The judge model and its harness are fixed in evals/judge.config.json, so every
 // run is scored by the same judge. The call goes through the harness adapter
-// (harness/index.mjs) exactly as an eval attempt does, so it reads the same
-// credentials (CLAUDE_BIN, …) and nothing else, with the same isolation: no tools
+// (harness/index.mjs) exactly as an eval attempt does: the same sandbox env (nothing
+// ambient) and the same --auth modes (lib/auth.mjs), with the same isolation: no tools
 // (--tools ""), strict MCP with no servers, setting sources project,local, inside
 // the OS sandbox (harness/sandbox.mjs) behind the egress proxy. The judge sees
 // only the user's message, the channel and the reply texts: never the harness,
@@ -23,7 +23,8 @@ import { fileURLToPath } from 'node:url'
 import { loadHarness } from '../harness/index.mjs'
 import { createSandbox } from '../harness/sandbox.mjs'
 import { startEgressProxy } from './lib/egress-proxy.mjs'
-import { localModelPorts } from './lib/runner.mjs'
+import { createAuth } from './lib/auth.mjs'
+import { assertLocalUrls } from './lib/net.mjs'
 import { expandScenarios, loadScenario } from './lib/scenario.mjs'
 
 export const CONFIG = JSON.parse(readFileSync(new URL('./judge.config.json', import.meta.url), 'utf8'))
@@ -65,14 +66,17 @@ export function parseVerdict(text) {
 }
 
 // The real judge: one sandboxed runOnce through the configured adapter, no tools, no MCP servers.
-export async function modelJudge(input, { config = CONFIG, harness } = {}) {
+// `auth`: createAuth() for the judge's harness and model (default: none).
+export async function modelJudge(input, { config = CONFIG, harness, auth } = {}) {
   harness ??= await loadHarness(config.harness)
+  const { secrets, localPorts = [], egressAllow = [], env: authEnv = {}, ...authOpts } = auth?.attempt() ?? {} // secrets: never handed on
+  assertLocalUrls(Object.fromEntries(Object.entries(authEnv).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v)))))
   const cwd = mkdtempSync(join(tmpdir(), 'eval-judge-'))
-  const egress = await startEgressProxy()
+  const egress = await startEgressProxy({ local: egressAllow })
   try {
     const mcpConfig = join(cwd, 'mcp.json')
     writeFileSync(mcpConfig, JSON.stringify({ mcpServers: {} }))
-    const sandbox = createSandbox({ root: join(cwd, 'home'), localPorts: localModelPorts(), egressProxy: egress.url })
+    const sandbox = createSandbox({ root: join(cwd, 'home'), localPorts, egressProxy: egress.url })
     const run = harness.runOnce({
       prompt: judgePrompt(input),
       model: config.model,
@@ -84,7 +88,8 @@ export async function modelJudge(input, { config = CONFIG, harness } = {}) {
       strictMcpConfig: true,
       settingSources: 'project,local',
       permissionMode: 'default',
-      env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_CONFIG_DIR: join(sandbox.root, '.claude') },
+      env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_CONFIG_DIR: join(sandbox.root, '.claude'), ...authEnv },
+      ...authOpts, // tokenPipe, scrubSubprocessEnv, provider
     })
     let timer
     const res = await Promise.race([run.done, new Promise((_, rej) => (timer = setTimeout(() => rej(new Error(`judge timed out after ${config.timeoutMs} ms`)), config.timeoutMs)))]).finally(() => (clearTimeout(timer), run.close?.('SIGTERM')))
@@ -151,22 +156,25 @@ export async function judgeRun(runDir, scenarios, judge = modelJudge) {
 async function main(argv) {
   let runDir
   let fake = false
+  let mode = 'none'
   const patterns = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--fake') fake = true
+    else if (a === '--auth' && i + 1 < argv.length) mode = argv[++i]
     else if (a === '--scenarios') while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) patterns.push(argv[++i])
     else if (!a.startsWith('-') && runDir == null) runDir = a
     else return usage(`unknown argument ${a}`)
   }
   if (!runDir || !patterns.length) return usage('needs <run dir> --scenarios <glob>...')
-  let scenarios
+  let scenarios, auth
   try {
     scenarios = Object.fromEntries(expandScenarios(patterns).map(loadScenario).map((s) => [s.name, s]))
+    if (!fake) auth = createAuth({ mode, harness: CONFIG.harness, model: CONFIG.model })
   } catch (err) {
     return usage(err.message)
   }
-  const out = await judgeRun(runDir, scenarios, fake ? fakeJudge : modelJudge)
+  const out = await judgeRun(runDir, scenarios, fake ? fakeJudge : (input) => modelJudge(input, { auth }))
   writeFileSync(join(runDir, 'judge.json'), JSON.stringify(out, null, 2) + '\n')
   const scored = out.filter((e) => e.score != null)
   console.log(`judged ${scored.length}/${out.length} attempt(s) with ${fake ? 'the fake judge' : `${CONFIG.harness} ${CONFIG.model}`} → ${join(runDir, 'judge.json')}`)
@@ -174,7 +182,7 @@ async function main(argv) {
 }
 
 function usage(msg) {
-  console.error(`judge: ${msg}\nusage: node evals/judge.mjs <run dir> --scenarios <glob>... [--fake]`)
+  console.error(`judge: ${msg}\nusage: node evals/judge.mjs <run dir> --scenarios <glob>... [--fake] [--auth none|fd|keychain|proxy]`)
   return 2
 }
 
