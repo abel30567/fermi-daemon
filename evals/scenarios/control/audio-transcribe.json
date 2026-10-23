@@ -3,6 +3,7 @@
   "description": "A voice note is transcribed with the local tools/transcribe.sh (answered by the fake Mac bridge, which also answers ls/find/stat/file on the media path so inspecting the note first leads to transcribing it), and the reply answers what was said; no Gemini fallback for a short note.",
   "fixtures": {
     "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}],
+    "transcript": "What is the capital of France?",
     "mac": [
       {"tool": "mac_shell", "match": "tools/transcribe\\.sh", "result": "What is the capital of France?"},
       {"tool": "mac_shell", "match": "\\bfind\\b[^|;&]*media", "result": "/Users/eval/fermi-daemon/media/eval-voice-note.m4a"},

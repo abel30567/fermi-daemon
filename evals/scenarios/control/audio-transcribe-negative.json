@@ -4,6 +4,7 @@
   "expectOutcome": "fail",
   "fixtures": {
     "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}],
+    "transcript": "What is the capital of France?",
     "mac": [
       {"tool": "mac_shell", "match": "tools/transcribe\\.sh", "result": "What is the capital of France?"},
       {"tool": "mac_shell", "match": "\\bfind\\b[^|;&]*media", "result": "/Users/eval/fermi-daemon/media/eval-voice-note.m4a"},

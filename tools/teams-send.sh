@@ -28,9 +28,10 @@ process.stdout.write(JSON.stringify({
   }],
 }))' "$TEXT")"
 
-CODE=$(curl -s -o /tmp/teams-send-last.txt -w "%{http_code}" -m 20 -X POST "$URL" \
+LAST="${TMPDIR:-/tmp}/teams-send-last.txt"
+CODE=$(curl -s -o "$LAST" -w "%{http_code}" -m 20 -X POST "$URL" \
   -H "content-type: application/json" --data-binary "$BODY")
 case "$CODE" in
   2*) echo "sent ($CODE)" ;;
-  *) echo "send failed ($CODE): $(head -c 200 /tmp/teams-send-last.txt)" >&2; exit 1 ;;
+  *) echo "send failed ($CODE): $(head -c 200 "$LAST")" >&2; exit 1 ;;
 esac

@@ -6,16 +6,20 @@
 // Every harness process runs in the attempt's OS sandbox (harness/sandbox.mjs),
 // reaching the model endpoints only through the egress proxy, and its init must
 // pass the isolation assertion (isolation.mjs) or the attempt is aborted.
+// Its HOME holds a sandbox daemon dir (createDaemonDir) and it gets the production
+// allowlist (lib/run-policy.mjs), so Bash-dependent behaviour (Teams replies,
+// transcription, media/out) is graded on the production tool surface.
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, fstatSync, mkdirSync, mkdtempSync, readSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, copyFileSync, cpSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
+import { ALLOWED_TOOLS } from '../../lib/run-policy.mjs'
 import { evaluate } from './assertions.mjs'
 import { startEgressProxy } from './egress-proxy.mjs'
-import { INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
+import { EVAL_SERVER, INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
 import { startFakes } from './fakes.mjs'
@@ -98,6 +102,37 @@ async function seedSecrets(url, secrets = []) {
 
 const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v))))
 
+// The production lanes' --allowedTools with the claude.ai Fermi connector's grant
+// pointed at the eval's `fermi` server. The Playwright and Calendar grants stay:
+// they only auto-approve, and --strict-mcp-config loads no such server.
+export const EVAL_ALLOWED_TOOLS = ALLOWED_TOOLS.split(',').map((t) => (t === 'mcp__claude_ai_Fermi' ? `mcp__${EVAL_SERVER}` : t))
+
+const shQuote = (s) => `'${String(s).replaceAll("'", `'\\''`)}'`
+
+// The attempt's daemon dir, <home>/fermi-daemon, where the prompts' ~/fermi-daemon/…
+// paths resolve under the sandbox HOME: prompts/ from the repo (the eval overlay as
+// its local.json, never the private one), the real tools/teams-send.sh posting to
+// `teamsUrl` through teams-outbound.url, a fake tools/transcribe.sh that prints
+// `transcript` (the scenario's fixtures.transcript), and media/ + media/out/ with
+// the inbound attachment as an empty file. Throws, before any harness starts, when
+// the written teams-outbound.url is not a localhost URL. → the dir
+export function createDaemonDir(home, { teamsUrl, transcript, attachment } = {}) {
+  const dir = join(home, 'fermi-daemon')
+  cpSync(join(ROOT, 'prompts'), join(dir, 'prompts'), { recursive: true, filter: (src) => basename(src) !== 'local.json' })
+  copyFileSync(EVAL_OVERLAY, join(dir, 'prompts/local.json'))
+  mkdirSync(join(dir, 'tools'))
+  copyFileSync(join(ROOT, 'tools/teams-send.sh'), join(dir, 'tools/teams-send.sh'))
+  chmodSync(join(dir, 'tools/teams-send.sh'), 0o755)
+  const say = transcript == null ? `echo "transcribe: the scenario has no fixtures.transcript" >&2; exit 1` : `printf '%s\\n' ${shQuote(transcript)}`
+  const fakeTranscribe = `#!/bin/sh\n# Eval fake of tools/transcribe.sh: the scenario's fixture transcript, no whisper.\n[ -f "\${1:-}" ] || { echo "transcribe: no such file: \${1:-}" >&2; exit 2; }\n${say}\n`
+  writeFileSync(join(dir, 'tools/transcribe.sh'), fakeTranscribe, { mode: 0o755 })
+  mkdirSync(join(dir, 'media/out'), { recursive: true })
+  if (attachment?.file) writeFileSync(join(dir, 'media', basename(attachment.file)), '')
+  writeFileSync(join(dir, 'teams-outbound.url'), `${teamsUrl ?? ''}\n`)
+  assertLocalUrls({ 'teams-outbound.url': readFileSync(join(dir, 'teams-outbound.url'), 'utf8').trim() || 'missing' })
+  return dir
+}
+
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
 export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth }) {
@@ -176,22 +211,23 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     allowed = allowedBuiltins(harness.name, scenario.tools)
     sandboxCanary = plantSandboxCanary()
     closers.push(async () => sandboxCanary.remove())
-    // A per-attempt HOME for adapters that read MCP servers from it (pi); others ignore it.
+    // The per-attempt sandbox HOME (pi also reads its MCP servers from it), holding the daemon dir.
     const sandboxHome = mkdtempSync(join(tmpdir(), 'eval-home-'))
     closers.push(async () => rmSync(sandboxHome, { recursive: true, force: true }))
+    createDaemonDir(sandboxHome, { teamsUrl: `${fakes.apis.teams.url}/teams/outbound`, transcript: fixtures?.transcript, attachment: scenario.inbound?.attachment })
     // Read now, not at startup: a keychain token is short-lived. Never logged; only scanned for.
     const { secrets = [], localPorts = [], egressAllow = [], env: authEnv = {}, ...authOpts } = auth?.attempt() ?? {}
     assertLocalUrls(urlEntries(authEnv))
     const egress = await startEgressProxy({ local: egressAllow, onDeny: (detail) => note({ type: 'note', source: 'egress', detail }) })
     closers.push(egress.close)
-    const sandbox = createSandbox({ root: sandboxHome, readable: [dir, ...sandboxReadable], localPorts: [proxy.port, ...localPorts], egressProxy: egress.url })
+    const sandbox = createSandbox({ root: sandboxHome, readable: [dir, ...sandboxReadable], localPorts: [proxy.port, fakes.apis.teams.port, ...localPorts], egressProxy: egress.url })
     const opts = {
       model,
-      cwd: dir,
+      cwd: join(sandbox.root, 'fermi-daemon'), // Bash runs in the sandbox daemon dir, as the warm worker's in its DAEMON
       mcpConfig: mcpConfigFile,
       sandboxHome,
       sandbox,
-      allowedTools: ['mcp__fermi__*'], // auto-approves only; `tools` decides which built-ins exist
+      allowedTools: EVAL_ALLOWED_TOOLS, // auto-approves only; `tools` decides which built-ins exist
       // claude-code: --tools Bash,ToolSearch: production's shell, unless the scenario narrows it,
       // plus ToolSearch so the fermi tools stay deferred as in production
       tools: [...(scenario.tools ?? PRODUCTION_BUILTINS), ...INTERNAL_TOOLS],
