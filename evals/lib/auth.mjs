@@ -144,3 +144,22 @@ export function createAuth({ mode = 'none', harness, model, env = process.env, r
   }
   return { mode, attempt: () => ({ ...reach, env: proxyEnv, scrubSubprocessEnv: true }) }
 }
+
+// The semantic/rubric judge's own credential (--judge-auth), independent of the harness's --auth,
+// so one fixed judge model on one backend grades every harness run. Without a mode: keychain on
+// macOS when the judge model is a Claude model, otherwise an error (CI passes --judge-auth fd).
+// `harnessAuth`: the run's --auth; an fd token can be read only once, so --auth fd is shared.
+export function createJudgeAuth({ mode, harness, model, platform = process.platform, harnessAuth, ...rest } = {}) {
+  if (mode == null) {
+    if (platform !== 'darwin' || !/^claude-/.test(model ?? ''))
+      throw new Error(`--judge-auth is required for judge model ${model} on ${platform} (the keychain default is for a Claude model on macOS; CI passes --judge-auth fd)`)
+    mode = 'keychain'
+  }
+  if (!AUTH_MODES.includes(mode)) throw new Error(`--judge-auth must be one of ${AUTH_MODES.join(', ')}`)
+  if (mode === 'fd' && harnessAuth?.mode === 'fd') return harnessAuth
+  try {
+    return createAuth({ mode, harness, model, ...rest })
+  } catch (err) {
+    throw new Error(err.message.replace(/^--auth\b/, '--judge-auth'))
+  }
+}

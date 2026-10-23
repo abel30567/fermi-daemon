@@ -168,7 +168,10 @@ export async function startFakeTarget({ env, tools }) {
       }
       if (f.skills) for (const s of f.skills) skillBodies.set(s.slug, s.body ?? '')
       if (f.skills) db.skills = f.skills.map((s) => ({ slug: s.slug, name: s.slug, description: null, keywords: null, allowed_tools: null, version: 1, source: 'eval-seed', decayed_at: null }))
-      if (f.history) db.messages = f.history.map((m) => ({ ...m }))
+      if (f.conversation) {
+        const { channel, chat_id, sender, history } = f.conversation
+        db.messages = history.map((m) => ({ channel, chat_id, role: m.role, text: m.role === 'user' && sender ? `[${sender}] ${m.text}` : m.text, created_at: Date.now() - m.minutes_ago * 60_000 }))
+      }
     },
     async dump() {
       const { messages, secrets, ...rest } = db
