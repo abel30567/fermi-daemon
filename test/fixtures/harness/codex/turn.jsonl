@@ -1,0 +1,7 @@
+{"method":"item/started","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"turn","text_elements":[]}]}}}
+{"method":"item/completed","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"turn","text_elements":[]}]}}}
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"msg_a1","text":"","phase":null}}}
+{"method":"item/agentMessage/delta","params":{"itemId":"msg_a1","delta":"OK"}}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_a1","text":"OK","phase":null}}}
+{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"total":{"inputTokens":1200,"cachedInputTokens":0,"outputTokens":40,"reasoningOutputTokens":0,"totalTokens":1240},"last":{"inputTokens":1200,"cachedInputTokens":0,"outputTokens":40,"reasoningOutputTokens":0,"totalTokens":1240},"modelContextWindow":272000}}}
+{"method":"turn/completed","params":{"turn":{"items":[],"itemsView":"notLoaded","status":"completed","error":null,"durationMs":900}}}

@@ -1,0 +1,3 @@
+{"method":"item/started","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"error-unknown_error","text_elements":[]}]}}}
+{"method":"item/completed","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"error-unknown_error","text_elements":[]}]}}}
+{"method":"turn/completed","params":{"turn":{"items":[],"itemsView":"notLoaded","status":"failed","error":{"additionalDetails":null,"misalignment":null,"message":"stream ended unexpectedly","codexErrorInfo":"other"},"durationMs":900}}}
