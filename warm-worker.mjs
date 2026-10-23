@@ -17,6 +17,7 @@ import http from 'node:http'
 import { Backoff, chatFromEvent } from './lib/turn-outcome.mjs'
 import { loadHarness } from './harness/index.mjs'
 import { ALLOWED_TOOLS } from './lib/run-policy.mjs'
+import { loadPrompt } from './lib/prompt.mjs'
 
 const HOME = process.env.HOME
 const DAEMON = join(HOME, 'fermi-daemon')
@@ -72,6 +73,13 @@ const KEEPALIVE_MS = Number(process.env.WARM_KEEPALIVE_MS || 240000) // no-op tu
 const CONTROL_PORT = Number(process.env.WARM_CONTROL_PORT || 8791) // localhost emergency-stop endpoint
 const STALENESS_MS = Number(process.env.WARM_STALENESS_MS || 300000) // idle re-check of prompt/server staleness
 const PROMPT_PATH = join(DAEMON, 'prompts/drain.md')
+// Refuse to start on a prompt that cannot render (missing prompts/local.json or key).
+try {
+  loadPrompt(PROMPT_PATH)
+} catch (e) {
+  console.error(new Date().toISOString(), `refusing to start: ${e.message}`)
+  process.exit(1)
+}
 // After an error drain turn, hold further drain turns: 30s, doubling, capped at 30min.
 const backoff = new Backoff({
   baseMs: Number(process.env.WARM_BACKOFF_BASE_MS || 30000),
@@ -116,7 +124,7 @@ let turnLog = null // write stream for the current drain turn's raw stream-json
 let eventsLog = null // the same turn's normalized events, JSON lines (narrator.py prefers this)
 // Staleness baselines, captured at each spawn: the child freezes its system
 // prompt + MCP toolset at spawn, so when either source changes we respawn.
-let promptHash = null // sha256 of prompts/drain.md as handed to the child
+let promptHash = null // sha256 of the rendered prompts/drain.md as handed to the child
 let serverVersion = null // `version` from GET /health at spawn (null = not advertised)
 
 // GET /health `version` — the server's capability version. /health does not
@@ -138,7 +146,7 @@ async function fetchServerVersion() {
 
 function startClaude() {
   const model = currentModel()
-  const systemPrompt = readFileSync(PROMPT_PATH, 'utf8')
+  const systemPrompt = loadPrompt(PROMPT_PATH)
   promptHash = createHash('sha256').update(systemPrompt).digest('hex')
   serverVersion = null
   fetchServerVersion().then((v) => {
@@ -412,14 +420,14 @@ function startControlServer() {
 }
 
 // ---- staleness self-check ---------------------------------------------------
-// The claude child freezes prompts/drain.md and its Fermi MCP toolset at spawn.
+// The claude child freezes the rendered prompts/drain.md (prompt + local.json) and its Fermi MCP toolset at spawn.
 // Periodically (idle only — never mid-task) re-check both sources; on a change,
 // kill the child and let the exit handler respawn it (same mechanism as the
 // POST /model switch): fresh process = fresh prompt + fresh MCP session.
 async function stalenessCheck() {
   if (busy || !session) return
   try {
-    const h = createHash('sha256').update(readFileSync(PROMPT_PATH)).digest('hex')
+    const h = createHash('sha256').update(loadPrompt(PROMPT_PATH)).digest('hex')
     if (promptHash && h !== promptHash) {
       log(`staleness respawn: prompt-changed (prompts/drain.md ${promptHash.slice(0, 12)} -> ${h.slice(0, 12)})`)
       session.close()

@@ -1,9 +1,10 @@
 // One scenario attempt: fresh fakes + eval target + fault proxy, enqueue the
 // inbound message through the channel webhook, run one drain through the
-// harness adapter with prompts/drain.md, then dump state and grade the trace.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+// harness adapter with prompts/drain.md (rendered with the eval overlay), then dump state and grade the trace.
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { loadPrompt } from '../../lib/prompt.mjs'
 import { evaluate } from './assertions.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
@@ -16,6 +17,8 @@ import { startWranglerTarget } from './wrangler-target.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 export const DRAIN_PROMPT = join(ROOT, 'prompts/drain.md')
+// Placeholder owner, call list and channel ids, matching the scenario fixtures; never the private prompts/local.json.
+export const EVAL_OVERLAY = join(ROOT, 'evals/fixtures/prompt-overlay.json')
 
 // Fake credentials for the eval worker; the fakes accept anything.
 const EVAL_SECRETS = {
@@ -80,7 +83,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     }
     fakes.setPhase('drain')
 
-    const drainPrompt = readFileSync(DRAIN_PROMPT, 'utf8')
+    const drainPrompt = loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY)
     const harnessOpts = {
       model,
       cwd: dir,
