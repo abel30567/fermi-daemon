@@ -148,7 +148,8 @@ describe('runner: warm-session mode', () => {
   test('an error turn fails the attempt unless the session re-drains and recovers', async () => {
     const script = [{ ...CLAIM, onTurn: 1 }, { ...SEND(), onTurn: 1 }, { ...ERR, onTurn: 1 }, { ...DONE, onTurn: 2 }, { ...CLAIM, onTurn: 2 }]
     const once = await attempt(scenario({ session: {}, fake: { script } }))
-    assert.equal(once.pass, false)
+    // An unrecovered rate limit is infrastructure (DMN-34): never graded, the attempt is invalid.
+    assert.deepEqual([once.pass, once.status], [null, 'invalid'])
     assert.ok(once.failed.some((f) => /turn ended with rate_limit/.test(f.message)), JSON.stringify(once.failed))
     const retried = await attempt(scenario({ session: { redrain: 1 }, fake: { script }, expect: [{ 'task.status': 'done' }, { exactlyOnce: 'channel_send' }] }))
     assert.equal(retried.pass, true, JSON.stringify(retried.failed))
