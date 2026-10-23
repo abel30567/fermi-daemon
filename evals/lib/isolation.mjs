@@ -5,8 +5,10 @@
 // reports in one) must show:
 //   - no built-in tool beyond that surface plus the harness's irreducible built-ins
 //     (HARNESS_BUILTINS: pi's read/bash/edit/write, codex's Bash/apply_patch), which
-//     are allowed and recorded as builtinTools / surfaceDelta, not a breach. Names
-//     compare case-insensitively, so pi's `bash` is `Bash`;
+//     are allowed and recorded as builtinTools / surfaceDelta, not a breach, and
+//     claude-code's internal meta tools (INTERNAL_TOOLS: ToolSearch, which only loads
+//     deferred tool schemas and has no host access), which are allowed and kept out
+//     of surfaceDelta. Names compare case-insensitively, so pi's `bash` is `Bash`;
 //   - MCP servers exactly { fermi }: the init's `mcpServers` when the harness
 //     reports them, else the servers its mcp__<server>__* tools name.
 // The config's fermi → 127.0.0.1 half is checked by checkMcpConfig before launch,
@@ -23,8 +25,12 @@ import { isLocalUrl } from './net.mjs'
 export const EVAL_SERVER = 'fermi'
 // The production lane's built-ins (claude-code `--tools Bash`); the eval default.
 export const PRODUCTION_BUILTINS = ['Bash']
+// claude-code's meta tools: ToolSearch loads the deferred MCP tool schemas. `--tools Bash`
+// alone drops it and claude-code then sends every fermi schema up front instead of deferring
+// them, so the runner passes `--tools Bash,ToolSearch`.
+export const INTERNAL_TOOLS = ['ToolSearch']
 // Built-ins a harness cannot drop: allowed whatever the scenario's `tools`.
-export const HARNESS_BUILTINS = { pi: PI_BUILTINS, codex: CODEX_BUILTINS }
+export const HARNESS_BUILTINS = { 'claude-code': INTERNAL_TOOLS, pi: PI_BUILTINS, codex: CODEX_BUILTINS }
 
 const lower = (xs) => new Set(xs.map((t) => String(t).toLowerCase()))
 export const builtinsOf = (init) => (Array.isArray(init?.tools) ? init.tools.filter((t) => !String(t).startsWith('mcp__')) : null)
@@ -38,11 +44,12 @@ export function allowedBuiltins(harness, tools = PRODUCTION_BUILTINS) {
   return [...tools, ...(HARNESS_BUILTINS[harness] ?? [])]
 }
 
-// The reported built-ins against the production surface → { added, removed }.
+// The reported built-ins against the production surface → { added, removed }; INTERNAL_TOOLS
+// are not surface.
 export function surfaceDelta(builtins) {
   const have = lower(builtins)
-  const prod = lower(PRODUCTION_BUILTINS)
-  return { added: builtins.filter((t) => !prod.has(String(t).toLowerCase())), removed: PRODUCTION_BUILTINS.filter((t) => !have.has(t.toLowerCase())) }
+  const same = lower([...PRODUCTION_BUILTINS, ...INTERNAL_TOOLS])
+  return { added: builtins.filter((t) => !same.has(String(t).toLowerCase())), removed: PRODUCTION_BUILTINS.filter((t) => !have.has(t.toLowerCase())) }
 }
 
 // → a breach message, or null when the init is isolated. `allowed`: allowedBuiltins().

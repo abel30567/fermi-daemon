@@ -15,7 +15,7 @@ import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
 import { evaluate } from './assertions.mjs'
 import { startEgressProxy } from './egress-proxy.mjs'
-import { PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
+import { INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
 import { startFakes } from './fakes.mjs'
@@ -192,7 +192,9 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
       sandboxHome,
       sandbox,
       allowedTools: ['mcp__fermi__*'], // auto-approves only; `tools` decides which built-ins exist
-      tools: scenario.tools ?? PRODUCTION_BUILTINS, // claude-code: --tools Bash, as production, unless the scenario narrows it
+      // claude-code: --tools Bash,ToolSearch: production's shell, unless the scenario narrows it,
+      // plus ToolSearch so the fermi tools stay deferred as in production
+      tools: [...(scenario.tools ?? PRODUCTION_BUILTINS), ...INTERNAL_TOOLS],
       settingSources: 'project,local', // as the production lanes; never the user's settings, hooks or plugins
       strictMcpConfig: true,
       permissionMode: 'default', // never bypassPermissions

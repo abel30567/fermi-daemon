@@ -64,9 +64,11 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    in only `~/.pi/agent/auth.json`, deleted when pi exits (`harness/pi.mjs`).
    Claude Code also gets `--setting-sources project,local` (as the production
    lanes: never the user's settings, hooks or plugins), `--strict-mcp-config`,
-   `--permission-mode default` (never `bypassPermissions`) and `--tools Bash`:
-   the production surface, a shell next to Fermi, unless the scenario narrows
-   `tools` (`[]` → `--tools ""`).
+   `--permission-mode default` (never `bypassPermissions`) and
+   `--tools Bash,ToolSearch`: the production surface, a shell next to Fermi,
+   unless the scenario narrows `tools` (`[]` → `--tools ToolSearch`).
+   `ToolSearch` only loads deferred tool schemas: without it Claude Code sends
+   every Fermi schema up front instead of deferring them as production does.
    `--allowedTools mcp__fermi__*` only auto-approves; it restricts nothing.
    Every harness process (claude-code, hbar, pi, codex) runs in the same OS
    sandbox (`harness/sandbox.mjs`): `sandbox-exec` with a generated Seatbelt
@@ -86,7 +88,8 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    codex adapters report their always-on built-ins in one) may list no built-in
    beyond the scenario's `tools` (default `["Bash"]`) plus that harness's
    irreducible built-ins (pi: `read`, `bash`, `edit`, `write`; codex: `Bash`,
-   `apply_patch`), which are allowed and recorded per attempt in `results.json` as
+   `apply_patch`; claude-code: its internal `ToolSearch`, never counted in
+   `surfaceDelta`), which are allowed and recorded per attempt in `results.json` as
    `builtinTools` and `surfaceDelta` (`{ added, removed }` against production's
    `["Bash"]`). Its MCP servers must be exactly `{fermi}` (the config itself must
    be `{fermi → 127.0.0.1}`). Each attempt also plants a sandbox canary, a random
