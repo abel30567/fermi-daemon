@@ -1,0 +1,5 @@
+{
+  "$comment": "The CI eval matrix (.github/workflows/evals.yml, DMN-16). The PR smoke runs only the baseline; the weekly run runs the baseline, then every candidate, each compared with the baseline (compare.mjs). CI auth is --auth fd, which only claude-code takes (evals/lib/auth.mjs), so pi and codex cannot be entries here.",
+  "baseline": { "harness": "claude-code", "model": "claude-opus-5-5" },
+  "candidates": []
+}
