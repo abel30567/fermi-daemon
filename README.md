@@ -58,8 +58,11 @@ cloudflared tunnel.
   list, finance channel id) are `{{NAME}}` placeholders, filled from the
   gitignored `prompts/local.json` by `lib/prompt.mjs`; copy
   `prompts/local.example.json`, which lists every key, and fill in the real
-  values. `warm-worker.mjs` and `bin/run-once.mjs` refuse to start when the
-  file or a key is missing. `npm test` runs
+  values. `OWNER_NAME` (default "the owner") and `OWNER_EXTRA_RULES` (one
+  private Owner authority bullet per line; default none) are optional, listed in
+  `OPTIONAL_KEYS` in `lib/prompt.mjs`; every other key is required.
+  `warm-worker.mjs` and `bin/run-once.mjs` refuse to start when the file or a
+  required key is missing. `npm test` runs
   `scripts/prompt-lint.mjs`, which renders each prompt with the example overlay
   and fails if a placeholder has no key or a prompt names a Fermi tool missing
   from fermi-mcp's `tool-surface.json` (vendored in `test/fixtures/`; refresh
