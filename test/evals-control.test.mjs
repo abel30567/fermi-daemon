@@ -6,8 +6,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ROOT } from './run-worker.mjs'
+import { sandboxBackend } from '../harness/sandbox.mjs'
 import { evaluate } from '../evals/lib/assertions.mjs'
-import { DRAIN_PROMPT, EVAL_OVERLAY, runAttempt } from '../evals/lib/runner.mjs'
+import { DRAIN_PROMPT, EVAL_ALLOWED_TOOLS, EVAL_OVERLAY, runAttempt } from '../evals/lib/runner.mjs'
 import { loadPrompt } from '../lib/prompt.mjs'
 import { loadScenario, webhookRequest } from '../evals/lib/scenario.mjs'
 import { TURNS } from '../evals/lib/session.mjs'
@@ -31,14 +32,16 @@ const NEGATIVES = {
   'cancelled-by-user-negative': ['task.status', 'argsMatch', 'outbox.count', 'argsMatch'],
   'model-switch-ordering-negative': ['order'],
   'emergency-stop-mid-task-negative': ['task.status', 'argsMatch', 'argsMatch', 'notCalled'],
-  'teams-reply-shell-negative': ['exactlyOnce', 'argsMatch', 'notCalled', 'notCalled'],
+  'teams-reply-shell-negative': ['exactlyOnce', 'argsMatch', 'notCalled', 'notCalled', 'teams.count'],
   'audio-transcribe-negative': ['argsMatch', 'order'],
   'deferred-schedule-list-negative': ['order'],
   'ask-instead-of-grind-negative': ['exactlyOnce', 'argsMatch', 'notCalled', 'maxToolCalls'],
 }
 
 describe('DMN-13 AC1: the control pack passes against the fake harness, every scenario with a negative control', () => {
-  test('7 scenarios pass and their 7 negative controls fail on the intended assertions, exit 0', () => {
+  // teams-reply-shell really runs tools/teams-send.sh, which needs the OS sandbox.
+  const NO_SANDBOX = sandboxBackend() ? false : `needs an OS sandbox; ${process.platform} has none`
+  test('7 scenarios pass and their 7 negative controls fail on the intended assertions, exit 0', { skip: NO_SANDBOX }, () => {
     const out = tmp()
     const r = runCli(['--harness', 'fake', '--scenarios', `${CONTROL}/*`, '--out', out])
     assert.equal(r.status, 0, r.stdout + r.stderr)
@@ -105,7 +108,7 @@ describe('session mode (evals/lib/session.mjs)', () => {
     const r = await runAttempt({ scenario, attempt: 1, harness: spy, timeoutMs: 10_000, outDir: tmp() })
     assert.equal(r.pass, true, JSON.stringify(r.failed))
     assert.equal(seen.opts.systemPrompt, loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY))
-    assert.deepEqual(seen.opts.allowedTools, ['mcp__fermi__*'])
+    assert.deepEqual(seen.opts.allowedTools, EVAL_ALLOWED_TOOLS)
     assert.deepEqual(seen.sends, [TURNS.drain(), TURNS.stop(scenario.inbound), TURNS.keepalive()])
     assert.match(seen.sends[1], /channel "sl" chat_id "D0EVAL"/)
   })
@@ -161,17 +164,21 @@ describe('session mode (evals/lib/session.mjs)', () => {
     assert.throws(() => loadScenario(join(dir, 'b.json')), /session must be a non-empty list/)
   })
 
-  test('the Teams scenarios are fake-only: another harness skips them, not fails, and summary.json lists the skips', () => {
-    for (const f of ['teams-reply-shell', 'teams-reply-shell-negative'])
-      assert.deepEqual(loadScenario(join(CONTROL, `${f}.json`)).harnesses, ['fake'], f)
+  test('the Teams scenarios run under any harness (DMN-22: a sandboxed shell exists)', () => {
+    for (const f of ['teams-reply-shell', 'teams-reply-shell-negative']) assert.equal(loadScenario(join(CONTROL, `${f}.json`)).harnesses, undefined, f)
+  })
+
+  test('a scenario whose harnesses exclude --harness is skipped, not failed, and summary.json lists the skips', () => {
+    const dir = tmp()
+    writeFileSync(join(dir, 'fake-only.json'), JSON.stringify({ ...readJson(CONTROL, 'teams-reply-shell.json'), name: 'fake-only', harnesses: ['fake'] }))
     const out = tmp()
-    const r = runCli(['--harness', 'claude-code', '--worker', tmp(), '--scenarios', `${CONTROL}/teams-reply-shell*`, '--out', out])
+    const r = runCli(['--harness', 'claude-code', '--worker', tmp(), '--scenarios', `${dir}/*`, '--out', out])
     assert.equal(r.status, 0, r.stdout + r.stderr)
-    assert.match(r.stdout, /SKIP teams-reply-shell \(harnesses: fake\)/)
+    assert.match(r.stdout, /SKIP fake-only \(harnesses: fake\)/)
     const summary = readJson(out, 'summary.json')
     assert.equal(summary.attempts, 0)
     assert.deepEqual(summary.unexpected, [])
-    assert.deepEqual(summary.skipped.map((s) => s.scenario).sort(), ['teams-reply-shell', 'teams-reply-shell-negative'])
+    assert.deepEqual(summary.skipped.map((s) => s.scenario), ['fake-only'])
     assert.deepEqual(readJson(out, 'results.json'), [])
   })
 

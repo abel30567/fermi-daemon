@@ -13,6 +13,9 @@
 //   { "outbox.count": 1 }  or  { "outbox.count": { "eq"|"min"|"max": n, "channel"?, "chat_id"? } }
 //                                                   messages the target sent during the drain (chat API
 //                                                   fakes + D1 outbox); the webhook's own ack is excluded
+//   { "teams.count": 1 }  or  { "teams.count": { "eq"|"min"|"max": n } }
+//                                                   posts the fake Teams endpoint (the sandbox
+//                                                   teams-outbound.url) received
 //   { "task.status": "done" }  or  { "task.status": { "is": "pending", "id"?, "queue"?, "channel"?, "chat_id"? } }
 //                                                   every selected task has the status; default selection
 //                                                   is the inbound message's task(s)
@@ -37,7 +40,7 @@
 //                                                   most maxPct% above that of the first `window`
 
 export const ASSERTIONS = [
-  'called', 'notCalled', 'exactlyOnce', 'order', 'argsMatch', 'outbox.count', 'task.status', 'noSecretIn', 'noLeak',
+  'called', 'notCalled', 'exactlyOnce', 'order', 'argsMatch', 'outbox.count', 'teams.count', 'task.status', 'noSecretIn', 'noLeak',
   'noCanaryLeak', 'noCardNumberIn', 'noFalsePromise', 'maxToolCalls', 'maxLatencyMs', 'noErrorTurns', 'noTurnKind', 'latencyDrift',
 ]
 
@@ -188,6 +191,10 @@ const CHECKS = {
     const n = outbound(state).filter((m) => (!sel.channel || m.channel === sel.channel) && (!sel.chat_id || m.chat_id === sel.chat_id)).length
     const err = countCheck(n, spec)
     return err && `outbox.count: ${err}`
+  },
+  'teams.count': (spec, { state }) => {
+    const err = countCheck((state.fakes?.teams ?? []).filter((c) => c.method === 'POST').length, spec)
+    return err && `teams.count: ${err}`
   },
   'task.status': (spec, { state, scenario }) => {
     const s = typeof spec === 'string' ? { is: spec } : spec
