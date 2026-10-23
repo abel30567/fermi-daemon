@@ -319,8 +319,10 @@ regex and the judge. `results.json` records both halves per attempt in `semantic
 - Before a run with semantic assertions, `run.mjs` calibrates the judge on the
   set and prints its confusion table. Below 97% accuracy it prints a loud
   warning and grades those assertions on their regex alone (`judge: "disabled"`),
-  so the swap gate never reads an uncalibrated judge. `summary.json` records the
-  calibration in `semanticJudge`.
+  and `compare.mjs` marks every category holding such an attempt **INCONCLUSIVE**
+  ("semantic judge disabled (calibration < 97%)"), so the swap gate never reads
+  a regex-only grade of a semantic assertion. `summary.json` records the
+  calibration in `semanticJudge` (`{ enabled, accuracy, … }`).
 - `--harness fake` uses the fake judge, which answers from the calibration labels.
   It runs no inference.
 
@@ -436,3 +438,5 @@ The swap gate is GO only when every rule holds:
 A missing category fails its rule: the gate only passes on evidence. When more than
 10% of a category's attempts in either run are invalid, the verdict is
 **INCONCLUSIVE**, whatever the rules say: re-run with more pacing, not a NO-GO.
+A category with a graded attempt whose `semantic` assertion ran with
+`judge: "disabled"` is INCONCLUSIVE too (see [Semantic assertions](#semantic-assertions)).
