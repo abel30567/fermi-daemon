@@ -2,7 +2,8 @@
 // private-scan.mjs [dir] — fails (exit 1) when a git-tracked file under `dir` (default: the
 // current directory's repo) holds a personal number: an E.164 number, a WhatsApp JID or LID,
 // a phone-looking chat_id/sender, or a number written with separators (+1 (xxx) xxx-xxxx,
-// tel:+44 xxxx xxxxxx, xxx.xxx.xxxx), unless it is a placeholder (5555550xxx, 1555555xxxx,
+// tel:+44 xxxx xxxxxx, xxx.xxx.xxxx), in any Unicode digits (fullwidth, Arabic-Indic, …) or split
+// across markdown/code spans (`+1 xxx` `xxx xxxx`), unless it is a placeholder (5555550xxx, 1555555xxxx,
 // 10000000000000, 20000000000000).
 // Extra patterns (one regex per line, # comments; a line that is not a valid regex matches
 // literally) come from the untracked $FERMI_PRIVATE_PATTERNS, default
@@ -37,6 +38,24 @@ const isFormattedNumber = (match) => {
   return digits.length >= 10 && digits.length <= 15 && !PLACEHOLDER.test(digits)
 }
 
+// Unicode keeps every decimal digit set as a run of ten, 0 to 9, so a digit's value is its
+// distance from the start of its run, mod 10.
+const ND = /\p{Nd}/u
+const digitValue = (c) => {
+  let cp = c.codePointAt(0)
+  let n = 0
+  while (ND.test(String.fromCodePoint(cp - 1))) cp--, n++
+  return String(n % 10)
+}
+
+// The forms of a line to match: as written, with NFKC applied (fullwidth ＋ and digits) and all
+// decimal digits in ASCII, and with markdown/code markup between digit groups collapsed to a space.
+export function lineVariants(l) {
+  const ascii = l.normalize('NFKC').replace(/\p{Nd}/gu, (c) => (c <= '9' ? c : digitValue(c)))
+  const unmarked = ascii.replace(/(?<=\d)[\s`*_[\]|]*[`*_[\]|][\s`*_[\]|]*(?=[\d+(])/g, ' ')
+  return [...new Set([l, ascii, unmarked])]
+}
+
 export const DEFAULT_PATTERNS_FILE = join(homedir(), '.config/fermi/private-patterns')
 
 // → [RegExp] from the patterns file, [] if it does not exist.
@@ -58,10 +77,11 @@ export function readPrivatePatterns(file = process.env.FERMI_PRIVATE_PATTERNS ||
 // → [{ line, kind }] for one text.
 export function scanText(text, privatePatterns = []) {
   const hits = []
-  text.split('\n').forEach((l, i) => {
-    for (const [kind, re] of PATTERNS) if ([...l.matchAll(re)].some((m) => !isPlaceholder(m[0]))) hits.push({ line: i + 1, kind })
-    for (const [kind, re] of FORMATTED) if ([...l.matchAll(re)].some((m) => isFormattedNumber(m[0]))) hits.push({ line: i + 1, kind })
-    privatePatterns.forEach((re, n) => re.test(l) && hits.push({ line: i + 1, kind: `private pattern #${n + 1}` }))
+  text.split('\n').forEach((line, i) => {
+    const ls = lineVariants(line)
+    for (const [kind, re] of PATTERNS) if (ls.some((l) => [...l.matchAll(re)].some((m) => !isPlaceholder(m[0])))) hits.push({ line: i + 1, kind })
+    for (const [kind, re] of FORMATTED) if (ls.some((l) => [...l.matchAll(re)].some((m) => isFormattedNumber(m[0])))) hits.push({ line: i + 1, kind })
+    privatePatterns.forEach((re, n) => ls.some((l) => re.test(l)) && hits.push({ line: i + 1, kind: `private pattern #${n + 1}` }))
   })
   return hits
 }

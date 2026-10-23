@@ -70,6 +70,38 @@ for (const [kind, line] of [
   })
 }
 
+// The same text in another decimal digit set: fullwidth (with ＋), Arabic-Indic, Devanagari.
+const fullwidth = (s) => s.replace(/[\d+]/g, (c) => (c === '+' ? '＋' : String.fromCodePoint(0xff10 + +c)))
+const arabic = (s) => s.replace(/\d/g, (c) => String.fromCodePoint(0x660 + +c))
+const devanagari = (s) => s.replace(/\d/g, (c) => String.fromCodePoint(0x966 + +c))
+
+for (const [kind, line] of [
+  ['E.164 number', fullwidth(`+44${PLANTED}`)],
+  ['WhatsApp JID', `${arabic(`44${PLANTED}`)}@s.whatsapp.net`],
+  ['E.164 number', `+${devanagari(`44${PLANTED}`)}`],
+  ['formatted number', fullwidth(`+1 (${AREA}) ${EXCH}-${LINE}`)],
+  ['formatted number', `\`+1 ${AREA}\` \`${EXCH} ${LINE}\``],
+  ['formatted number', `**+1 ${AREA}** ${EXCH}-${LINE}`],
+  ['formatted US number', `| ${AREA} | ${EXCH}-${LINE} |`],
+]) {
+  test(`a planted ${kind} in other digits or markup (${line.replace(/\p{Nd}/gu, '#')}) fails the scan`, () => {
+    const r = scan(repo({ 'f.txt': `clean\n${line}\n` }))
+    assert.equal(r.status, 1, r.stdout)
+    assert.match(r.stderr, new RegExp(`f\\.txt:2: ${kind.replace('.', '\\.')}`))
+  })
+}
+
+test('placeholders in other digits or markup pass', () => {
+  const text = [
+    fullwidth('+15555550100'),
+    `${arabic('15555550100')}@s.whatsapp.net, ${devanagari('+15555550101')}`,
+    '`+1 555` `555 0100`, **+1 555** 555-0101, | 555 | 555-0102 |',
+    '| 656 | 0 | 3 |, `v22` `11 0`, **12** 34',
+  ].join('\n')
+  const r = scan(repo({ 'p.md': text }))
+  assert.equal(r.status, 0, r.stderr)
+})
+
 test('formatted placeholders and number-like non-phone text pass', () => {
   const text = [
     'call +1 (555) 555-0100, +1 555 555 0101, 1 555 555 0102, tel:+1-555-555-0199',
