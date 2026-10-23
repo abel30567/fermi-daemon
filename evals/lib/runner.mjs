@@ -4,7 +4,8 @@
 // A scenario with `session` runs in one warm session instead: a list of turns
 // (session.mjs runSession) or { tasks, redrain } (runDrainSession below).
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, fstatSync, mkdirSync, readSync, writeFileSync } from 'node:fs'
+import { appendFileSync, fstatSync, mkdirSync, mkdtempSync, readSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadPrompt } from '../../lib/prompt.mjs'
@@ -50,8 +51,8 @@ export const DRAIN_TURN =
 export const CANARY = 'FERMI_EVAL_CANARY'
 const fillCanary = (v, c) => (v === undefined ? v : JSON.parse(JSON.stringify(v).replaceAll('${canary}', c)))
 
-async function plantCanary(canary, { dir, opts, target }) {
-  const home = join(dir, 'home')
+async function plantCanary(canary, { opts, target }) {
+  const home = opts.sandboxHome
   mkdirSync(join(home, '.config/fermi'), { recursive: true })
   writeFileSync(join(home, '.config/fermi/token'), canary + '\n', { mode: 0o600 })
   Object.assign(opts.env, { [CANARY]: canary, HOME: home })
@@ -104,6 +105,10 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   const canary = scenario.credentials?.canary ? `fermi-eval-canary-${randomBytes(16).toString('hex')}` : null
   const fixtures = canary ? fillCanary(scenario.fixtures, canary) : scenario.fixtures
   let canaries
+  const note = (ev) => {
+    trace.push(ev)
+    appendFileSync(join(dir, 'trace.jsonl'), JSON.stringify(ev) + '\n')
+  }
   try {
     const fakes = await startFakes({ mac: { canned: fixtures?.mac } })
     closers.push(fakes.close)
@@ -114,7 +119,11 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     assertLocalUrls({ target: target.url })
     await target.seed(seedFixture(fixtures, scenario.inbound))
     await seedSecrets(target.url, fixtures?.secrets)
-    const proxy = await startMcpProxy({ target: target.url, faults: scenario.faults })
+    const proxy = await startMcpProxy({
+      target: target.url,
+      faults: scenario.faults,
+      onError: (err) => note({ type: 'note', source: 'mcp-proxy', detail: [err?.message ?? String(err), err?.cause?.message].filter(Boolean).join(': ') }), // non-fatal
+    })
     closers.push(proxy.close)
     const mcpConfig = { mcpServers: { fermi: { type: 'http', url: `${proxy.url}/mcp` } } }
     assertLocalUrls(Object.fromEntries(Object.entries(mcpConfig.mcpServers).map(([k, s]) => [`mcp:${k}`, s.url])))
@@ -135,23 +144,24 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     }
 
     const drainPrompt = loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY)
+    // A per-attempt HOME for adapters that read MCP servers from it (pi); others ignore it.
+    const sandboxHome = mkdtempSync(join(tmpdir(), 'eval-home-'))
+    closers.push(async () => rmSync(sandboxHome, { recursive: true, force: true }))
     const opts = {
       model,
       cwd: dir,
       mcpConfig: mcpConfigFile,
+      sandboxHome,
       allowedTools: ['mcp__fermi__*'],
       env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }, // no claude.ai connectors (the production Fermi) next to the eval server
       script: scenario.fake?.script, // the fake harness's script; real adapters ignore it
     }
     if (canary) {
-      await plantCanary(canary, { dir, opts, target })
+      await plantCanary(canary, { opts, target })
       canaries = { canary, token: heldToken() }
     }
     const record = (events) => {
-      events.on('event', (ev) => {
-        trace.push(ev)
-        appendFileSync(join(dir, 'trace.jsonl'), JSON.stringify(ev) + '\n')
-      })
+      events.on('event', note)
       events.on('raw', (line) => appendFileSync(join(dir, 'raw.log'), line + '\n'))
       events.on('stderr', (s) => appendFileSync(join(dir, 'stderr.log'), s))
     }
