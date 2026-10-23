@@ -1,0 +1,40 @@
+{
+  "name": "negative-retriever-open-invoices",
+  "description": "Negative control for retriever-open-invoices: the retriever is listed but never run; the reply guesses.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [
+      {
+        "tool": "retriever_list",
+        "result": { "retrievers": [{ "name": "billing-open-invoices", "connector": "billing", "description": "Open invoices due in a date range" }] }
+      },
+      {
+        "tool": "retriever_run",
+        "match": "billing-open-invoices",
+        "result": {
+          "rows": [{ "invoice": "INV-0001", "amount": "100.00", "due": "2026-10-23" }, { "invoice": "INV-0002", "amount": "250.00", "due": "2026-10-24" }]
+        }
+      }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Pull this week's open invoices from the billing system." },
+  "expect": [
+    { "order": ["retriever_list", "retriever_run", "channel_send"] },
+    { "argsMatch": { "tool": "retriever_run", "args": { "name": "billing-open-invoices" } } },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/INV-0001[\\s\\S]*INV-0002/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "retriever_list", "args": {  } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "No open invoices this week." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "checked billing" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

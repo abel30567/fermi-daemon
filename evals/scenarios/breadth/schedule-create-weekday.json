@@ -1,0 +1,34 @@
+{
+  "name": "schedule-create-weekday",
+  "description": "A recurring request is registered with schedule_create for the requester's chat before it is promised.",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Every weekday at 8am, send me a one-line weather summary for Austin." },
+  "expect": [
+    { "argsMatch": { "tool": "schedule_create", "args": { "chat_id": "D0EVAL", "cron": "/1-5/" } } },
+    { "order": ["schedule_create", "channel_send"] },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      {
+        "tool": "schedule_create",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "cron": "0 8 * * 1-5",
+          "prompt": "Look up today's weather for Austin, TX and channel_send a one-line summary to channel sl, chat_id D0EVAL."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Scheduled: a one-line Austin weather summary every weekday at 8am." }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "created weekday weather schedule" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

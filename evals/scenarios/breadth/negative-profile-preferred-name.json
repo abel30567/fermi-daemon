@@ -1,0 +1,27 @@
+{
+  "name": "negative-profile-preferred-name",
+  "description": "Negative control for profile-preferred-name: the preference is stored as a memory instead of the profile.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "profile": { "agent": "Eval instance.", "user": "Name: Eval Owner. Prefers short answers." }
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "From now on call me Sam, not Eval." },
+  "expect": [
+    { "argsMatch": { "tool": "profile_update", "args": { "user": "/Sam/" } } },
+    { "order": ["profile_update", "channel_send"] },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "memory_write", "args": { "kind": "preference", "body": "Call the owner Sam." } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Will do, Sam." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "saved preference" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}
