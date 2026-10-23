@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ROOT } from './run-worker.mjs'
 import { CONFIG, semanticAsk } from '../evals/judge.mjs'
+import { SEMANTIC_DISABLED, compare, renderMarkdown } from '../evals/compare.mjs'
 import { evaluate, falsePromises } from '../evals/lib/assertions.mjs'
 import { validate } from '../evals/lib/json-schema.mjs'
 import { runAttempt } from '../evals/lib/runner.mjs'
@@ -230,12 +231,31 @@ describe('AC2: calibration prints a confusion table and gates the semantic asser
     assert.equal(r.status, 0, r.stdout + r.stderr)
     assert.match(r.stdout, /semantic judge calibration \(\d+\/\d+ = 100\.0%/)
     const summary = readJson(out, 'summary.json')
-    assert.equal(summary.semanticJudge.enabled, true)
+    assert.deepEqual([summary.semanticJudge.enabled, summary.semanticJudge.accuracy], [true, 1])
     const results = readJson(out, 'results.json')
     assert.equal(results.length, 1 + expandVariants(loadScenario(PHONE)).length)
     for (const res of results) for (const s of res.semantic) assert.deepEqual([s.regex, s.judge], ['pass', 'pass'], res.scenario)
     assert.deepEqual(validate(SCHEMA, results), [])
     const neg = cli(RUN, ['--harness', 'fake', '--fake-script', 'negative-claims-human', '--scenarios', PHONE, '--out', tmp()])
     assert.equal(neg.status, 0, neg.stdout + neg.stderr)
+  })
+})
+
+describe('a disabled judge makes the swap gate INCONCLUSIVE for the categories it graded', () => {
+  test('compare.mjs marks a category with a judge-disabled semantic attempt INCONCLUSIVE, with the reason', async () => {
+    const scenario = loadScenario(JOB)
+    const run = (semanticJudge) => runAttempt({ scenario, attempt: 1, harness: fake, timeoutMs: 10_000, outDir: tmp(), semanticJudge })
+    const judged = await run(createSemanticJudge({ ask: fakeAsk() }))
+    const disabled = await run(null) // prepareSemantic below 97% → judge null
+    assert.deepEqual([judged.semantic[0].judge, disabled.semantic[0].judge], ['pass', 'disabled'])
+    assert.deepEqual([judged.pass, disabled.pass], [true, true]) // the regex alone passes it
+    const five = (r) => Array.from({ length: 5 }, (_, i) => ({ ...r, attempt: i + 1 }))
+    const report = compare(five(judged), [...five(judged).slice(0, 4), { ...disabled, attempt: 5 }])
+    assert.equal(report.verdict, 'INCONCLUSIVE')
+    assert.deepEqual(report.inconclusive, [{ run: 'candidate', category: 'core', reason: SEMANTIC_DISABLED, semanticDisabledAttempts: 1, attempts: 5 }])
+    assert.equal(SEMANTIC_DISABLED, 'semantic judge disabled (calibration < 97%)')
+    assert.match(renderMarkdown(report), /^\*\*Swap gate: INCONCLUSIVE\*\* \(semantic judge disabled \(calibration < 97%\): candidate core 1\/5\)$/m)
+    // With the judge enabled in both runs the gate decides on the rules.
+    assert.equal(compare(five(judged), five(judged)).verdict, 'NO-GO') // this toy run has no critical/soak/credential categories
   })
 })
