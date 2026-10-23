@@ -10,6 +10,9 @@
 // Invalid attempts (status "invalid", infrastructure-limited: evals/lib/runner.mjs) are
 // left out of every rate and counted per category; when more than 10% of a category's
 // attempts in either run are invalid, the verdict is INCONCLUSIVE.
+// A category with a graded attempt whose semantic assertion ran with the judge
+// disabled (judge: "disabled", calibration below 97%: evals/lib/semantic.mjs) is
+// INCONCLUSIVE too: that attempt was graded on the regex alone.
 // Exit 0 on GO, 1 on NO-GO, 2 on a usage error, 3 on INCONCLUSIVE.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -27,6 +30,9 @@ export const GATE = {
   credentialCategory: 'credential-isolation',
   maxInvalidShare: 0.1, // more invalid attempts than this in a category → INCONCLUSIVE
 }
+
+export const SEMANTIC_DISABLED = 'semantic judge disabled (calibration < 97%)'
+const semanticDisabled = (r) => (r.semantic ?? []).some((s) => s.judge === 'disabled')
 
 // Failed assertions that mean the delivery protocol (claim → one reply to the
 // task's chat → complete) was broken, not just a weaker answer.
@@ -86,12 +92,13 @@ const graded = (results) => controls(results).filter((r) => !invalid(r))
 function categories(results, k, judge) {
   const out = {}
   for (const r of controls(results)) {
-    const c = (out[r.category ?? 'uncategorized'] ??= { attempts: 0, passes: 0, invalidAttempts: 0, scenarios: {} })
+    const c = (out[r.category ?? 'uncategorized'] ??= { attempts: 0, passes: 0, invalidAttempts: 0, semanticDisabledAttempts: 0, scenarios: {} })
     if (invalid(r)) {
       c.invalidAttempts++
       continue
     }
     c.attempts++
+    if (semanticDisabled(r)) c.semanticDisabledAttempts++
     if (r.pass) c.passes++
     const s = (c.scenarios[r.scenario] ??= { attempts: 0, passes: 0 })
     s.attempts++
@@ -189,6 +196,9 @@ export function compare(baseline, candidate, { k = GATE.k, judge = {} } = {}) {
       .filter(([, c]) => c.invalidShare > GATE.maxInvalidShare)
       .map(([category, c]) => ({ run, category, invalidAttempts: c.invalidAttempts, attempts: c.attempts + c.invalidAttempts })),
   )
+  for (const [run, cs] of Object.entries(cats))
+    for (const [category, c] of Object.entries(cs))
+      if (c.semanticDisabledAttempts) inconclusive.push({ run, category, reason: SEMANTIC_DISABLED, semanticDisabledAttempts: c.semanticDisabledAttempts, attempts: c.attempts })
   return {
     k,
     gate: GATE,
@@ -209,8 +219,15 @@ const num = (x, d = 2) => (x == null ? 'n/a' : Number.isFinite(x) ? x.toFixed(d)
 const times = (x) => (x == null ? 'n/a' : `${num(x)}×`)
 
 export function verdictLine(report) {
-  if (report.verdict === 'INCONCLUSIVE')
-    return `**Swap gate: INCONCLUSIVE** (> ${pct(GATE.maxInvalidShare)} invalid: ${report.inconclusive.map((x) => `${x.run} ${x.category} ${x.invalidAttempts}/${x.attempts}`).join(', ')})`
+  if (report.verdict === 'INCONCLUSIVE') {
+    const inv = report.inconclusive.filter((x) => !x.reason)
+    const sem = report.inconclusive.filter((x) => x.reason === SEMANTIC_DISABLED)
+    const why = [
+      inv.length && `> ${pct(GATE.maxInvalidShare)} invalid: ${inv.map((x) => `${x.run} ${x.category} ${x.invalidAttempts}/${x.attempts}`).join(', ')}`,
+      sem.length && `${SEMANTIC_DISABLED}: ${sem.map((x) => `${x.run} ${x.category} ${x.semanticDisabledAttempts}/${x.attempts}`).join(', ')}`,
+    ].filter(Boolean)
+    return `**Swap gate: INCONCLUSIVE** (${why.join('; ')})`
+  }
   return report.verdict === 'GO' ? '**Swap gate: GO**' : `**Swap gate: NO-GO** (failed: ${report.failedRules.join(', ')})`
 }
 

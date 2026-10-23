@@ -1,4 +1,5 @@
 {
+  "$comment": "The judge model and harness for judge.mjs (rubric) and lib/semantic.mjs (semantic yes/no). The harness (Claude Code CLI) has no sampling-temperature control, so temperature 0 is not set. Determinism comes from the pinned model below, the (question, text) answer cache in runs/semantic-cache/<harness>-<model>.json (calibration fills it, runs reuse it) and the 97% calibration gate: below it the semantic judge is disabled and compare.mjs reports INCONCLUSIVE.",
   "harness": "claude-code",
   "model": "claude-opus-5-5",
   "timeoutMs": 120000
