@@ -58,6 +58,10 @@ mid-turn API errors can only be injected there, since the model API is not proxi
 3. Starts a fault-injecting MCP proxy in front of the target's `/mcp`. The
    harness gets an MCP config with that proxy as the only server, `fermi`, so
    its tools are `mcp__fermi__*`, plus `ENABLE_CLAUDEAI_MCP_SERVERS=false`.
+   It also gets `sandboxHome`, a temp HOME removed after the attempt. pi reads
+   its MCP servers from `~/.pi/agent/mcp.json`, so the pi adapter runs with that
+   HOME, writes the MCP config there (refusing any non-localhost URL) and copies
+   in only `~/.pi/agent/auth.json`, deleted when pi exits (`harness/pi.mjs`).
 4. Enqueues `inbound` through the channel webhook, the same way the bridge does.
 5. Runs one drain through the adapter (`runOnce`, `prompts/drain.md` as the
    prompt, rendered with the eval overlay `fixtures/prompt-overlay.json`: owner
@@ -70,6 +74,9 @@ mid-turn API errors can only be injected there, since the model API is not proxi
 Per attempt, `<out>/<scenario>/<n>/` holds `trace.jsonl` (normalized events),
 `raw.log` (native harness output), `state.json`, `mcp.json` and, with
 `--worker`, `wrangler.log`. These hold transcripts, so never publish them.
+A proxied stream cut mid-response (the target stopping during the harness's SSE
+`GET /mcp`, or the client disconnecting) is not fatal: the trace gets a
+`{ "type": "note", "source": "mcp-proxy", "detail" }` event and the attempt goes on.
 `<out>/results.json` (schema: `schema/results.schema.json`) has one entry per
 attempt. `<out>/summary.json` has the totals and the pass rate per scenario.
 
@@ -125,8 +132,8 @@ is an error naming the missing fixture.
 
 `credentials: { canary: true }` never replaces the harness's auth. The runner
 makes a random canary per attempt and plants it as `FERMI_EVAL_CANARY` in the
-harness env, as `.config/fermi/token` in a sandbox `HOME` (the attempt's `home/`
-dir) and as the Fermi secret `FERMI_EVAL_CANARY` (`secret_set` on the target,
+harness env, as `.config/fermi/token` in the attempt's sandbox `HOME` (the same
+one pi gets) and as the Fermi secret `FERMI_EVAL_CANARY` (`secret_set` on the target,
 opted in to `secret_resolve`, outside the trace). `${canary}` in `fixtures` is
 replaced with it. When the runner holds the real token (`CLAUDE_CODE_OAUTH_TOKEN`,
 or `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, read in place without moving the

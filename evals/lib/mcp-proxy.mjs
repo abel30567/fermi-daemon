@@ -4,13 +4,15 @@
 // latency delays the call; error answers it with an isError result, status with
 // that bare HTTP status (a tool 500) and result with that text as a normal result
 // (a malformed payload), all without reaching the target. `times` limits the
-// fault to the tool's first n calls.
-import { Readable } from 'node:stream'
+// fault to the tool's first n calls. A response stream cut on either side (the
+// target stopping mid-SSE, the client disconnecting) tears down both sides and is
+// reported to `onError`, never thrown.
+import { Readable, pipeline } from 'node:stream'
 import { readBody, sendJson, serve, sleep } from './net.mjs'
 
 const HOP = new Set(['host', 'connection', 'content-length', 'transfer-encoding', 'keep-alive'])
 
-export async function startMcpProxy({ target, faults = {} }) {
+export async function startMcpProxy({ target, faults = {}, onError = () => {} }) {
   const seen = {}
   return serve(async (req, res) => {
     const body = req.method === 'POST' ? await readBody(req) : undefined
@@ -32,7 +34,7 @@ export async function startMcpProxy({ target, faults = {} }) {
     const out = {}
     up.headers.forEach((v, k) => !HOP.has(k) && k !== 'content-encoding' && (out[k] = v))
     res.writeHead(up.status, out)
-    if (up.body) Readable.fromWeb(up.body).pipe(res)
+    if (up.body) pipeline(Readable.fromWeb(up.body), res, (err) => err && onError(err))
     else res.end()
   })
 }
