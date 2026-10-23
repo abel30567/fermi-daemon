@@ -10,10 +10,19 @@ permissions:
 
 jobs:
   gates:
-    # macOS, like the daemon and the orchestrator baseline: the root tests use sandbox-exec and TMPDIR.
-    runs-on: macos-15
+    # ubuntu, plus macOS (the daemon's platform) for the tests that need sandbox-exec or BSD tools.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
+      # The eval sandbox's Linux backend (harness/sandbox.mjs) is bwrap, which needs unprivileged user namespaces.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

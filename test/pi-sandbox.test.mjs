@@ -1,6 +1,7 @@
 // DMN-25: the pi adapter's eval sandbox. Against test/conformance/fake-pi.mjs,
 // with HOME pointed at a fake "real" home whose ~/.pi/agent/mcp.json names a
-// production URL and is unreadable (chmod 000), so any read of it throws.
+// production URL and whose ~/.pi/agent/auth.json is a sentinel, both unreadable
+// (chmod 000), so any read of them throws. The credential comes only from authFile, a stub.
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -20,22 +21,27 @@ writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${join(dirname(fileUR
 chmodSync(bin, 0o755)
 
 const SENTINEL = 'https://fermi.production.example/mcp?SENTINEL'
-const AUTH = '{"anthropic":{"type":"oauth","access":"sentinel-access"}}'
+const AUTH = '{"anthropic":{"type":"oauth","access":"stub-access"}}'
+const authFile = join(tmp(), 'auth.json')
+writeFileSync(authFile, AUTH)
 const realHome = tmp()
 const realAgent = join(realHome, '.pi/agent')
 const realMcp = join(realAgent, 'mcp.json')
+const realAuth = join(realAgent, 'auth.json')
 const saved = { HOME: process.env.HOME, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR }
 
 before(() => {
   mkdirSync(realAgent, { recursive: true })
   writeFileSync(realMcp, JSON.stringify({ mcpServers: { fermi: { url: SENTINEL } } }))
   chmodSync(realMcp, 0o000)
-  writeFileSync(join(realAgent, 'auth.json'), AUTH)
+  writeFileSync(realAuth, '{"anthropic":{"type":"oauth","access":"SENTINEL"}}')
+  chmodSync(realAuth, 0o000)
   process.env.HOME = realHome
   process.env.PI_CODING_AGENT_DIR = realAgent // an ambient override must not win either
 })
 after(() => {
   chmodSync(realMcp, 0o600)
+  chmodSync(realAuth, 0o600)
   for (const [k, v] of Object.entries(saved)) v == null ? delete process.env[k] : (process.env[k] = v)
 })
 
@@ -50,7 +56,7 @@ describe('AC1: pi sees only the eval MCP server', () => {
   test('runOnce: HOME is the sandbox, mcp.json holds only the localhost server, the real one is never read', async () => {
     const fakeDir = tmp()
     const sandboxHome = tmp()
-    const run = pi.runOnce({ bin, prompt: 'mcp', mcpConfig: evalConfig(), sandboxHome, env: { FAKE_DIR: fakeDir } })
+    const run = pi.runOnce({ bin, prompt: 'mcp', mcpConfig: evalConfig(), sandboxHome, authFile, env: { FAKE_DIR: fakeDir } })
     const res = await run.done
     assert.equal(res.outcome?.ok, true, res.stderr)
     const seen = seenIn(fakeDir)
@@ -58,7 +64,15 @@ describe('AC1: pi sees only the eval MCP server', () => {
     assert.equal(seen.agentDir, join(sandboxHome, '.pi/agent'))
     assert.deepEqual(JSON.parse(seen.mcp), { mcpServers: { fermi: { url: 'http://127.0.0.1:4321/mcp' } } })
     assert.ok(!seen.mcp.includes('SENTINEL'))
-    assert.equal(seen.auth, AUTH, 'auth.json is copied in for inference login')
+    assert.equal(seen.auth, AUTH, 'authFile is copied in for inference login')
+  })
+
+  test('runOnce without authFile: pi gets no auth.json; authFile without sandboxHome is refused', async () => {
+    const fakeDir = tmp()
+    const res = await pi.runOnce({ bin, prompt: 'mcp', mcpConfig: evalConfig(), sandboxHome: tmp(), env: { FAKE_DIR: fakeDir } }).done
+    assert.equal(res.outcome?.ok, true, res.stderr)
+    assert.equal(seenIn(fakeDir).auth, null)
+    assert.throws(() => pi.runOnce({ bin, prompt: 'mcp', authFile }), /unsupported option\(s\) authFile without sandboxHome/)
   })
 
   test('through the eval runner: the runner passes sandboxHome and pi gets the runner proxy only', async () => {
@@ -87,16 +101,16 @@ describe('AC1: pi sees only the eval MCP server', () => {
 describe('AC2: the sandbox auth.json is removed when the attempt ends', () => {
   test('runOnce', async () => {
     const sandboxHome = tmp()
-    const res = await pi.runOnce({ bin, prompt: 'turn', mcpConfig: evalConfig(), sandboxHome }).done
+    const res = await pi.runOnce({ bin, prompt: 'turn', mcpConfig: evalConfig(), sandboxHome, authFile }).done
     assert.equal(res.outcome?.ok, true, res.stderr)
     assert.ok(!existsSync(join(sandboxHome, '.pi/agent/auth.json')))
-    assert.ok(existsSync(join(realAgent, 'auth.json')), 'the real auth.json is untouched')
+    assert.equal(readFileSync(authFile, 'utf8'), AUTH, 'authFile is untouched')
   })
 
   test('startSession, after close', async () => {
     const sandboxHome = tmp()
     const auth = join(sandboxHome, '.pi/agent/auth.json')
-    const s = pi.startSession({ bin, mcpConfig: evalConfig(), sandboxHome })
+    const s = pi.startSession({ bin, mcpConfig: evalConfig(), sandboxHome, authFile })
     assert.ok(existsSync(auth), 'present while pi runs')
     const ended = new Promise((r) => s.events.on('event', (ev) => ev.type === 'turn_end' && r(ev)))
     s.send('turn')

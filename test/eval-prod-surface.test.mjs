@@ -26,6 +26,9 @@ const NO_SEATBELT = sandboxBackend() === 'sandbox-exec' ? false : `needs sandbox
 const TEAMS = join(ROOT, 'evals/scenarios/control/teams-reply-shell.json')
 const readTrace = (...p) => readFileSync(join(...p), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
 const results = (trace) => trace.filter((e) => e.type === 'tool_result')
+// A tool result without Node's own warning lines ("(node:<pid>) ...", "[UNDICI-...]" and the
+// "(Use `node --trace-warnings ...`" hint after them), which vary by Node version.
+const noNodeWarnings = (s) => s.split('\n').filter((l) => !/^(\(node:|\[UNDICI-|\(Use `node --trace-warnings)/.test(l)).join('\n')
 
 // Every entry under `dir` → { relative path: "type size mtime" }, symlinks not followed.
 function snapshot(dir, base = dir, out = {}) {
@@ -47,7 +50,7 @@ describe('AC1: the Teams scenario passes with a harness that really runs tools/t
     assert.equal(r.pass, true, JSON.stringify(r.failed))
     assert.deepEqual(r.errorKinds, [])
     const [res] = results(readTrace(out, scenario.name, '1', 'trace.jsonl'))
-    assert.deepEqual([res.ok, res.content.trim()], [true, 'sent (200)'])
+    assert.deepEqual([res.ok, noNodeWarnings(res.content).trim()], [true, 'sent (200)'])
     const posts = JSON.parse(readFileSync(join(out, scenario.name, '1', 'state.json'), 'utf8')).fakes.teams
     assert.equal(posts.length, 1)
     assert.equal(posts[0].method, 'POST')
@@ -103,7 +106,7 @@ describe('AC2: an attempt writes no file outside its sandbox dir', () => {
     assert.equal(r.pass, true, JSON.stringify(r.failed))
     const [send, transcribe, media, leak] = results(readTrace(out, scenario.name, '1', 'trace.jsonl'))
     assert.equal(send.ok, true, send.content)
-    assert.match(send.content, /^sent \(200\)\n\/.+\/eval-home-[^/]+\/fermi-daemon\n$/) // the cwd is the sandbox daemon dir
+    assert.match(noNodeWarnings(send.content), /^sent \(200\)\n\/.+\/eval-home-[^/]+\/fermi-daemon\n$/) // the cwd is the sandbox daemon dir
     assert.deepEqual([transcribe.ok, transcribe.content], [true, "It's the capital of France.\n"])
     assert.deepEqual([media.ok, media.content], [true, 'chart.png\n'])
     assert.equal(leak.ok, false)

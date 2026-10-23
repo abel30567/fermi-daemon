@@ -4,9 +4,12 @@
 //
 //   node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios <glob>... \
 //     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
-//     [--auth none|fd|keychain|proxy] [--judge-auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>]
+//     [--auth none|fd|keychain|proxy] [--judge-auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>] \
+//     [--auth-file <auth.json>]
 //
 // --auth decides how the sandboxed harness gets inference credentials (lib/auth.mjs).
+// --auth-file (pi, codex; e.g. ~/.pi/agent/auth.json or ~/.codex/auth.json) is the login file
+// copied into the sandbox; without it (or --auth proxy) they get no credential.
 // When a scenario has semantic assertions, the semantic judge (lib/semantic.mjs) is
 // calibrated first; below its accuracy threshold they grade on their regex alone.
 // The judge has its own credential, --judge-auth (createJudgeAuth: default keychain on
@@ -56,6 +59,7 @@ function parseArgs(argv) {
     else if (a === '--weekly') o.weekly = true
     else if (a === '--fake-script') o.fakeScript = val()
     else if (a === '--auth') o.auth = val()
+    else if (a === '--auth-file') o.authFile = val()
     else if (a === '--judge-auth') o.judgeAuth = val()
     else if (a === '--infra-retries') o.infraRetries = Number(val())
     else if (a === '--min-gap-ms') o.minGapMs = Number(val())
@@ -72,6 +76,7 @@ function parseArgs(argv) {
   // Only the fake harness may run against the in-process fake target; real grades need the eval worker.
   if (o.harness !== 'fake' && !o.worker) throw new Error(`--harness ${o.harness} needs --worker <fermi-mcp checkout>`)
   if (o.fakeScript && o.harness !== 'fake') throw new Error('--fake-script needs --harness fake')
+  if (o.authFile && o.harness !== 'pi' && o.harness !== 'codex') throw new Error('--auth-file needs --harness pi or codex')
   // A real harness only ever runs inside the OS sandbox (harness/sandbox.mjs).
   if (o.harness !== 'fake' && !sandboxBackend()) throw new Error(`--harness ${o.harness} needs an OS sandbox (sandbox-exec on macOS, bwrap on Linux); none found`)
   return o
@@ -169,7 +174,7 @@ async function main() {
   for (const scenario of scenarios)
     for (let attempt = 1; attempt <= opts.k; attempt++) {
       const onInfraRetry = (x) => console.log(`RETRY ${scenario.name} #${attempt} (${x.retry}/${opts.infraRetries}) ${x.kind}, waiting ${Math.round(x.waitMs / 1000)}s: ${x.detail}`)
-      const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out, auth, semanticJudge: semantic?.judge, infraRetries: opts.infraRetries, pace: pacer.run, onInfraRetry })
+      const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out, auth, authFile: opts.authFile, semanticJudge: semantic?.judge, infraRetries: opts.infraRetries, pace: pacer.run, onInfraRetry })
       r.internalToolCalls = internalCalls(out, r)
       results.push(r)
       const tag = r.status === 'invalid' ? 'INVALID' : r.status === 'setup_error' ? 'SETUP_ERROR' : r.pass ? 'PASS' : r.expectedOutcome === 'fail' ? 'FAIL (expected)' : 'FAIL'
