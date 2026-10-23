@@ -1,0 +1,180 @@
+{
+ "scenario": "flush-over-budget-retry",
+ "class": "OVERSTRICT",
+ "recorded": {
+  "pass": false,
+  "failed": [
+   "calls [\"ToolSearch\",\"task_claim\",\"context_bootstrap\",\"profile_update\",\"channel_send\",\"task_complete\",\"task_claim\"] do not contain the order [\"profile_update\",\"profile_update\",\"task_complete\"] (stuck at \"profile_update\")"
+  ]
+ },
+ "latencyMs": 24825,
+ "trace": [
+  {
+   "type": "tool_call",
+   "id": "toolu_01USeDRhbbhXRtGp54QhRpxe",
+   "name": "ToolSearch",
+   "rawName": "ToolSearch",
+   "input": {
+    "query": "select:mcp__fermi__task_claim,mcp__fermi__task_complete,mcp__fermi__context_bootstrap,mcp__fermi__channel_send,mcp__fermi__profile_update,mcp__fermi__memory_write",
+    "max_results": 6
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01USeDRhbbhXRtGp54QhRpxe",
+   "ok": true,
+   "content": "     "
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01X2dWoV8yr8ZwkGgYNEJMwv",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01X2dWoV8yr8ZwkGgYNEJMwv",
+   "ok": true,
+   "content": "{\"tasks\":[{\"id\":\"b7c27ef4-2792-4051-adc4-3cba23143c10\",\"channel\":\"sl\",\"sender\":\"U0EVALOWNER\",\"chat_id\":\"D0EVAL\",\"payload\":\"Please stop signing your messages with an emoji.\",\"created_at\":1792730042914,\"queue\":\"main\"}],\"total\":1}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01T55374q7LVrYrPwgNZYttt",
+   "name": "context_bootstrap",
+   "rawName": "mcp__fermi__context_bootstrap",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01T55374q7LVrYrPwgNZYttt",
+   "ok": true,
+   "content": "{\"agent_doc\":{\"body\":\"Eval instance.\",\"usage\":14,\"limit\":2200},\"user_doc\":{\"body\":\"Name: Eval Owner.\\nPrefers short answers.\\nNotes: Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words.\",\"usage\":1358,\"limit\":1375},\"prior_summary\":null,\"history\":[{\"role\":\"user\",\"body\":\"Please stop signing your messages with an emoji.\",\"created_at\":1792730042913}],\"pinned_memories\":[{\"kind\":\"fact\",\"body\":\"Fermi is a personal MCP agent with cross-host memory.\"}]}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01RqefwR8CqikdXsfwTMPerM",
+   "name": "profile_update",
+   "rawName": "mcp__fermi__profile_update",
+   "input": {
+    "target": "user",
+    "action": "replace",
+    "match": "Notes: Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words. Likes concise summaries of long threads, in plain words.",
+    "content": "Notes: Likes concise summaries of long threads, in plain words.\nDo not sign messages with an emoji (no emoji sign-off)."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01RqefwR8CqikdXsfwTMPerM",
+   "ok": true,
+   "content": "{\"ok\":true,\"usage\":160,\"limit\":1375}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_019TFYLpMJcv5RKbef5NrgQC",
+   "name": "channel_send",
+   "rawName": "mcp__fermi__channel_send",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL",
+    "text": "Got it. No more emoji sign-offs."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_019TFYLpMJcv5RKbef5NrgQC",
+   "ok": true,
+   "content": "{\"ok\":true,\"channel\":\"sl\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_0172BMwm18tdtRwbGw4NW5rj",
+   "name": "task_complete",
+   "rawName": "mcp__fermi__task_complete",
+   "input": {
+    "id": "b7c27ef4-2792-4051-adc4-3cba23143c10",
+    "status": "done",
+    "result": "Saved no-emoji-signoff preference to user profile (deduplicated notes to fit budget); confirmed to owner."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_0172BMwm18tdtRwbGw4NW5rj",
+   "ok": true,
+   "content": "{\"ok\":true}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01UQBJ2pgwzGBRqgPCYk8tz7",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01UQBJ2pgwzGBRqgPCYk8tz7",
+   "ok": true,
+   "content": "{\"tasks\":[],\"total\":0}"
+  },
+  {
+   "type": "text",
+   "text": "There was one task in the queue and it's done. The queue is now empty.\n\n- *The request:* the owner asked me to stop ending messages with an emoji.\n- *Saved:* I added \"Do not sign messages with an emoji\" to the owner's profile notes, so it carries into future replies.\n- *Profile cleanup:* the profile was almost out of space because one line (\"Likes concise summaries of long threads, in plain words\") was repeated about 20 times. I cut it down to one copy, which took the profile from 1358 to 160 of its 1375 characters, then added the new rule.\n- *Reply:* I sent the owner \"Got it. No more emoji sign-offs.\" and marked the task done."
+  },
+  {
+   "type": "turn_end",
+   "ok": true,
+   "kind": "ok"
+  }
+ ],
+ "state": {
+  "profile": {
+   "agent": "Eval instance.",
+   "user": "Name: Eval Owner.\nPrefers short answers.\nNotes: Likes concise summaries of long threads, in plain words.\nDo not sign messages with an emoji (no emoji sign-off)."
+  },
+  "tasks": [
+   {
+    "id": "b7c27ef4-2792-4051-adc4-3cba23143c10",
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat_id": "D0EVAL",
+    "status": "done",
+    "queue": "main",
+    "result": "Saved no-emoji-signoff preference to user profile (deduplicated notes to fit budget); confirmed to owner."
+   }
+  ],
+  "outbox": [],
+  "fakes": {
+   "slack": [
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it — working on it."
+     },
+     "phase": "inbound"
+    },
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it. No more emoji sign-offs."
+     },
+     "phase": "drain"
+    }
+   ],
+   "telegram": [],
+   "discord": []
+  }
+ }
+}

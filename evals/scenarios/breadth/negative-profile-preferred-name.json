@@ -8,7 +8,7 @@
   },
   "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "From now on call me Sam, not Eval." },
   "expect": [
-    { "argsMatch": { "tool": "profile_update", "args": { "user": "/Sam/" } } },
+    { "argsMatch": { "tool": "profile_update", "args": { "target": "user", "content": "/Sam/" } } },
     { "order": ["profile_update", "channel_send"] },
     { "exactlyOnce": "channel_send" },
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },

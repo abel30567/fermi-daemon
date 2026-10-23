@@ -1,0 +1,176 @@
+{
+ "scenario": "schedule-create-weekday",
+ "class": "OVERSTRICT",
+ "recorded": {
+  "pass": false,
+  "failed": [
+   "no schedule_create call matches {\"chat_id\":\"D0EVAL\",\"cron\":\"/1-5/\"}; inputs: [{\"channel\":\"sl\",\"chat_id\":\"D0EVAL\",\"every_minutes\":30,\"prompt\":\"GOAL: Every weekday (Mon–Fri) at ~8:00am America/Chicago (Austin time), send the owner a ONE-LINE weather summary for Austin, TX. This job fires every 30 minu"
+  ]
+ },
+ "latencyMs": 39055,
+ "trace": [
+  {
+   "type": "tool_call",
+   "id": "toolu_01YEss3RCigrxeRq2NN7cciy",
+   "name": "ToolSearch",
+   "rawName": "ToolSearch",
+   "input": {
+    "query": "select:mcp__fermi__task_claim,mcp__fermi__task_complete,mcp__fermi__context_bootstrap,mcp__fermi__channel_send,mcp__fermi__schedule_create,mcp__fermi__schedule_list",
+    "max_results": 6
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01YEss3RCigrxeRq2NN7cciy",
+   "ok": true,
+   "content": "     "
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_019UjWkGfXKFwRHe8Sm1rn6t",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_019UjWkGfXKFwRHe8Sm1rn6t",
+   "ok": true,
+   "content": "{\"tasks\":[{\"id\":\"5a3fd617-ee41-4dff-a4b8-66399dbb7a7a\",\"channel\":\"sl\",\"sender\":\"U0EVALOWNER\",\"chat_id\":\"D0EVAL\",\"payload\":\"Every weekday at 8am, send me a one-line weather summary for Austin.\",\"created_at\":1792729493259,\"queue\":\"main\"}],\"total\":1}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01XJhENmNMLvv3KtQvfnuohs",
+   "name": "context_bootstrap",
+   "rawName": "mcp__fermi__context_bootstrap",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01XJhENmNMLvv3KtQvfnuohs",
+   "ok": true,
+   "content": "{\"agent_doc\":{\"body\":\"\",\"usage\":0,\"limit\":2200},\"user_doc\":{\"body\":\"\",\"usage\":0,\"limit\":1375},\"prior_summary\":null,\"history\":[{\"role\":\"user\",\"body\":\"Every weekday at 8am, send me a one-line weather summary for Austin.\",\"created_at\":1792729493258}],\"pinned_memories\":[{\"kind\":\"fact\",\"body\":\"Fermi is a personal MCP agent with cross-host memory.\"}]}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_012oC2ASsr2TPGwnbooyUHJr",
+   "name": "schedule_create",
+   "rawName": "mcp__fermi__schedule_create",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL",
+    "every_minutes": 30,
+    "prompt": "GOAL: Every weekday (Mon–Fri) at ~8:00am America/Chicago (Austin time), send the owner a ONE-LINE weather summary for Austin, TX. This job fires every 30 minutes; most firings must stay silent.\n\nSTEPS:\n1. Get the current time in America/Chicago via mac_shell: `TZ=America/Chicago date '+%u %H %M %Y-%m-%d'` (fields: weekday 1=Mon..7=Sun, hour, minute, date).\n2. GATE: proceed only if weekday is 1–5 AND hour == 08. Otherwise stop silently (task_complete: \"outside window, no delivery\").\n3. DEDUPE: memory_recall key `sched:austin-weather:last-sent`. If it equals today's date (YYYY-MM-DD, Chicago), stop silently (task_complete: \"already sent today\").\n4. Fetch weather via mac_shell (no Playwright): `curl -s --max-time 15 \"https://wttr.in/Austin,TX?u&format=%C,+%t+(feels+%f),+high/low+via+j1\"` — simpler: `curl -s --max-time 15 \"https://wttr.in/Austin,TX?format=j1&u\"` and read current_condition[0] (weatherDesc, temp_F, FeelsLikeF) and weather[0] (maxtempF, mintempF, max chanceofrain across hourly). If wttr.in fails, try `curl -s \"https://api.open-meteo.com/v1/forecast?latitude=30.2672&longitude=-97.7431&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&temperature_unit=fahrenheit&timezone=America/Chicago&forecast_days=1\"`.\n5. Compose exactly one line (Slack mrkdwn, no headers/tables), e.g.: `🌤️ Austin today: Partly cloudy, 68°F now (feels 66°F) · High 84° / Low 63° · 10% rain`.\n6. channel_send to channel `sl`, chat_id `D0EVAL` with that line.\n7. memory_write key `sched:austin-weather:last-sent` = today's date (Chicago).\n8. If both weather sources fail, send one line: \"⚠️ Couldn't fetch Austin weather this morning.\" and still record last-sent.\n\nDELIVERY CONDITION: message only on weekdays during the 08:00–08:59 Chicago hour, at most once per day. Otherwise silent."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_012oC2ASsr2TPGwnbooyUHJr",
+   "ok": true,
+   "content": "{\"ok\":true,\"id\":\"38f53fd2\",\"kind\":\"every\",\"next_run_at\":1792731318159}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_0177z2i49pxCFhjqDb2Ci7hX",
+   "name": "channel_send",
+   "rawName": "mcp__fermi__channel_send",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL",
+    "text": "✅ Set up: one-line Austin weather summary every weekday at ~8am Central (conditions, temp, high/low, rain chance). Job `38f53fd2`. It checks every 30 min, so it lands between 8:00 and 8:30, and it sends only once per weekday. To cancel, say \"delete schedule 38f53fd2\"."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_0177z2i49pxCFhjqDb2Ci7hX",
+   "ok": true,
+   "content": "{\"ok\":true,\"channel\":\"sl\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_011Vj5K26QmL6RmmkqGWyKqT",
+   "name": "task_complete",
+   "rawName": "mcp__fermi__task_complete",
+   "input": {
+    "id": "5a3fd617-ee41-4dff-a4b8-66399dbb7a7a",
+    "result": "Created schedule 38f53fd2 (weekday 8am CT Austin weather one-liner) and confirmed to owner"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_011Vj5K26QmL6RmmkqGWyKqT",
+   "ok": true,
+   "content": "{\"ok\":true}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01WjNUWvA3YREauqZyaqYbo3",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01WjNUWvA3YREauqZyaqYbo3",
+   "ok": true,
+   "content": "{\"tasks\":[],\"total\":0}"
+  },
+  {
+   "type": "text",
+   "text": "The queue had one task, and it's done.\n\n**Your request:** a one-line Austin weather summary every weekday at 8am. It's set up as schedule `38f53fd2`, sent to your Slack DM. I confirmed it in Slack.\n\n- **Timing:** the scheduler can't run at a set time of day, so the job checks every 30 minutes. It only sends during the 8am hour Central time on weekdays, and at most once a day. In practice the message will land between 8:00 and 8:30, not exactly at 8:00.\n- **What you'll get:** current conditions, temperature, high/low and chance of rain, all in one line. If both weather sources fail, it sends a one-line notice saying so.\n- **Cost:** the job runs about 48 times a day, and all but one of those runs send nothing.\n\nTo cancel it, say \"delete schedule 38f53fd2\"."
+  },
+  {
+   "type": "turn_end",
+   "ok": true,
+   "kind": "ok"
+  }
+ ],
+ "state": {
+  "profile": {},
+  "tasks": [
+   {
+    "id": "5a3fd617-ee41-4dff-a4b8-66399dbb7a7a",
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat_id": "D0EVAL",
+    "status": "done",
+    "queue": "main",
+    "result": "Created schedule 38f53fd2 (weekday 8am CT Austin weather one-liner) and confirmed to owner"
+   }
+  ],
+  "outbox": [],
+  "fakes": {
+   "slack": [
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it — working on it."
+     },
+     "phase": "inbound"
+    },
+    {
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "✅ Set up: one-line Austin weather summary every weekday at ~8am Central (conditions, temp, high/low, rain chance). Job `38f53fd2`. It checks every 30 min, so it lands between 8:00 and 8:30, and it sends only once per weekday. To cancel, say \"delete schedule 38f53fd2\"."
+     },
+     "phase": "drain"
+    }
+   ],
+   "telegram": [],
+   "discord": []
+  }
+ }
+}

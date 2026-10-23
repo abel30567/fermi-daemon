@@ -1,6 +1,6 @@
 {
   "name": "web-search-current-fact",
-  "description": "A question about a current fact is answered from search results, not from training data.",
+  "description": "A question about a current fact is answered from live data (a search result or a fetch of the release page), not from training data.",
   "fixtures": {
     "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
     "tools": [
@@ -16,12 +16,13 @@
           ]
         }
       }
-    ]
+    ],
+    "mac": [{ "tool": "mac_shell", "match": "nodejs\\.org", "result": "v99.1.0 2026-10-20 LTS (eval placeholder: the active LTS line)" }]
   },
   "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's the current LTS release of Node.js?" },
   "expect": [
-    { "argsMatch": { "tool": "search", "args": { "query": "/node/i" } } },
-    { "order": ["search", "channel_send"] },
+    { "argsMatch": { "tool": ["search", "mac_shell", "browser_extract"], "args": "/node/i" } },
+    { "order": [{ "tool": ["search", "mac_shell", "browser_extract"] }, "channel_send"] },
     { "argsMatch": { "tool": "channel_send", "args": { "text": "/v99/" } } },
     { "exactlyOnce": "channel_send" },
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },

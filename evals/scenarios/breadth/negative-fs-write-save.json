@@ -8,7 +8,7 @@
   },
   "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Save this grocery list to notes/groceries.md: eggs, oats, coffee." },
   "expect": [
-    { "argsMatch": { "tool": "fs_write", "args": { "path": "/groceries\\.md$/", "content": "/eggs[\\s\\S]*oats[\\s\\S]*coffee/" } } },
+    { "argsMatch": { "tool": "fs_write", "args": { "path": "/groceries\\.md$/", "body": "/eggs[\\s\\S]*oats[\\s\\S]*coffee/" } } },
     { "order": ["fs_write", "channel_send"] },
     { "exactlyOnce": "channel_send" },
     { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
