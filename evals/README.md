@@ -7,7 +7,8 @@ final text.
 
 ```bash
 node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios '<glob>'... \
-  [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly]
+  [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
+  [--auth none|fd|keychain|proxy]
 
 # the runner's own check: fake harness, fake target, no inference, localhost only
 node evals/run.mjs --harness fake --scenarios 'evals/scenarios/examples/*' --out /tmp/e && cat /tmp/e/summary.json
@@ -20,6 +21,25 @@ Exit code: 0 when every attempt ended as expected, 1 otherwise, 2 on a usage
 error or a non-localhost URL. `--out` defaults to `runs/evals-<timestamp>`.
 Scenarios marked `"schedule": "weekly"` (the soak) are skipped unless `--weekly`
 is given.
+
+## Inference auth (`--auth`)
+
+The sandboxed harness cannot see the keychain or `~/.claude`, so a real run needs
+`--auth` (`lib/auth.mjs`). The runner reads the credential in-process. A value is
+never printed, logged or written to the attempt dir, and each one joins the
+`noCanaryLeak` scan set. `results.json` (per attempt) and `summary.json` record
+`authMode`, never the value.
+
+| mode | harness | what the harness gets |
+|---|---|---|
+| `none` (default) | any | nothing; the harness has no login inside the sandbox |
+| `fd` (CI) | claude-code, hbar | the token on the runner's inherited `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, read once (the fd is then closed), on a fresh pipe per attempt: fd 3, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`. Never an env var |
+| `keychain` (macOS, local) | claude-code, hbar | the Claude Code OAuth access token (`claudeAiOauth.accessToken` of the login keychain item `Claude Code-credentials`, via `security find-generic-password -w`), re-read before each attempt because your own Claude Code refreshes it, on the same fresh pipe. The refresh token never leaves the keychain |
+| `proxy` (local) | claude-code, hbar, pi | CLIProxyAPI at `http://127.0.0.1:8317` with `~/.cli-proxy-api/.proxy-token`; `--model` is required. claude-code and hbar get `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` set to `--model`, and `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`. pi gets `--model cliproxy/<model>` and a sandbox `models.json` whose only provider is `cliproxy` (OpenAI-compatible, `<proxy>/v1`, the proxy token as `apiKey`). The file is deleted when pi exits, and pi's `auth.json` is not copied |
+
+codex keeps its own copied `auth.json` and only takes `--auth none`.
+The sandbox may connect to the proxy's port, and the egress proxy may tunnel to
+it, only in `proxy` mode. A non-localhost proxy URL is refused.
 
 ## Packs
 
@@ -76,8 +96,8 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    without one. It may write only to the attempt's sandbox dir (its `HOME`, with
    `tmp/` as `TMPDIR`), may not read the real `$HOME` beyond the harness binary's
    directory, the node runtime and the attempt dir, and may connect only to the
-   MCP proxy's 127.0.0.1 port, a localhost `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`
-   (CLIProxyAPI) and the egress proxy (`lib/egress-proxy.mjs`, its `HTTPS_PROXY`),
+   MCP proxy's 127.0.0.1 port, CLIProxyAPI's `127.0.0.1:8317` (with `--auth proxy`
+   only) and the egress proxy (`lib/egress-proxy.mjs`, its `HTTPS_PROXY`),
    which tunnels only to the model endpoints (`api.anthropic.com`, `chatgpt.com`,
    `api.openai.com`, `auth.openai.com`, `api.x.ai`) and notes every refusal in the
    trace (`source: "egress"`). On Linux only the filesystem part is enforced: an
@@ -174,7 +194,7 @@ one pi gets) and as the Fermi secret `FERMI_EVAL_CANARY` (`secret_set` on the ta
 opted in to `secret_resolve`, outside the trace). `${canary}` in `fixtures` is
 replaced with it. When the runner holds the real token (`CLAUDE_CODE_OAUTH_TOKEN`,
 or `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, read in place without moving the
-offset), `noCanaryLeak` scans for it too; it is kept in memory only.
+offset) or an `--auth` credential, `noCanaryLeak` scans for it too; it is kept in memory only.
 
 `session: { tasks, redrain }` runs the attempt in one warm session (`startSession`, `prompts/drain.md`
 as the system prompt, the warm worker's drain turn per message) instead of one

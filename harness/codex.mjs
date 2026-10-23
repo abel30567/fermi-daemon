@@ -23,7 +23,7 @@
 //              fails inside ours, and ours already bounds it. Never set without `sandbox`.
 //   runOnce only: skipPermissions (--dangerously-bypass-approvals-and-sandbox)
 // allowedTools and runOnce's maxTurns/settingSources/resume have no codex
-// equivalent and are ignored. tokenFd, configDir and scrubSubprocessEnv are
+// equivalent and are ignored. tokenFd, tokenPipe, configDir and scrubSubprocessEnv are
 // refused (they promise an isolation codex cannot give; see below).
 //
 // Known gaps vs the Claude Code adapter:
@@ -53,7 +53,7 @@ import { bareToolName } from './index.mjs'
 
 export const name = 'codex'
 
-const UNSUPPORTED = ['tokenFd', 'configDir', 'scrubSubprocessEnv']
+const UNSUPPORTED = ['tokenFd', 'tokenPipe', 'configDir', 'scrubSubprocessEnv']
 // Features that reach past the eval's MCP servers: ChatGPT connectors, plugins, the user's browser and desktop.
 const DISABLED_FEATURES = ['apps', 'plugins', 'browser_use', 'computer_use']
 // codex's always-on built-ins as the normalized stream names them (its shell is `Bash`).
