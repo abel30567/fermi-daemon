@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
 import { ALLOWED_TOOLS } from '../../lib/run-policy.mjs'
-import { evaluate, semanticOutcome } from './assertions.mjs'
+import { effectiveCalls, evaluate, semanticOutcome } from './assertions.mjs'
 import { startEgressProxy } from './egress-proxy.mjs'
 import { EVAL_SERVER, INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
@@ -371,6 +371,8 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
     failed: failed.map((f) => ({ assertion: f.assertion, message: f.message })),
     latencyMs,
     toolCalls: trace.filter((e) => e.type === 'tool_call').map((e) => e.name),
+    // Without the calls left pending approval: what called, exactlyOnce and maxCalls count.
+    effectiveToolCalls: effectiveCalls(trace).map((e) => e.name),
     tokens: inputTokens == null && outputTokens == null ? null : { input: inputTokens, output: outputTokens },
     costUsd: sum('costUsd'),
     errorKinds: [...errorKinds],
