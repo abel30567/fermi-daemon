@@ -13,8 +13,8 @@
   },
   "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "", "attachment": {"kind": "audio", "file": "eval-voice-note.m4a"}},
   "expect": [
-    {"argsMatch": {"tool": "mac_shell", "args": {"command": "/fermi-daemon\\/tools\\/transcribe\\.sh\\s+\\S*media\\/eval-voice-note\\.m4a/"}}},
-    {"order": ["task_claim", {"tool": "mac_shell", "args": {"command": "/transcribe\\.sh/"}}, {"tool": "channel_send", "args": {"text": "/Paris/"}}, "task_complete"]},
+    {"argsMatch": {"tool": ["Bash", "bash", "mac_shell", "execute"], "args": "/tools\\/transcribe\\.sh\\s+\\S*media\\/eval-voice-note\\.m4a/"}},
+    {"order": ["task_claim", {"tool": ["Bash", "bash", "mac_shell", "execute"], "args": "/transcribe\\.sh/"}, {"tool": "channel_send", "args": {"text": "/capital|France/i"}}, "task_complete"]},
     {"notCalled": "secret_resolve"},
     {"outbox.count": {"min": 1, "max": 2, "chat_id": "D0EVAL"}},
     {"task.status": "done"}

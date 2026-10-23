@@ -10,7 +10,7 @@ import { sandboxBackend } from '../harness/sandbox.mjs'
 import { evaluate } from '../evals/lib/assertions.mjs'
 import { DRAIN_PROMPT, EVAL_ALLOWED_TOOLS, EVAL_OVERLAY, runAttempt } from '../evals/lib/runner.mjs'
 import { loadPrompt } from '../lib/prompt.mjs'
-import { loadScenario, webhookRequest } from '../evals/lib/scenario.mjs'
+import { expandScenarios, isNegativeControl, loadScenario, webhookRequest } from '../evals/lib/scenario.mjs'
 import { TURNS } from '../evals/lib/session.mjs'
 import * as fake from '../evals/harness/fake.mjs'
 
@@ -203,5 +203,80 @@ describe('order assertion with argument matchers', () => {
     assert.deepEqual(run(['channel_send', { tool: 'mac_shell', args: { command: '/-X POST/' } }]), [])
     assert.equal(run([{ tool: 'mac_shell', args: { command: '/-X POST/' } }, 'channel_send']).length, 1)
     assert.deepEqual(run(['mac_shell', 'channel_send', 'mac_shell']), [])
+  })
+})
+
+describe('DMN-22 rulings: audio via any shell tool, negative controls only under the fake', () => {
+  const audio = loadScenario(join(CONTROL, 'audio-transcribe.json'))
+  const grade = (shell, input, reply) => {
+    const trace = [
+      { type: 'tool_call', name: 'task_claim', input: {} },
+      { type: 'tool_call', name: shell, input },
+      { type: 'tool_call', name: 'channel_send', input: { text: reply } },
+      { type: 'tool_call', name: 'task_complete', input: {} },
+    ]
+    return evaluate(audio.expect.filter((a) => a.argsMatch || a.order), { trace, state: {}, scenario: audio, latencyMs: 0 })
+  }
+  const cmd = 'tools/transcribe.sh media/eval-voice-note.m4a en'
+  const REPLY = 'The capital of France is Paris.'
+  test('transcribe.sh on the saved media path passes through Bash, bash, mac_shell or execute', () => {
+    for (const shell of ['Bash', 'bash', 'mac_shell']) assert.deepEqual(grade(shell, { command: `~/fermi-daemon/${cmd}` }, REPLY), [], shell)
+    assert.deepEqual(grade('Bash', { command: cmd }, REPLY), [], 'relative, from the daemon dir')
+    assert.deepEqual(grade('execute', { code: `~/fermi-daemon/${cmd}` }, REPLY), [], 'any argument name')
+  })
+  test('another tool, another file or a reply without the transcript content fails', () => {
+    assert.ok(grade('fs_read', { command: `~/fermi-daemon/${cmd}` }, REPLY).length)
+    assert.ok(grade('Bash', { command: 'tools/transcribe.sh media/other.m4a' }, REPLY).length)
+    assert.ok(grade('Bash', { command: cmd }, "Sorry, I can't listen to audio.").length)
+  })
+
+  test('isNegativeControl: negative: true, or the negative-X / X-negative / X-neg naming, variants by base name', () => {
+    for (const name of ['negative-fs-read-notes', 'teams-reply-shell-negative', 'bootstrap-first-neg', 'bootstrap-first-neg~para']) assert.equal(isNegativeControl({ name }), true, name)
+    for (const name of ['fs-read-notes', 'negativity', 'neg-x', 'bootstrap-first~neg']) assert.equal(isNegativeControl({ name }), false, name)
+    assert.equal(isNegativeControl({ name: 'plain', negative: true }), true)
+    assert.equal(isNegativeControl({ name: 'x-neg', negative: false }), false)
+  })
+
+  test('in every pack, the expectOutcome "fail" scenarios are exactly the negative controls', () => {
+    const files = expandScenarios([join(ROOT, 'evals/scenarios/*/*')])
+    assert.ok(files.length > 50, String(files.length))
+    for (const f of files) {
+      const s = loadScenario(f)
+      assert.equal(isNegativeControl(s), s.expectOutcome === 'fail', f)
+    }
+  })
+
+  test('a non-fake harness skips every negative control as "negative control", not unexpected; the fake runs them', () => {
+    const dir = tmp()
+    const pos = readJson(CONTROL, 'audio-transcribe.json')
+    const neg = readJson(CONTROL, 'audio-transcribe-negative.json')
+    for (const name of ['a-neg', 'negative-b', 'c-negative']) writeFileSync(join(dir, `${name}.json`), JSON.stringify({ ...neg, name }))
+    writeFileSync(join(dir, 'd.json'), JSON.stringify({ ...neg, name: 'd', negative: true }))
+    writeFileSync(join(dir, 'e.json'), JSON.stringify({ ...pos, name: 'e', harnesses: ['fake'] }))
+    const out = tmp()
+    const r = runCli(['--harness', 'claude-code', '--worker', tmp(), '--scenarios', `${dir}/*`, '--out', out])
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    for (const n of ['a-neg', 'negative-b', 'c-negative', 'd']) assert.match(r.stdout, new RegExp(`SKIP ${n} \\(negative control\\)`))
+    const summary = readJson(out, 'summary.json')
+    assert.equal(summary.attempts, 0)
+    assert.deepEqual(summary.unexpected, [])
+    assert.deepEqual(Object.fromEntries(summary.skipped.map((s) => [s.scenario, s.reason])), {
+      'a-neg': 'negative control',
+      'negative-b': 'negative control',
+      'c-negative': 'negative control',
+      d: 'negative control',
+      e: 'harnesses: fake',
+    })
+    const fakeOut = tmp()
+    const f = runCli(['--harness', 'fake', '--scenarios', `${dir}/*`, '--out', fakeOut])
+    assert.equal(f.status, 0, f.stdout + f.stderr)
+    assert.deepEqual(readJson(fakeOut, 'summary.json').skipped, [])
+    assert.equal(readJson(fakeOut, 'summary.json').expectedFailures, 4)
+  })
+
+  test('negative must be a boolean', () => {
+    const dir = tmp()
+    writeFileSync(join(dir, 'n.json'), JSON.stringify({ inbound: { channel: 'sl', sender: 'x', chat: 'y', text: 'z' }, expect: [{ called: 'channel_send' }], negative: 'yes' }))
+    assert.throws(() => loadScenario(join(dir, 'n.json')), /negative must be a boolean/)
   })
 })
