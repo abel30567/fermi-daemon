@@ -18,19 +18,9 @@ export const SURFACE = JSON.parse(readFileSync(fileURLToPath(new URL('../../test
 const surface = new Set(SURFACE)
 
 export function extraTools({ db, canned = [], skillBodies, macCall }) {
-  const secrets = new Map()
   const stateful = {
-    secret_set: ({ name, value, allowed_capabilities = [] }) => {
-      secrets.set(name, { value: String(value), allowed_capabilities })
-      return { ok: true, name }
-    },
-    secret_list: () => ({ secrets: [...secrets.keys()].map((name) => ({ name })) }),
-    secret_resolve: ({ name }) => {
-      const s = secrets.get(name)
-      if (!s) throw new Error(`Secret not found: ${name}`)
-      if (!s.allowed_capabilities.includes('secret_resolve')) throw new Error(`Secret "${name}" has not opted in to secret_resolve.`)
-      return { name, value: s.value }
-    },
+    // secret_set / secret_resolve are the fake target's own (db.secrets).
+    secret_list: () => ({ secrets: db.secrets.map(({ name }) => ({ name })) }),
     memory_write: ({ kind = 'fact', body, pinned = false }) => {
       const m = { id: db.memories.length + 1, kind, body: String(body ?? ''), pinned: !!pinned, created_at: Date.now(), decayed_at: null }
       db.memories.push(m)

@@ -55,28 +55,67 @@ export function loadScenario(file) {
   const sess = s.session
   if (Array.isArray(sess) ? !sess.length || sess.some((t) => !TURNS[t?.turn]) : sess != null && (typeof sess !== 'object' || ['tasks', 'redrain'].some((k) => sess[k] != null && !(Number.isInteger(sess[k]) && sess[k] >= 0))))
     errs.push(`session must be a non-empty list of { turn: ${Object.keys(TURNS).join(' | ')}, interruptAfter? } or { tasks?, redrain? } with non-negative integers`)
+  if (inb?.via != null && !['webhook', 'task'].includes(inb.via)) errs.push('inbound.via must be "webhook" or "task"')
+  if (s.variants != null) {
+    const names = (Array.isArray(s.variants) ? s.variants : []).map((v) => v?.name)
+    if (!names.length || names.some((n) => typeof n !== 'string' || !n) || new Set(names).size !== names.length)
+      errs.push('variants must be a non-empty list of objects with unique string names')
+  }
   if (errs.length) throw new Error(`${file}: ${errs.join('; ')}`)
   return s
 }
 
+// A scenario with `variants` (paraphrased or adversarial inbounds) becomes the
+// base scenario plus one scenario per variant, named `<name>~<variant>`. A
+// variant's `inbound` and `fixtures` are merged key by key over the base's;
+// `expect` and `fake` are always the base's, so every variant is graded the same.
+export function expandVariants(s) {
+  const { variants, ...base } = s
+  return [
+    base,
+    ...(variants ?? []).map((v) => ({
+      ...base,
+      name: `${base.name}~${v.name}`,
+      ...(v.description && { description: v.description }),
+      inbound: { ...base.inbound, ...v.inbound },
+      fixtures: { ...base.fixtures, ...v.fixtures },
+    })),
+  ]
+}
+
 // The MCP-11 eval-seed fixture for a scenario. `bindings` are channel allowlist
 // entries ({ channel, sender_id, note? }), seeded into the worker's allowlist.
-export function seedFixture(fixtures = {}) {
-  const { profile, memories, skills, tasks } = fixtures
+// An inbound with `via: "task"` (a phone call result, a cloud handoff: nothing a
+// bridge webhook delivers) is seeded as the newest pending task instead.
+// `history` ({ role, text, minutes_ago? }) is the inbound chat's prior transcript.
+export function seedFixture(fixtures = {}, inbound = null) {
+  const { profile, memories, skills } = fixtures
   const allowlist = [...(fixtures.allowlist ?? []), ...(fixtures.bindings ?? [])]
+  const tasks = [...(fixtures.tasks ?? [])]
+  if (inbound?.via === 'task') tasks.push({ id: 'eval-inbound', channel: inbound.channel, sender: inbound.sender, chat_id: inbound.chat, payload: inbound.text })
+  const now = Date.now()
+  const history = (fixtures.history ?? []).map((m) => ({
+    channel: inbound?.channel,
+    chat_id: inbound?.chat,
+    role: m.role,
+    text: m.text,
+    created_at: now - (m.minutes_ago ?? 0) * 60_000,
+  }))
   return {
     ...(profile && { profile }),
     ...(memories && { memories }),
     ...(skills && { skills }),
-    ...(tasks && { tasks }),
+    ...((fixtures.tasks || tasks.length) && { tasks }),
     ...(allowlist.length && { allowlist }),
+    ...(history.length && { history }),
   }
 }
 
 // The channel webhook request that enqueues the inbound message, as a bridge sends it.
-// null for Teams: the warm worker takes it as a session turn, not a queue task.
+// null for an inbound seeded as a task, and for Teams: the warm worker takes it
+// as a session turn, not a queue task.
 export function webhookRequest(inbound, secrets) {
-  if (inbound.channel === 'teams') return null
+  if (inbound.via === 'task' || inbound.channel === 'teams') return null
   const text = inbound.attachment
     ? `${inbound.text}\n[${inbound.attachment.kind} attachment saved to ~/fermi-daemon/media/${inbound.attachment.file}]`
     : inbound.text
@@ -96,5 +135,14 @@ export function webhookRequest(inbound, secrets) {
       },
     }
   }
-  throw new Error(`inbound channel "${inbound.channel}" is not supported by the runner yet (supported: sl)`)
+  // wa-bridge's inbound.ts: the sender is the phone number (digits), a DM's chat_id
+  // is the same number and a group's ends in @g.us. No display name is sent.
+  if (inbound.channel === 'wa') {
+    return {
+      path: '/wa/webhook',
+      headers: { 'content-type': 'application/json', 'x-wa-bridge-secret': secrets.WA_WEBHOOK_SECRET },
+      body: { sender: inbound.sender, chat_id: inbound.chat, text },
+    }
+  }
+  throw new Error(`inbound channel "${inbound.channel}" is not supported by the runner yet (supported: sl, wa; any channel with via: "task")`)
 }

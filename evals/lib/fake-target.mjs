@@ -1,7 +1,7 @@
 // In-process stand-in for the MCP-11 eval worker, used when no `--worker` checkout
 // is given (CI, runner tests). It speaks the same surface the daemon touches —
-// /health, the Slack bridge webhook, and the core tools over MCP at /mcp (the rest
-// of fermi-mcp's tool surface comes from ./fake-tools.mjs) — keeps
+// /health, the Slack and WhatsApp bridge webhooks, and the core tools over MCP at /mcp
+// (the rest of fermi-mcp's tool surface comes from ./fake-tools.mjs) — keeps
 // state in memory, sends outbound traffic to the same fakes as the real target,
 // and dumps state in eval-dump.mjs's shape. It is not a model of Fermi: grading
 // semantics only hold against the real target.
@@ -16,7 +16,7 @@ const post = (url, body) =>
 
 // `tools` is the scenario's fixtures.tools (canned results, see ./fake-tools.mjs).
 export async function startFakeTarget({ env, tools }) {
-  const db = { profile: {}, memories: [], allowlist: [], tasks: [], outbox: [], schedules: [], skills: [], audit: [], messages: [] }
+  const db = { profile: {}, memories: [], allowlist: [], tasks: [], outbox: [], schedules: [], skills: [], audit: [], messages: [], secrets: [] }
   const skillBodies = new Map()
   let mac = null
   const macCall = async (name, args) => {
@@ -69,6 +69,20 @@ export async function startFakeTarget({ env, tools }) {
       return { ok: true, call_id: JSON.parse(body).sid }
     },
     mac_shell: (args) => macCall('mac_shell', args),
+    task_enqueue: ({ channel, sender, chat_id, payload, queue }) => {
+      enqueue({ channel, sender, chat_id, payload, queue })
+      return { ok: true, id: db.tasks.at(-1).id }
+    },
+    secret_set: ({ name, value, allowed_capabilities = [] }) => {
+      db.secrets = [...db.secrets.filter((x) => x.name !== name), { name, value, allowed_capabilities }]
+      return { ok: true, name }
+    },
+    secret_resolve: ({ name }) => {
+      const s = db.secrets.find((x) => x.name === name)
+      if (!s) return { error: 'not_found', name }
+      if (!s.allowed_capabilities.includes('secret_resolve')) return { error: 'not_opted_in', name }
+      return { name, value: s.value, scope: 'app' }
+    },
     ...coreTools(db, skillBodies),
   }
 
@@ -104,12 +118,33 @@ export async function startFakeTarget({ env, tools }) {
     if (is_im) return send('sl', channel_id, 'Got it — working on it.')
   }
 
+  // Mirrors handleWhatsAppWebhook: the sender must be allowlisted (an unknown DM
+  // gets a pairing code, an unknown group member nothing); a group turn is
+  // attributed by sender id, a DM is acked through the outbox.
+  const waWebhook = async ({ sender, chat_id, text }) => {
+    if (!sender || !chat_id || !text) return
+    const isGroup = chat_id.endsWith('@g.us')
+    if (!allowed('wa', sender)) {
+      if (!isGroup) db.outbox.push({ id: randomUUID(), channel: 'wa', chat_id, body: 'Pairing code: EVAL0000\nAsk the owner to approve this code.', status: 'pending', created_at: Date.now(), sent_at: null })
+      return
+    }
+    const payload = isGroup ? `[${sender}] ${text}` : text
+    db.messages.push({ channel: 'wa', chat_id, role: 'user', text: payload })
+    enqueue({ channel: 'wa', sender, chat_id, payload })
+    if (!isGroup) db.outbox.push({ id: randomUUID(), channel: 'wa', chat_id, body: 'Got it — working on it.', status: 'pending', created_at: Date.now(), sent_at: null })
+  }
+
   const srv = await serve(async (req, res) => {
     const path = new URL(req.url, 'http://x').pathname
     if (path === '/health') return sendJson(res, 200, { ok: true })
     if (path === '/sl/webhook' && req.method === 'POST') {
       if (req.headers['x-sl-bridge-secret'] !== env.SLACK_BRIDGE_SECRET) return res.writeHead(401).end('Unauthorized')
       await slackWebhook(JSON.parse(await readBody(req)))
+      return res.writeHead(200).end('ok')
+    }
+    if (path === '/wa/webhook' && req.method === 'POST') {
+      if (req.headers['x-wa-bridge-secret'] !== env.WA_WEBHOOK_SECRET) return res.writeHead(401).end('Unauthorized')
+      await waWebhook(JSON.parse(await readBody(req)))
       return res.writeHead(200).end('ok')
     }
     if (path === '/mcp' && req.method === 'POST') {
@@ -133,9 +168,10 @@ export async function startFakeTarget({ env, tools }) {
       }
       if (f.skills) for (const s of f.skills) skillBodies.set(s.slug, s.body ?? '')
       if (f.skills) db.skills = f.skills.map((s) => ({ slug: s.slug, name: s.slug, description: null, keywords: null, allowed_tools: null, version: 1, source: 'eval-seed', decayed_at: null }))
+      if (f.history) db.messages = f.history.map((m) => ({ ...m }))
     },
     async dump() {
-      const { messages, ...rest } = db
+      const { messages, secrets, ...rest } = db
       return structuredClone(rest)
     },
     close: srv.close,
