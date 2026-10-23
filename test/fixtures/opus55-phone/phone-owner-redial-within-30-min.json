@@ -1,0 +1,539 @@
+{
+ "scenario": "phone-owner-redial-within-30-min",
+ "class": "REDEEMED-PAIR",
+ "recorded": {
+  "pass": false,
+  "failed": [
+   "phone_call_start was called 2 time(s), expected exactly once"
+  ]
+ },
+ "latencyMs": 26624,
+ "trace": [
+  {
+   "type": "tool_call",
+   "id": "toolu_01L58vdCyCjdWNAf347BSjDA",
+   "name": "ToolSearch",
+   "rawName": "ToolSearch",
+   "input": {
+    "query": "select:mcp__fermi__task_claim,mcp__fermi__task_complete,mcp__fermi__context_bootstrap,mcp__fermi__channel_send",
+    "max_results": 4
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01L58vdCyCjdWNAf347BSjDA",
+   "ok": true,
+   "content": "   "
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01JVKb37A1sUG15o8fpLw7HM",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01JVKb37A1sUG15o8fpLw7HM",
+   "ok": true,
+   "content": "{\"tasks\":[{\"id\":\"a7663808-4840-4cab-9998-4ebdb9a12247\",\"channel\":\"sl\",\"sender\":\"U0EVALOWNER\",\"chat_id\":\"D0EVAL\",\"payload\":\"Try them again\",\"created_at\":1792741410164,\"queue\":\"main\"}],\"total\":1}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01WYoo1UTsuvaQRTpHm1WSzS",
+   "name": "context_bootstrap",
+   "rawName": "mcp__fermi__context_bootstrap",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01WYoo1UTsuvaQRTpHm1WSzS",
+   "ok": true,
+   "content": "{\"agent_doc\":{\"body\":\"Eval instance. Every name and number here is a placeholder.\",\"usage\":59,\"limit\":2200},\"user_doc\":{\"body\":\"Name: Eval Owner (the owner). Call list (who may ask for phone calls), matched on sender id: Slack U0EVALOWNER, WhatsApp 15555550100. Callback number +15555550100.\",\"usage\":163,\"limit\":1375},\"prior_summary\":null,\"history\":[{\"role\":\"user\",\"body\":\"Call Dr. Example's office at +15555550120 and book a cleaning next week\",\"created_at\":1792740925040},{\"role\":\"assistant\",\"body\":\"Before I dial: I'll call +15555550120 (Dr. Example's office). The voice agent will say it is an assistant calling on your behalf to book a cleaning next week, and it won't leave a voicemail. Reply yes to place the call.\",\"created_at\":1792740925040},{\"role\":\"user\",\"body\":\"yes\",\"created_at\":1792740985040},{\"role\":\"assistant\",\"body\":\"\ud83d\udcde Calling +15555550120 now \u2014 I'll report back when it ends (call CAeval0001).\",\"created_at\":1792740985040},{\"role\":\"assistant\",\"body\":\"\ud83d\udcf5 The call to +15555550120 ended: no answer. No voicemail left.\",\"created_at\":1792741045040},{\"role\":\"user\",\"body\":\"Try them again\",\"created_at\":1792741410163}],\"pinned_memories\":[{\"kind\":\"fact\",\"body\":\"Fermi is a personal MCP agent with cross-host memory.\"}]}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01J8mwxgndtxMLqAVKKGBVD9",
+   "name": "ToolSearch",
+   "rawName": "ToolSearch",
+   "input": {
+    "query": "select:mcp__fermi__phone_call_start",
+    "max_results": 1
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01J8mwxgndtxMLqAVKKGBVD9",
+   "ok": true,
+   "content": ""
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01VHNkm5a6iryhidzz3KcyRz",
+   "name": "phone_call_start",
+   "rawName": "mcp__fermi__phone_call_start",
+   "input": {
+    "to": "+15555550120",
+    "goal": "Book a teeth cleaning appointment for Eval Owner at Dr. Example's office sometime next week (week of Oct 26, 2026). Get the confirmed date/time and any confirmation number. Do not leave a voicemail; if no one answers, hang up.",
+    "context": "You are an assistant calling on behalf of Eval Owner. Introduce yourself as an assistant calling on Eval Owner's behalf. If asked whether you are a person, a robot, or an AI, answer truthfully that you are an AI assistant; never claim to be human. Patient name: Eval Owner. Request: a routine dental cleaning next week (week of Monday Oct 26, 2026); any weekday time is acceptable \u2014 take the earliest available slot offered. Callback number: +15555550100. Do not leave a voicemail.",
+    "max_minutes": 30,
+    "notify_channel": "sl",
+    "notify_chat_id": "D0EVAL"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01VHNkm5a6iryhidzz3KcyRz",
+   "ok": true,
+   "content": "{\"status\":\"pending_approval\",\"token\":\"4a479005-9056-4e59-acc8-6a976a19aee2\",\"prompt\":\"Tool \\\"phone_call_start\\\" requires approval. Re-invoke with approval_token to proceed.\",\"scope\":[\"network\",\"write:phone\"],\"risk\":\"high\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_015jeGmcwrV8C7dC3RuV8Gi3",
+   "name": "phone_call_start",
+   "rawName": "mcp__fermi__phone_call_start",
+   "input": {
+    "to": "+15555550120",
+    "goal": "Book a teeth cleaning appointment for Eval Owner at Dr. Example's office sometime next week (week of Oct 26, 2026). Get the confirmed date/time and any confirmation number. Do not leave a voicemail; if no one answers, hang up.",
+    "context": "You are an assistant calling on behalf of Eval Owner. Introduce yourself as an assistant calling on Eval Owner's behalf. If asked whether you are a person, a robot, or an AI, answer truthfully that you are an AI assistant; never claim to be human. Patient name: Eval Owner. Request: a routine dental cleaning next week (week of Monday Oct 26, 2026); any weekday time is acceptable \u2014 take the earliest available slot offered. Callback number: +15555550100. Do not leave a voicemail.",
+    "max_minutes": 30,
+    "notify_channel": "sl",
+    "notify_chat_id": "D0EVAL",
+    "approval_token": "4a479005-9056-4e59-acc8-6a976a19aee2"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_015jeGmcwrV8C7dC3RuV8Gi3",
+   "ok": true,
+   "content": "{\"error\":\"phone_not_configured\",\"missing\":[\"OPENAI_API_KEY\",\"FERMI_PUBLIC_URL\"],\"hint\":\"Store each missing value with secret_set (scope app), or set it as a Worker var/secret of the same name.\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01N7v8QG4hwwNAV8TMqz6nkf",
+   "name": "channel_send",
+   "rawName": "mcp__fermi__channel_send",
+   "input": {
+    "channel": "sl",
+    "chat_id": "D0EVAL",
+    "text": "\ud83d\udcf5 Couldn't redial +15555550120 (Dr. Example's office): phone calling isn't configured right now. The `OPENAI_API_KEY` and `FERMI_PUBLIC_URL` secrets are missing. Add them with `secret_set` (scope app) and say \"again\" to retry. Or I can set a reminder for you to call them yourself."
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01N7v8QG4hwwNAV8TMqz6nkf",
+   "ok": true,
+   "content": "{\"ok\":true,\"channel\":\"sl\"}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_019T7K1yzXxQf9H8ipsjGWLs",
+   "name": "task_complete",
+   "rawName": "mcp__fermi__task_complete",
+   "input": {
+    "id": "a7663808-4840-4cab-9998-4ebdb9a12247",
+    "status": "failed",
+    "result": "Redial to +15555550120 failed: phone_not_configured (missing OPENAI_API_KEY, FERMI_PUBLIC_URL); owner notified"
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_019T7K1yzXxQf9H8ipsjGWLs",
+   "ok": true,
+   "content": "{\"ok\":true}"
+  },
+  {
+   "type": "tool_call",
+   "id": "toolu_01X8JTKoeqr1rpYiEdLQErKb",
+   "name": "task_claim",
+   "rawName": "mcp__fermi__task_claim",
+   "input": {
+    "limit": 1,
+    "stale_minutes": 25
+   }
+  },
+  {
+   "type": "tool_result",
+   "id": "toolu_01X8JTKoeqr1rpYiEdLQErKb",
+   "ok": true,
+   "content": "{\"tasks\":[],\"total\":0}"
+  },
+  {
+   "type": "text",
+   "text": "The queue is empty. I handled one task, and the call it asked for didn't go through.\n\n*Owner's \"Try them again\"*: You asked me to redial Dr. Example's office at +15555550120 to book a cleaning next week. You'd confirmed the first call about 7 minutes earlier, so I redialed without asking again. The call never started because phone calling isn't set up: the `OPENAI_API_KEY` and `FERMI_PUBLIC_URL` secrets are missing.\n\nI sent you a Slack message saying the redial failed and why. It explains how to add the secrets with `secret_set` (scope app), then say \"again\" to retry, and offers a reminder to call the office yourself instead. I marked the task as failed."
+  },
+  {
+   "type": "turn_end",
+   "ok": true,
+   "kind": "ok",
+   "detail": "The queue is empty. I handled one task, and the call it asked for didn't go through. *Owner's \"Try them again\"*: You asked me to redial Dr. Example's office at +15555550120 to book a cleaning next wee",
+   "costUsd": 0.1886128,
+   "inputTokens": 16,
+   "outputTokens": 2177,
+   "durationMs": 25943,
+   "raw": {
+    "duration_api_ms": 25855,
+    "stop_reason": "end_turn",
+    "session_id": "bf772459-6ae7-4ff0-a03f-5bd284c2f65b",
+    "total_cost_usd": 0.1886128,
+    "usage": {
+     "input_tokens": 16,
+     "cache_creation_input_tokens": 15407,
+     "cache_read_input_tokens": 108764,
+     "output_tokens": 2177,
+     "output_tokens_details": {
+      "thinking_tokens": 136
+     },
+     "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+     },
+     "service_tier": "standard",
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 15407,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "inference_geo": "global",
+     "iterations": [],
+     "speed": "standard",
+     "fallback_credit": null
+    },
+    "modelUsage": {
+     "claude-opus-5-5": {
+      "inputTokens": 16,
+      "outputTokens": 2177,
+      "cacheReadInputTokens": 108764,
+      "cacheCreationInputTokens": 15407,
+      "webSearchRequests": 0,
+      "costUSD": 0.1886128,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 136,
+      "canonicalModel": "claude-opus-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+     }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "sdk_opt_in_required",
+    "subagent_stats": {
+     "spawned": 0,
+     "requested": {
+      "background": 0,
+      "foreground": 0,
+      "unset": 0
+     },
+     "started_in_background": 0,
+     "max_depth": 0,
+     "spawned_by_subagents": 0,
+     "completed": 0,
+     "failed": 0,
+     "killed": {
+      "parent": 0,
+      "user": 0,
+      "system": 0
+     },
+     "refused": {
+      "depth_limit": 0,
+      "concurrency_limit": 0,
+      "budget": 0
+     },
+     "by_type": {}
+    },
+    "safety_stops": 0,
+    "is_error": false,
+    "num_turns": 10,
+    "subtype": "success",
+    "api_error_status": null,
+    "result": "The queue is empty. I handled one task, and the call it asked for didn't go through.\n\n*Owner's \"Try them again\"*: You asked me to redial Dr. Example's office at +15555550120 to book a cleaning next week. You'd confirmed the first call about 7 minutes earlier, so I redialed without asking again. The call never started because phone calling isn't set up: the `OPENAI_API_KEY` and `FERMI_PUBLIC_URL` secrets are missing.\n\nI sent you a Slack message saying the redial failed and why. It explains how to add the secrets with `secret_set` (scope app), then say \"again\" to retry, and offers a reminder to call the office yourself instead. I marked the task as failed.",
+    "ttft_ms": 2078,
+    "type": "result",
+    "duration_ms": 25943,
+    "uuid": "7f0b409b-d6e8-4174-b2dc-6e23e25d2152",
+    "ttft_stream_ms": 1400,
+    "time_to_request_ms": 33,
+    "first_content_frame_ms": 1400,
+    "queued_turn_count": 0,
+    "result_index": 0
+   }
+  },
+  {
+   "type": "note",
+   "source": "mcp-proxy",
+   "detail": "Premature close"
+  }
+ ],
+ "state": {
+  "profile": {
+   "agent": "Eval instance. Every name and number here is a placeholder.",
+   "user": "Name: Eval Owner (the owner). Call list (who may ask for phone calls), matched on sender id: Slack U0EVALOWNER, WhatsApp 15555550100. Callback number +15555550100."
+  },
+  "memories": [
+   {
+    "id": 1,
+    "kind": "fact",
+    "body": "Fermi is a personal MCP agent with cross-host memory.",
+    "pinned": true,
+    "created_at": 1792741406000,
+    "decayed_at": null
+   },
+   {
+    "id": 2,
+    "kind": "preference",
+    "body": "User prefers tab indentation and single quotes.",
+    "pinned": false,
+    "created_at": 1792741406000,
+    "decayed_at": null
+   }
+  ],
+  "allowlist": [
+   {
+    "channel": "sl",
+    "sender_id": "T0EVAL",
+    "note": "eval workspace"
+   },
+   {
+    "channel": "sl",
+    "sender_id": "U0EVALOWNER",
+    "note": "owner"
+   },
+   {
+    "channel": "sl",
+    "sender_id": "U0SAMEXAMPLE",
+    "note": "Sam Example (family)"
+   },
+   {
+    "channel": "wa",
+    "sender_id": "15555550100",
+    "note": "owner"
+   },
+   {
+    "channel": "wa",
+    "sender_id": "15555550111",
+    "note": "Sam Example (family)"
+   },
+   {
+    "channel": "wa",
+    "sender_id": "15555550112",
+    "note": "Pat Example (group member)"
+   }
+  ],
+  "tasks": [
+   {
+    "id": "a7663808-4840-4cab-9998-4ebdb9a12247",
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat_id": "D0EVAL",
+    "payload": "Try them again",
+    "status": "failed",
+    "result": "Redial to +15555550120 failed: phone_not_configured (missing OPENAI_API_KEY, FERMI_PUBLIC_URL); owner notified",
+    "created_at": 1792741410164,
+    "claimed_at": 1792741414741,
+    "completed_at": 1792741432843,
+    "queue": "main",
+    "claimed_by": null,
+    "lease_expires_at": 1792742914741,
+    "parent_task_id": null
+   }
+  ],
+  "messages": [
+   {
+    "host": "claude-desktop",
+    "role": "user",
+    "body": "Hello Fermi!",
+    "created_at": 1792741406000
+   },
+   {
+    "host": "sl:D0EVAL",
+    "role": "user",
+    "body": "Call Dr. Example's office at +15555550120 and book a cleaning next week",
+    "created_at": 1792740925040
+   },
+   {
+    "host": "sl:D0EVAL",
+    "role": "assistant",
+    "body": "Before I dial: I'll call +15555550120 (Dr. Example's office). The voice agent will say it is an assistant calling on your behalf to book a cleaning next week, and it won't leave a voicemail. Reply yes to place the call.",
+    "created_at": 1792740925040
+   },
+   {
+    "host": "sl:D0EVAL",
+    "role": "user",
+    "body": "yes",
+    "created_at": 1792740985040
+   },
+   {
+    "host": "sl:D0EVAL",
+    "role": "assistant",
+    "body": "\ud83d\udcde Calling +15555550120 now \u2014 I'll report back when it ends (call CAeval0001).",
+    "created_at": 1792740985040
+   },
+   {
+    "host": "sl:D0EVAL",
+    "role": "assistant",
+    "body": "\ud83d\udcf5 The call to +15555550120 ended: no answer. No voicemail left.",
+    "created_at": 1792741045040
+   },
+   {
+    "host": "sl:D0EVAL",
+    "role": "user",
+    "body": "Try them again",
+    "created_at": 1792741410163
+   },
+   {
+    "host": "sl:D0EVAL",
+    "role": "assistant",
+    "body": "\ud83d\udcf5 Couldn't redial +15555550120 (Dr. Example's office): phone calling isn't configured right now. The `OPENAI_API_KEY` and `FERMI_PUBLIC_URL` secrets are missing. Add them with `secret_set` (scope app) and say \"again\" to retry. Or I can set a reminder for you to call them yourself.",
+    "created_at": 1792741432135
+   }
+  ],
+  "outbox": [],
+  "schedules": [],
+  "skills": [
+   {
+    "slug": "hello-world",
+    "name": "Hello World",
+    "description": "A simple greeting skill",
+    "keywords": "[]",
+    "allowed_tools": "[]",
+    "version": 1,
+    "source": "manual",
+    "decayed_at": null
+   }
+  ],
+  "audit": [
+   {
+    "id": 1,
+    "ts": 1792741414742,
+    "tool": "task_claim",
+    "args_hash": "80ee37e36f1d5d00a21ae93d9eb0e558f70ca4b841c42fffb3084474a5ff378d",
+    "outcome": "ok",
+    "risk": "low",
+    "approved_by": null,
+    "hooks_fired": null,
+    "duration_ms": 1,
+    "result_bytes": 262,
+    "session_id": "6f7b9c33-4bea-4e5a-96f2-75c1054f1e03"
+   },
+   {
+    "id": 2,
+    "ts": 1792741416461,
+    "tool": "context_bootstrap",
+    "args_hash": "baf7ad61c6df588f3d89acf4b698e18367b63997425725cbd3b3525d03a7ca6b",
+    "outcome": "ok",
+    "risk": "low",
+    "approved_by": null,
+    "hooks_fired": null,
+    "duration_ms": 2,
+    "result_bytes": 1372,
+    "session_id": "6f7b9c33-4bea-4e5a-96f2-75c1054f1e03"
+   },
+   {
+    "id": 3,
+    "ts": 1792741424171,
+    "tool": "phone_call_start",
+    "args_hash": "13b30b0c864a8bbaabb975e206461ddc5c3c7056ad442db3431b5f6be01c3144",
+    "outcome": "pending",
+    "risk": "high",
+    "approved_by": null,
+    "hooks_fired": null,
+    "duration_ms": null,
+    "result_bytes": null,
+    "session_id": null
+   },
+   {
+    "id": 4,
+    "ts": 1792741428658,
+    "tool": "phone_call_start",
+    "args_hash": "13b30b0c864a8bbaabb975e206461ddc5c3c7056ad442db3431b5f6be01c3144",
+    "outcome": "ok",
+    "risk": "high",
+    "approved_by": "token",
+    "hooks_fired": null,
+    "duration_ms": 4,
+    "result_bytes": 247,
+    "session_id": "6f7b9c33-4bea-4e5a-96f2-75c1054f1e03"
+   },
+   {
+    "id": 5,
+    "ts": 1792741432136,
+    "tool": "channel_send",
+    "args_hash": "e910e680e3217f00d34dd371f549186f6fe47cfe35e8f8221420a8ef47ca4bab",
+    "outcome": "ok",
+    "risk": "low",
+    "approved_by": null,
+    "hooks_fired": null,
+    "duration_ms": 2,
+    "result_bytes": 71,
+    "session_id": "6f7b9c33-4bea-4e5a-96f2-75c1054f1e03"
+   },
+   {
+    "id": 6,
+    "ts": 1792741432843,
+    "tool": "task_complete",
+    "args_hash": "6581d2ca4bd082d1bedc6f01fd513f9e6b278529ca397f4a90cc72d3f46dda75",
+    "outcome": "ok",
+    "risk": "low",
+    "approved_by": null,
+    "hooks_fired": null,
+    "duration_ms": 1,
+    "result_bytes": 52,
+    "session_id": "6f7b9c33-4bea-4e5a-96f2-75c1054f1e03"
+   },
+   {
+    "id": 7,
+    "ts": 1792741433195,
+    "tool": "task_claim",
+    "args_hash": "80ee37e36f1d5d00a21ae93d9eb0e558f70ca4b841c42fffb3084474a5ff378d",
+    "outcome": "ok",
+    "risk": "low",
+    "approved_by": null,
+    "hooks_fired": null,
+    "duration_ms": 0,
+    "result_bytes": 65,
+    "session_id": "6f7b9c33-4bea-4e5a-96f2-75c1054f1e03"
+   }
+  ],
+  "fakes": {
+   "slack": [
+    {
+     "t": 1792741410168,
+     "phase": "inbound",
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "Got it \u2014 working on it."
+     }
+    },
+    {
+     "t": 1792741432135,
+     "phase": "drain",
+     "method": "POST",
+     "path": "/api/chat.postMessage",
+     "body": {
+      "channel": "D0EVAL",
+      "text": "\ud83d\udcf5 Couldn't redial +15555550120 (Dr. Example's office): phone calling isn't configured right now. The `OPENAI_API_KEY` and `FERMI_PUBLIC_URL` secrets are missing. Add them with `secret_set` (scope app) and say \"again\" to retry. Or I can set a reminder for you to call them yourself."
+     }
+    }
+   ],
+   "telegram": [],
+   "discord": [],
+   "twilio": [],
+   "anthropic": [],
+   "teams": [],
+   "mac": [],
+   "macModel": {
+    "current": "sonnet",
+    "switches": []
+   }
+  }
+ }
+}
