@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
 import { ALLOWED_TOOLS } from '../../lib/run-policy.mjs'
-import { evaluate } from './assertions.mjs'
+import { evaluate, semanticOutcome } from './assertions.mjs'
 import { startEgressProxy } from './egress-proxy.mjs'
 import { EVAL_SERVER, INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
@@ -27,6 +27,7 @@ import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
 import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
+import { judgeSemantic } from './semantic.mjs'
 import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
 
@@ -149,6 +150,7 @@ export const INFRA_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
 // `pace(fn)`: runs each try (evals/lib/pacing.mjs, the backend lock and --min-gap-ms).
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
+// `semanticJudge`: lib/semantic.mjs createSemanticJudge() for semantic assertions (default: none, regex only).
 export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pace = (fn) => fn(), onInfraRetry, ...args }) {
   const dir = join(args.outDir, args.scenario.name, String(args.attempt))
   for (let n = 0; ; n++) {
@@ -167,13 +169,14 @@ export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pa
   }
 }
 
-async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth }) {
+async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth, semanticJudge }) {
   const dir = join(outDir, scenario.name, String(attempt))
   mkdirSync(dir, { recursive: true })
   const closers = []
   const trace = []
   const errorKinds = new Set()
   let failed = []
+  let semantic
   let latencyMs = 0
   let taskLatencies
   const retried = new Set() // error turn_ends the session re-drained after
@@ -316,7 +319,9 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
 
     const state = { ...(await target.dump()), fakes: fakes.record() }
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state, null, 2))
-    failed = evaluate(scenario.expect, { trace, state, scenario, latencyMs, taskLatencies, canaries })
+    const ctx = { trace, state, scenario, latencyMs, taskLatencies, canaries, semantic: await judgeSemantic(scenario.expect, trace, semanticJudge) }
+    failed = evaluate(scenario.expect, ctx)
+    if (ctx.semantic.size) semantic = [...ctx.semantic.keys()].map((spec) => semanticOutcome(spec, ctx))
   } catch (err) {
     errorKinds.add('runner_error')
     failed.push({ assertion: null, message: String(err?.message ?? err) })
@@ -362,6 +367,7 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
     // The harness's reported built-ins and how they differ from production's (null without an init).
     builtinTools,
     surfaceDelta: builtinTools && surfaceDelta(builtinTools),
+    ...(semantic && { semantic }), // both halves of every semantic assertion
   }
   return { result, infra }
 }
