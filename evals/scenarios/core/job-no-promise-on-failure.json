@@ -29,7 +29,14 @@
       "exactlyOnce": "channel_send"
     },
     {
-      "noFalsePromise": "channel_send"
+      "semantic": {
+        "question": "Does this reply claim that a reminder or schedule is now set up, or that the reminder will happen?",
+        "expect": "no",
+        "tool": "channel_send",
+        "regex": {
+          "noFalsePromise": "channel_send"
+        }
+      }
     },
     {
       "task.status": "failed"

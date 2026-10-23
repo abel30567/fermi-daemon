@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
-import { evaluate } from './assertions.mjs'
+import { evaluate, semanticOutcome } from './assertions.mjs'
 import { startEgressProxy } from './egress-proxy.mjs'
 import { INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
@@ -22,6 +22,7 @@ import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
 import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
+import { judgeSemantic } from './semantic.mjs'
 import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
 
@@ -100,13 +101,15 @@ const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) =>
 
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
-export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth }) {
+// `semanticJudge`: lib/semantic.mjs createSemanticJudge() for semantic assertions (default: none, regex only).
+export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth, semanticJudge }) {
   const dir = join(outDir, scenario.name, String(attempt))
   mkdirSync(dir, { recursive: true })
   const closers = []
   const trace = []
   const errorKinds = new Set()
   let failed = []
+  let semantic
   let latencyMs = 0
   let taskLatencies
   const retried = new Set() // error turn_ends the session re-drained after
@@ -247,7 +250,9 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
 
     const state = { ...(await target.dump()), fakes: fakes.record() }
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state, null, 2))
-    failed = evaluate(scenario.expect, { trace, state, scenario, latencyMs, taskLatencies, canaries })
+    const ctx = { trace, state, scenario, latencyMs, taskLatencies, canaries, semantic: await judgeSemantic(scenario.expect, trace, semanticJudge) }
+    failed = evaluate(scenario.expect, ctx)
+    if (ctx.semantic.size) semantic = [...ctx.semantic.keys()].map((spec) => semanticOutcome(spec, ctx))
   } catch (err) {
     errorKinds.add('runner_error')
     failed.push({ assertion: null, message: String(err?.message ?? err) })
@@ -290,6 +295,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     // The harness's reported built-ins and how they differ from production's (null without an init).
     builtinTools,
     surfaceDelta: builtinTools && surfaceDelta(builtinTools),
+    ...(semantic && { semantic }), // both halves of every semantic assertion
   }
 }
 
