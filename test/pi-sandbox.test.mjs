@@ -8,8 +8,11 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { once } from 'node:events'
-import * as pi from '../harness/pi.mjs'
+import * as piAdapter from '../harness/pi.mjs'
 import { runAttempt } from '../evals/lib/runner.mjs'
+import { guardHarness } from './run-worker.mjs'
+
+const pi = guardHarness(piAdapter)
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'dmn25-'))
 const bin = join(tmp(), 'pi')
