@@ -5,6 +5,8 @@
 //   bin                 default env CLAUDE_BIN, else ~/.local/bin/claude (CLAUDE_BIN covers hbar)
 //   configDir           → CLAUDE_CONFIG_DIR
 //   tokenFd             → CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR; the fd is passed to the child as-is
+//   tokenPipe           a token string, written to a fresh pipe on the child's fd 3
+//                       (CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3); never in its env or argv
 //   scrubSubprocessEnv  → CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
 //   tools               → --tools: the built-in tools that exist at all ([] → --tools "", none);
 //                         unlike --allowedTools, which only auto-approves
@@ -61,7 +63,9 @@ export function oneShotArgs({ model, systemPrompt, allowedTools, mcpConfig, skip
 function spawnHarness(args, o) {
   const env = { ...process.env, ...o.env, ...o.sandbox?.env }
   if (o.configDir) env.CLAUDE_CONFIG_DIR = o.configDir
+  if (o.tokenFd != null && o.tokenPipe != null) throw new Error('claude-code adapter: tokenFd and tokenPipe are exclusive')
   if (o.tokenFd != null) env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR = String(o.tokenFd)
+  if (o.tokenPipe != null) env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR = '3'
   if (o.scrubSubprocessEnv) env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1'
   const stdio = ['pipe', 'pipe', 'pipe']
   if (o.tokenFd != null) {
@@ -69,9 +73,15 @@ function spawnHarness(args, o) {
     for (let i = 3; i < o.tokenFd; i++) stdio[i] = 'ignore'
     stdio[o.tokenFd] = o.tokenFd
   }
+  if (o.tokenPipe != null) stdio[3] = 'pipe'
   const bin = o.bin || process.env.CLAUDE_BIN || join(process.env.HOME, '.local/bin/claude')
   const [cmd, argv] = o.sandbox ? o.sandbox.wrap(bin, args) : [bin, args]
-  return spawn(cmd, argv, { cwd: o.cwd, env, stdio })
+  const child = spawn(cmd, argv, { cwd: o.cwd, env, stdio })
+  if (o.tokenPipe != null && child.stdio[3]) {
+    child.stdio[3].on('error', () => {}) // the child may exit before reading it
+    child.stdio[3].end(o.tokenPipe + '\n')
+  }
+  return child
 }
 
 const contentText = (c) =>

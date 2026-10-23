@@ -16,12 +16,17 @@
 //                ~/.pi/agent/mcp.json is never read; only ~/.pi/agent/auth.json
 //                is copied in, for inference login (the credential-isolation
 //                blocker below), and that copy is deleted when pi exits.
+//   provider     eval mode with sandboxHome: { baseUrl, apiKey }, an OpenAI-compatible
+//                endpoint (CLIProxyAPI, evals --auth proxy). Written to <agent-dir>/models.json
+//                as the only provider (PROXY_PROVIDER, deleted when pi exits) and --model
+//                becomes PROXY_PROVIDER/<model>; auth.json is then not copied. A
+//                non-localhost baseUrl is refused.
 //   sandbox      spawn through harness/sandbox.mjs (eval mode)
 // pi has no init record, so the adapter reports one when pi starts, listing its
 // always-on built-ins (PI_BUILTINS) for the eval runner's isolation assertion.
 // allowedTools is ignored and runOnce's skipPermissions/maxTurns have no pi
-// equivalent. tokenFd, configDir and scrubSubprocessEnv are refused, and so is
-// mcpConfig without sandboxHome (they promise an isolation pi cannot give; see
+// equivalent. tokenFd, tokenPipe, configDir and scrubSubprocessEnv are refused, and so are
+// mcpConfig and provider without sandboxHome (they promise an isolation pi cannot give; see
 // below).
 //
 // Known gaps vs the Claude Code adapter:
@@ -54,9 +59,10 @@ import { bareToolName } from './index.mjs'
 
 export const name = 'pi'
 
-const UNSUPPORTED = ['tokenFd', 'configDir', 'scrubSubprocessEnv']
+const UNSUPPORTED = ['tokenFd', 'tokenPipe', 'configDir', 'scrubSubprocessEnv']
 // pi's built-in tools, always enabled (see "Broader built-in tools" above).
 export const PI_BUILTINS = ['read', 'bash', 'edit', 'write']
+export const PROXY_PROVIDER = 'cliproxy'
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
 
 const isLocalUrl = (url) => {
@@ -79,21 +85,33 @@ export function piMcpConfig(mcpConfig) {
   return { mcpServers: Object.fromEntries(servers) }
 }
 
-// Eval mode: a HOME holding only the generated mcp.json and a copy of the real
-// auth.json. Returns the env overrides and the cleanup for when pi exits.
-function sandbox({ mcpConfig, sandboxHome }) {
+// `provider` ({ baseUrl, apiKey }) → models.json with that endpoint as the only provider.
+export function piModelsConfig({ baseUrl, apiKey }, model) {
+  if (!isLocalUrl(baseUrl)) throw new Error(`pi adapter: refusing to start: non-localhost provider ${baseUrl}`)
+  const models = model ? [{ id: piModel(model) }] : []
+  return { providers: { [PROXY_PROVIDER]: { baseUrl, api: 'openai-completions', apiKey, models } } }
+}
+
+// Eval mode: a HOME holding only the generated mcp.json and either a copy of the real
+// auth.json or, with `provider`, a models.json. Returns the env overrides and the cleanup
+// for when pi exits.
+function sandbox({ mcpConfig, sandboxHome, provider, model }) {
   const config = piMcpConfig(mcpConfig)
+  const models = provider && piModelsConfig(provider, model)
   const agentDir = join(sandboxHome, '.pi/agent')
   mkdirSync(agentDir, { recursive: true })
   writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify(config, null, 2))
-  const auth = join(agentDir, 'auth.json')
-  copyFileSync(join(process.env.HOME, '.pi/agent/auth.json'), auth)
-  return { env: { HOME: sandboxHome, PI_CODING_AGENT_DIR: agentDir }, cleanup: () => rmSync(auth, { force: true }) }
+  const cred = join(agentDir, provider ? 'models.json' : 'auth.json')
+  if (provider) writeFileSync(cred, JSON.stringify(models, null, 2), { mode: 0o600 })
+  else copyFileSync(join(process.env.HOME, '.pi/agent/auth.json'), cred)
+  return { env: { HOME: sandboxHome, PI_CODING_AGENT_DIR: agentDir }, cleanup: () => rmSync(cred, { force: true }) }
 }
 
-export function sessionArgs({ model, systemPrompt }) {
+const piModel = (model) => model.replace(/\[.*\]$/, '') // pi has no [1m] suffix
+
+export function sessionArgs({ model, systemPrompt, provider }) {
   const a = ['--mode', 'rpc']
-  if (model) a.push('--model', `anthropic/${model.replace(/\[.*\]$/, '')}`) // pi has no [1m] suffix
+  if (model) a.push('--model', `${provider ? PROXY_PROVIDER : 'anthropic'}/${piModel(model)}`)
   if (systemPrompt != null) a.push('--append-system-prompt', systemPrompt)
   return a
 }
@@ -155,6 +173,7 @@ export function createNormalizer() {
 function open(o) {
   const bad = UNSUPPORTED.filter((k) => o[k] != null)
   if (o.mcpConfig != null && o.sandboxHome == null) bad.push('mcpConfig without sandboxHome')
+  if (o.provider != null && o.sandboxHome == null) bad.push('provider without sandboxHome')
   if (bad.length) throw new Error(`pi adapter: unsupported option(s) ${bad.join(', ')} (see harness/pi.mjs)`)
   const box = o.sandboxHome != null ? sandbox(o) : null
   let child
