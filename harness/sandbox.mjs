@@ -11,7 +11,9 @@
 //                 (evals/lib/egress-proxy.mjs); set as HTTPS_PROXY, its port is allowed too
 //   → { root, tmp, env, backend, wrap(bin, args) → [cmd, argv] }
 //     env         the harness's whole inherited env: PATH, LANG, LC_* and TERM from the
-//                 runner (AMBIENT_ENV), HOME and TMPDIR in root, the egress proxy vars.
+//                 runner (AMBIENT_ENV), HOME and TMPDIR in root, the egress proxy vars,
+//                 NODE_NO_WARNINGS=1 (no Node warning, e.g. Node 22's experimental
+//                 EnvHttpProxyAgent under NODE_USE_ENV_PROXY, in a tool's output).
 //                 No ambient credential or endpoint (ANTHROPIC_*, OPENAI_*, CLAUDE_*, …):
 //                 the runner adds those it means to hand over (evals/lib/auth.mjs)
 //
@@ -96,7 +98,7 @@ export function createSandbox({ root, readable = [], localPorts = [], egressProx
   const homes = [...new Set([userInfo().homedir, process.env.HOME].filter(Boolean).map(real))]
   const ports = [...localPorts]
   const ambient = Object.entries(process.env).filter(([k]) => AMBIENT_ENV.test(k))
-  const env = { ...Object.fromEntries(ambient), HOME: root, TMPDIR: tmp, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }
+  const env = { ...Object.fromEntries(ambient), HOME: root, TMPDIR: tmp, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', NODE_NO_WARNINGS: '1' }
   if (egressProxy) {
     ports.push(new URL(egressProxy).port)
     Object.assign(env, { HTTPS_PROXY: egressProxy, https_proxy: egressProxy, HTTP_PROXY: egressProxy, http_proxy: egressProxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1' })

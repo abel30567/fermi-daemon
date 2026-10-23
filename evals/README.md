@@ -8,7 +8,8 @@ final text.
 ```bash
 node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios '<glob>'... \
   [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
-  [--auth none|fd|keychain|proxy] [--judge-auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>]
+  [--auth none|fd|keychain|proxy] [--judge-auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>] \
+  [--auth-file <auth.json>]
 
 # the runner's own check: fake harness, fake target, no inference, localhost only
 node evals/run.mjs --harness fake --scenarios 'evals/scenarios/examples/*' --out /tmp/e && cat /tmp/e/summary.json
@@ -62,10 +63,14 @@ never printed, logged or written to the attempt dir, and each one joins the
 | `none` (default) | any | nothing; the harness has no login inside the sandbox |
 | `fd` (CI) | claude-code, hbar | the token on the runner's inherited `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, read once (the fd is then closed), on a fresh pipe per attempt: fd 3, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`. Never an env var |
 | `keychain` (macOS, local) | claude-code, hbar | the Claude Code OAuth access token (`claudeAiOauth.accessToken` of the login keychain item `Claude Code-credentials`, via `security find-generic-password -a <macOS username> -w`; if that item has no access token, every other account `security dump-keychain` lists for the service is tried in order), re-read before each attempt because your own Claude Code refreshes it, on the same fresh pipe. The refresh token never leaves the keychain |
-| `proxy` (local) | claude-code, hbar, pi | CLIProxyAPI at `http://127.0.0.1:8317` with `~/.cli-proxy-api/.proxy-token`; `--model` is required. claude-code and hbar get `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` set to `--model`, and `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`. pi gets `--model cliproxy/<model>` and a sandbox `models.json` whose only provider is `cliproxy` (OpenAI-compatible, `<proxy>/v1`, the proxy token as `apiKey`). The file is deleted when pi exits, and pi's `auth.json` is not copied |
-| `proxy` (local) | codex | a per-attempt `CODEX_HOME/config.toml` whose only model provider is `cliproxy` (`model_provider = "cliproxy"`, `model = <--model>`, `base_url = "<proxy>/v1"`, `wire_api = "responses"`, `env_key = "CLIPROXY_API_KEY"`). The token is only in `CLIPROXY_API_KEY`, which `shell_environment_policy` keeps out of codex's shell tool. The ChatGPT `auth.json` is not copied. With a custom provider codex makes no ChatGPT startup calls (model refresh, workspace routing): its first request is `POST <proxy>/v1/responses` |
+| `proxy` (local) | claude-code, hbar, pi | CLIProxyAPI at `http://127.0.0.1:8317` with `~/.cli-proxy-api/.proxy-token`; `--model` is required. claude-code and hbar get `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` set to `--model`, and `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`. pi gets `--model cliproxy/<model>` and a sandbox `models.json` whose only provider is `cliproxy` (OpenAI-compatible, `<proxy>/v1`, the proxy token as `apiKey`). The file is deleted when pi exits, and no `--auth-file` is copied |
+| `proxy` (local) | codex | a per-attempt `CODEX_HOME/config.toml` whose only model provider is `cliproxy` (`model_provider = "cliproxy"`, `model = <--model>`, `base_url = "<proxy>/v1"`, `wire_api = "responses"`, `env_key = "CLIPROXY_API_KEY"`). The token is only in `CLIPROXY_API_KEY`, which `shell_environment_policy` keeps out of codex's shell tool. No `--auth-file` is copied. With a custom provider codex makes no ChatGPT startup calls (model refresh, workspace routing): its first request is `POST <proxy>/v1/responses` |
 
-Without `--auth proxy`, codex uses its own copied ChatGPT `auth.json` (`--auth none`), which cannot reach the ChatGPT backend from inside the sandbox.
+`--auth-file <auth.json>` (pi, codex) is the login file the adapter copies into the sandbox
+(`~/.pi/agent/auth.json`, or codex's ChatGPT `~/.codex/auth.json`), deleted when the harness exits.
+The adapters never read the real `~/.pi` or `~/.codex` themselves: without `--auth-file` or
+`--auth proxy` they get no credential. Codex's ChatGPT `auth.json` cannot reach the ChatGPT
+backend from inside the sandbox anyway.
 The sandbox may connect to the proxy's port, and the egress proxy may tunnel to
 it, only in `proxy` mode. A non-localhost proxy URL is refused.
 
@@ -128,7 +133,7 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    It also gets `sandboxHome`, a temp HOME removed after the attempt. pi reads
    its MCP servers from `~/.pi/agent/mcp.json`, so the pi adapter runs with that
    HOME, writes the MCP config there (refusing any non-localhost URL) and copies
-   in only `~/.pi/agent/auth.json`, deleted when pi exits (`harness/pi.mjs`).
+   in only the `--auth-file`, if given, deleted when pi exits (`harness/pi.mjs`).
    Claude Code also gets `--setting-sources project,local` (as the production
    lanes: never the user's settings, hooks or plugins), `--strict-mcp-config`,
    `--permission-mode default` (never `bypassPermissions`) and

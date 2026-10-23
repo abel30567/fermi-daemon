@@ -151,6 +151,7 @@ export const INFRA_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
 // `pace(fn)`: runs each try (evals/lib/pacing.mjs, the backend lock and --min-gap-ms).
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
+// `authFile`: an auth.json the pi or codex adapter copies into its sandbox (run.mjs --auth-file; default: none).
 // `semanticJudge`: lib/semantic.mjs createSemanticJudge() for semantic assertions (default: none, regex only).
 // `startTarget`: tests only, replaces the eval target (default: the wrangler worker with `worker`, else the fake).
 // A fixture section the target did not keep (seed-check.mjs) → status "setup_error", pass null: never graded.
@@ -172,7 +173,7 @@ export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pa
   }
 }
 
-async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth, semanticJudge, startTarget }) {
+async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth, authFile, semanticJudge, startTarget }) {
   const dir = join(outDir, scenario.name, String(attempt))
   mkdirSync(dir, { recursive: true })
   const closers = []
@@ -273,6 +274,7 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
       mcpConfig: mcpConfigFile,
       sandboxHome,
       sandbox,
+      authFile, // pi, codex: the only credential file they get
       allowedTools: EVAL_ALLOWED_TOOLS, // auto-approves only; `tools` decides which built-ins exist
       // claude-code: --tools Bash,ToolSearch: production's shell, unless the scenario narrows it,
       // plus ToolSearch so the fermi tools stay deferred as in production
