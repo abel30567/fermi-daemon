@@ -28,7 +28,7 @@
 //                 outputTokens?, durationMs, raw }
 //               ok/kind/detail/retryAfterMs are lib/turn-outcome.mjs classifyResult.
 
-const ADAPTERS = { 'claude-code': './claude-code.mjs', pi: './pi.mjs' }
+const ADAPTERS = { 'claude-code': './claude-code.mjs', pi: './pi.mjs', codex: './codex.mjs' }
 
 // The adapter named by `name` (default: env HARNESS, else claude-code).
 export async function loadHarness(name = process.env.HARNESS || 'claude-code') {

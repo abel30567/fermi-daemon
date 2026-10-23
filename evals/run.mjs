@@ -3,7 +3,7 @@
 // grade the normalized trace and the resulting state. See evals/README.md.
 //
 //   node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios <glob>... \
-//     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>]
+//     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>]
 //
 // Exit 0 when every attempt's outcome is the expected one, 1 otherwise, 2 on a
 // usage error or a non-localhost URL.
@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { loadHarness } from '../harness/index.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
 import { runAttempt, summarize } from './lib/runner.mjs'
-import { expandScenarios, loadScenario } from './lib/scenario.mjs'
+import { expandScenarios, expandVariants, loadScenario } from './lib/scenario.mjs'
 
 // URL-valued env the runner, wrangler or the harness would inherit. Any of them
 // pointing off-box means production could be reached, so the run refuses to start.
@@ -32,6 +32,7 @@ function parseArgs(argv) {
     else if (a === '--out') o.out = val()
     else if (a === '--worker') o.worker = val()
     else if (a === '--timeout-ms') o.timeoutMs = Number(val())
+    else if (a === '--fake-script') o.fakeScript = val()
     else if (a === '--scenarios') {
       o.scenarios.push(val())
       while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) o.scenarios.push(argv[++i])
@@ -42,7 +43,15 @@ function parseArgs(argv) {
   if (!(Number.isInteger(o.k) && o.k > 0)) throw new Error('-k must be a positive integer')
   // Only the fake harness may run against the in-process fake target; real grades need the eval worker.
   if (o.harness !== 'fake' && !o.worker) throw new Error(`--harness ${o.harness} needs --worker <fermi-mcp checkout>`)
+  if (o.fakeScript && o.harness !== 'fake') throw new Error('--fake-script needs --harness fake')
   return o
+}
+
+// --fake-script <key>: play `fake.<key>` (a scripted misbehaviour, e.g. "negative")
+// instead of `fake.script`; every such attempt is expected to fail its assertions.
+function withFakeScript(s, key) {
+  if (!Array.isArray(s.fake?.[key])) throw new Error(`${s.name}: no fake.${key} script`)
+  return { ...s, fake: { ...s.fake, script: s.fake[key] }, expectOutcome: 'fail' }
 }
 
 async function main() {
@@ -61,7 +70,8 @@ async function main() {
   }
   let scenarios
   try {
-    scenarios = files.map(loadScenario)
+    scenarios = files.flatMap((f) => expandVariants(loadScenario(f)))
+    if (opts.fakeScript) scenarios = scenarios.map((s) => withFakeScript(s, opts.fakeScript))
   } catch (err) {
     console.error(`evals: ${err.message}`)
     return 2

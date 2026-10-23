@@ -1,0 +1,3 @@
+{"method":"item/started","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"error-rate_limit","text_elements":[]}]}}}
+{"method":"item/completed","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"error-rate_limit","text_elements":[]}]}}}
+{"method":"turn/completed","params":{"turn":{"items":[],"itemsView":"notLoaded","status":"failed","error":{"additionalDetails":null,"misalignment":null,"message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at 3:30 PM.","codexErrorInfo":"usageLimitExceeded"},"durationMs":900}}}

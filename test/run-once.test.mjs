@@ -19,13 +19,15 @@ const alive = (pid) => {
 }
 
 // Runs bin/run-once.mjs as poll.sh does (cwd = daemon home, a claimed lane)
-// against fake-claude-once.mjs. `act(child, dir)` runs while it is up.
-async function runOnceCli({ args = [], env = {}, act } = {}) {
+// against fake-claude-once.mjs. `act(child, dir)` runs while it is up. `prompt` is
+// prompts/drain.md, `overlay` (if set) prompts/local.json.
+async function runOnceCli({ args = [], env = {}, act, prompt = 'drain the queue\n', overlay } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'dmn7-'))
   mkdirSync(join(dir, 'prompts'))
   mkdirSync(join(dir, 'runs'))
   mkdirSync(join(dir, 'lanes/1'), { recursive: true })
-  writeFileSync(join(dir, 'prompts/drain.md'), 'drain the queue\n')
+  writeFileSync(join(dir, 'prompts/drain.md'), prompt)
+  if (overlay) writeFileSync(join(dir, 'prompts/local.json'), JSON.stringify(overlay))
   const bin = join(dir, 'claude')
   writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_ONCE}" "$@"\n`)
   chmodSync(bin, 0o755)
@@ -182,6 +184,31 @@ describe('AC2: watchdog kill and lane cleanup', () => {
     for (const t0 = Date.now(); alive(r.harnessPid) && Date.now() - t0 < 5000; ) await new Promise((res) => setTimeout(res, 20))
     assert.ok(!alive(r.harnessPid))
     assert.ok(r.laneGone)
+  })
+})
+
+describe('DMN-23: the prompt is rendered with prompts/local.json', () => {
+  const PROMPT = 'Owner is {{OWNER_SENDER}}; finance is {{FINANCE_CHANNEL}}.\n'
+
+  test('the harness gets the rendered prompt', async () => {
+    const r = await runOnceCli({ prompt: PROMPT, overlay: { OWNER_SENDER: 'U0OWNER', FINANCE_CHANNEL: 'C0FIN' } })
+    assert.equal(r.code, 0, r.log)
+    assert.equal(r.spawns[0].prompt, 'Owner is U0OWNER; finance is C0FIN.\n')
+  })
+
+  test('a missing key refuses to start: exit 2, no harness spawned, error in the log, lane removed', async () => {
+    const r = await runOnceCli({ prompt: PROMPT, overlay: { OWNER_SENDER: 'U0OWNER' } })
+    assert.equal(r.code, 2)
+    assert.equal(r.spawns.length, 0)
+    assert.match(r.log, /^run-once: refusing to start: .*local\.json: prompt overlay is missing key\(s\): FINANCE_CHANNEL$/m)
+    assert.ok(r.laneGone)
+  })
+
+  test('a missing prompts/local.json refuses to start', async () => {
+    const r = await runOnceCli({ prompt: PROMPT })
+    assert.equal(r.code, 2)
+    assert.equal(r.spawns.length, 0)
+    assert.match(r.log, /refusing to start: .*cannot read prompt overlay .*local\.json/)
   })
 })
 
