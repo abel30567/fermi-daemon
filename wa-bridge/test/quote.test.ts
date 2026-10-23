@@ -23,8 +23,8 @@ test("quote of the bot's own message reads Fermi", () => {
 
 test('unknown pn falls back to digits, media placeholder, long text clipped', () => {
 	assert.equal(
-		quotePrefix({ participant: '15550001111@s.whatsapp.net', quotedMessage: { imageMessage: {} } }, members, self),
-		'[replying to 15550001111: "[image]"]',
+		quotePrefix({ participant: '15555550199@s.whatsapp.net', quotedMessage: { imageMessage: {} } }, members, self),
+		'[replying to 15555550199: "[image]"]',
 	)
 	const long = 'a'.repeat(400)
 	const out = quotePrefix({ participant: '1@lid', quotedMessage: { conversation: long } }, members, self)!
