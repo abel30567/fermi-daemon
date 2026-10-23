@@ -92,11 +92,11 @@ export function codexConfig(mcpConfig, { sandboxMode } = {}) {
 function spawnCodex(args, o) {
   const bad = UNSUPPORTED.filter((k) => o[k] != null)
   if (bad.length) throw new Error(`codex adapter: unsupported option(s) ${bad.join(', ')} (see harness/codex.mjs)`)
-  const env = { ...process.env, ...o.env, ...o.sandbox?.env }
+  const env = { ...(o.sandbox ? {} : process.env), ...o.env, ...o.sandbox?.env } // sandboxed: nothing ambient
   let home = null
   if (o.mcpConfig) {
     const config = codexConfig(o.mcpConfig, o.sandbox ? { sandboxMode: 'danger-full-access' } : {})
-    const auth = join(env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
+    const auth = join(env.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
     home = mkdtempSync(join(o.sandbox?.root ?? tmpdir(), 'codex-home-'))
     writeFileSync(join(home, 'config.toml'), config)
     if (existsSync(auth)) copyFileSync(auth, join(home, 'auth.json'))

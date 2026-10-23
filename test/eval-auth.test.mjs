@@ -6,16 +6,17 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as claude from '../harness/claude-code.mjs'
 import * as piAdapter from '../harness/pi.mjs'
-import { sandboxBackend } from '../harness/sandbox.mjs'
+import { AMBIENT_ENV, sandboxBackend } from '../harness/sandbox.mjs'
 import { KEYCHAIN_ITEM, PROXY_URL, createAuth, fdToken, keychainToken } from '../evals/lib/auth.mjs'
 import { allowedTarget } from '../evals/lib/egress-proxy.mjs'
+import { modelJudge } from '../evals/judge.mjs'
 import { runAttempt } from '../evals/lib/runner.mjs'
 import { guardHarness } from './run-worker.mjs'
 
@@ -250,6 +251,104 @@ describe('AC4: the keychain token and the proxy token join the canary scan set',
       assert.deepEqual(leaky.results[0].failed.map((f) => f.message), ["the runner's auth token leaked into the trace, outbound messages or state"])
       assert.ok(!JSON.stringify(leaky.results).includes(value))
     })
+})
+
+describe('the sandboxed harness env is an allowlist: nothing ambient, local endpoints only through --auth proxy', () => {
+  const MODEL = 'claude-sonnet-eval'
+  const SECRET = `secret-${randomBytes(8).toString('hex')}`
+  // What the runner and the sandbox set themselves; /bin/sh (the fake's wrapper) adds PWD, SHLVL, _ and OLDPWD,
+  // macOS adds __CF_USER_TEXT_ENCODING to every process it spawns.
+  const OWN = ['HOME', 'TMPDIR', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'ENABLE_CLAUDEAI_MCP_SERVERS', 'CLAUDE_CONFIG_DIR', 'NODE_USE_ENV_PROXY']
+  const SHELL = /^(PWD|SHLVL|_|OLDPWD|__CF_USER_TEXT_ENCODING)$/
+  const PROXY_VARS = /^(HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)$/
+  const PROXY_ENV = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB']
+  // Keys the harness saw beyond the allowlist, the runner's own and `extra`.
+  const unexpected = (env, extra = []) =>
+    Object.keys(env).filter((k) => !(AMBIENT_ENV.test(k) || OWN.includes(k) || SHELL.test(k) || PROXY_VARS.test(k) || /^FAKE_/.test(k) || extra.includes(k)))
+  // The runner's own env holds a local model endpoint and an unrelated token for the duration of fn.
+  const ambient = async (port, fn) => {
+    const saved = { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL, OPENAI_BASE_URL: process.env.OPENAI_BASE_URL, FOO_TOKEN: process.env.FOO_TOKEN }
+    Object.assign(process.env, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, OPENAI_BASE_URL: `http://127.0.0.1:${port}/v1`, FOO_TOKEN: SECRET })
+    try {
+      return await fn()
+    } finally {
+      for (const [k, v] of Object.entries(saved)) v == null ? delete process.env[k] : (process.env[k] = v)
+    }
+  }
+  const listen = async () => {
+    const server = net.createServer((s) => s.destroy())
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    return server
+  }
+
+  test('none: an ambient ANTHROPIC_BASE_URL and FOO_TOKEN never reach the harness, and that endpoint is blocked', { skip: NO_SEATBELT }, async () => {
+    const server = await listen()
+    const { port } = server.address()
+    try {
+      const { out, results } = await ambient(port, () => attempts({ auth: createAuth({ mode: 'none' }), env: { FAKE_ENV_REPORT: '1', FAKE_CONNECT: String(port) } }))
+      assert.deepEqual(results[0].errorKinds, [], JSON.stringify(results[0].failed))
+      const [init] = inits(out, 'auth')
+      assert.equal(init.connected, false, 'the ambient local model endpoint is not reachable')
+      assert.deepEqual(unexpected(init.env), [])
+      for (const k of ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'FOO_TOKEN']) assert.equal(init.env[k], undefined, k)
+      assert.ok(!JSON.stringify(init.env).includes(SECRET))
+    } finally {
+      server.close()
+    }
+  })
+
+  test('proxy: the harness sees only the proxy variables, not the ambient ones', { skip: NO_SEATBELT }, async () => {
+    const proxyTok = fakeToken('proxy')
+    const auth = createAuth({ mode: 'proxy', harness: 'claude-code', model: MODEL, readProxyToken: () => proxyTok })
+    const { out, results } = await ambient(1, () => attempts({ auth, env: { FAKE_ENV_REPORT: '1' } }))
+    assert.deepEqual(results[0].errorKinds, [], JSON.stringify(results[0].failed))
+    const [{ env }] = inits(out, 'auth')
+    assert.deepEqual(unexpected(env, PROXY_ENV), [])
+    assert.deepEqual(Object.keys(env).filter((k) => /^(ANTHROPIC|OPENAI)_/.test(k)).sort(), PROXY_ENV.filter((k) => k.startsWith('ANTHROPIC_')).sort())
+    assert.equal(env.ANTHROPIC_BASE_URL, PROXY_URL)
+    assert.equal(env.FOO_TOKEN, undefined)
+    assert.ok(!JSON.stringify(env).includes(SECRET))
+  })
+
+  test('the judge: the same allowlist and --auth modes', { skip: NO_SEATBELT }, async () => {
+    // The judge's sandbox reads only the binary's directory: the fake goes next to its wrapper.
+    const dir = tmp()
+    copyFileSync(join(HERE, 'fixtures/fake-claude-eval.mjs'), join(dir, 'fake.mjs'))
+    const bin = join(dir, 'claude')
+    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${join(dir, 'fake.mjs')}" "$@"\n`)
+    chmodSync(bin, 0o755)
+    const judge = async (auth, extra = {}) => {
+      let init
+      const harness = {
+        runOnce: (o) => {
+          const run = claude.runOnce({ ...o, bin, env: { ...o.env, FAKE_ENV_REPORT: '1', FAKE_TEXT: '{"helpful": 5, "tone": 5, "format": 5}', ...extra } })
+          run.events.on('raw', (l) => l.includes('"subtype":"init"') && (init = JSON.parse(l)))
+          return run
+        },
+      }
+      const v = await modelJudge({ channel: 'sl', request: 'hi', replies: ['hello'] }, { harness, auth })
+      assert.equal(v.score, 1)
+      return init
+    }
+    const server = await listen()
+    const { port } = server.address()
+    try {
+      const none = await ambient(port, () => judge(undefined, { FAKE_CONNECT: String(port) }))
+      assert.equal(none.connected, false, 'the ambient local model endpoint is not reachable')
+      assert.deepEqual(unexpected(none.env), [])
+      for (const k of ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'FOO_TOKEN']) assert.equal(none.env[k], undefined, k)
+      const proxyTok = fakeToken('proxy')
+      const auth = createAuth({ mode: 'proxy', harness: 'claude-code', model: MODEL, proxyUrl: `http://127.0.0.1:${port}`, readProxyToken: () => proxyTok })
+      const proxied = await ambient(1, () => judge(auth, { FAKE_CONNECT: String(port) }))
+      assert.equal(proxied.connected, true, 'the proxy port is reachable with --auth proxy')
+      assert.deepEqual(unexpected(proxied.env, PROXY_ENV), [])
+      assert.equal(proxied.env.ANTHROPIC_BASE_URL, `http://127.0.0.1:${port}`)
+      assert.equal(proxied.env.ANTHROPIC_AUTH_TOKEN, proxyTok)
+      for (const e of [none.env, proxied.env]) assert.ok(!JSON.stringify(e).includes(SECRET))
+    } finally {
+      server.close()
+    }
+  })
 })
 
 describe('run.mjs --auth', () => {

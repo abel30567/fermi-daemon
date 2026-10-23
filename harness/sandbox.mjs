@@ -1,6 +1,7 @@
 // OS-level sandbox for a harness process in eval mode, the same for every
 // adapter (claude-code, hbar via CLAUDE_BIN, pi, codex). An adapter given
-// `sandbox` spawns through sandbox.wrap(bin, args) and adds sandbox.env.
+// `sandbox` spawns through sandbox.wrap(bin, args) with sandbox.env plus its own
+// options' env, and nothing else from the runner's environment.
 //
 //   createSandbox({ root, readable?, localPorts? })
 //     root        the attempt's sandbox dir: the harness's HOME; root/tmp is its TMPDIR
@@ -9,6 +10,10 @@
 //     egressProxy optional http://127.0.0.1:<port> CONNECT proxy for the model endpoints
 //                 (evals/lib/egress-proxy.mjs); set as HTTPS_PROXY, its port is allowed too
 //   → { root, tmp, env, backend, wrap(bin, args) → [cmd, argv] }
+//     env         the harness's whole inherited env: PATH, LANG, LC_* and TERM from the
+//                 runner (AMBIENT_ENV), HOME and TMPDIR in root, the egress proxy vars.
+//                 No ambient credential or endpoint (ANTHROPIC_*, OPENAI_*, CLAUDE_*, …):
+//                 the runner adds those it means to hand over (evals/lib/auth.mjs)
 //
 // Policy, applied by sandbox-exec (macOS, a generated Seatbelt profile) or
 // bwrap (Linux):
@@ -28,6 +33,7 @@ import { userInfo } from 'node:os'
 import { delimiter, dirname, isAbsolute, join } from 'node:path'
 
 export const SANDBOX_EXEC = '/usr/bin/sandbox-exec'
+export const AMBIENT_ENV = /^(PATH|LANG|LC_\w+|TERM)$/
 
 const which = (bin) => {
   if (isAbsolute(bin) || bin.includes('/')) return bin
@@ -82,7 +88,8 @@ export function createSandbox({ root, readable = [], localPorts = [], egressProx
   const tmp = join(root, 'tmp')
   const homes = [...new Set([userInfo().homedir, process.env.HOME].filter(Boolean).map(real))]
   const ports = [...localPorts]
-  const env = { HOME: root, TMPDIR: tmp, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }
+  const ambient = Object.entries(process.env).filter(([k]) => AMBIENT_ENV.test(k))
+  const env = { ...Object.fromEntries(ambient), HOME: root, TMPDIR: tmp, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }
   if (egressProxy) {
     ports.push(new URL(egressProxy).port)
     Object.assign(env, { HTTPS_PROXY: egressProxy, https_proxy: egressProxy, HTTP_PROXY: egressProxy, http_proxy: egressProxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1' })

@@ -20,7 +20,7 @@ import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
 import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
-import { assertLocalUrls, isLocalUrl } from './net.mjs'
+import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
 import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
@@ -97,10 +97,6 @@ async function seedSecrets(url, secrets = []) {
 }
 
 const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v))))
-
-// A localhost model endpoint the harness is pointed at (CLIProxyAPI via ANTHROPIC_BASE_URL / OPENAI_BASE_URL).
-export const localModelPorts = (env = process.env) =>
-  ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL'].filter((k) => isLocalUrl(env[k])).map((k) => new URL(env[k]).port || '80')
 
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).

@@ -61,7 +61,7 @@ export function oneShotArgs({ model, systemPrompt, allowedTools, mcpConfig, skip
 }
 
 function spawnHarness(args, o) {
-  const env = { ...process.env, ...o.env, ...o.sandbox?.env }
+  const env = { ...(o.sandbox ? {} : process.env), ...o.env, ...o.sandbox?.env } // sandboxed: nothing ambient
   if (o.configDir) env.CLAUDE_CONFIG_DIR = o.configDir
   if (o.tokenFd != null && o.tokenPipe != null) throw new Error('claude-code adapter: tokenFd and tokenPipe are exclusive')
   if (o.tokenFd != null) env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR = String(o.tokenFd)

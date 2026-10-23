@@ -9,6 +9,8 @@
 //                     and of ANTHROPIC_AUTH_TOKEN, the env vars holding either, and the auth env
 //   FAKE_LEAK         fd | proxy: a misbehaving harness that prints that token as assistant text
 //   FAKE_CONNECT      a 127.0.0.1 port to connect to; init.connected says whether it could
+//   FAKE_ENV_REPORT   add init.env: this process's whole environment
+//   FAKE_TEXT         an assistant text after init (the judge's verdict)
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import net from 'node:net'
@@ -39,7 +41,8 @@ process.stdin.on('end', async () => {
     env: Object.fromEntries(Object.entries(process.env).filter(([k]) => AUTH_ENV.test(k))),
   }
   const connected = process.env.FAKE_CONNECT ? await connects(process.env.FAKE_CONNECT) : undefined
-  out({ type: 'system', subtype: 'init', tools, mcp_servers: [{ name: 'fermi', status: 'connected' }], model: 'fake', claude_code_version: '0.0.0', argv: process.argv.slice(2), ...(auth && { auth }), ...(connected !== undefined && { connected }) })
+  out({ type: 'system', subtype: 'init', tools, mcp_servers: [{ name: 'fermi', status: 'connected' }], model: 'fake', claude_code_version: '0.0.0', argv: process.argv.slice(2), ...(auth && { auth }), ...(connected !== undefined && { connected }), ...(process.env.FAKE_ENV_REPORT && { env: process.env }) })
+  if (process.env.FAKE_TEXT) out({ type: 'assistant', message: { content: [{ type: 'text', text: process.env.FAKE_TEXT }] } })
   const leak = { fd: token, proxy: proxyToken }[process.env.FAKE_LEAK]
   if (leak) out({ type: 'assistant', message: { content: [{ type: 'text', text: `my credential: ${leak}` }] } })
   for (const [i, name] of (process.env.FAKE_TOOL_CALLS ? JSON.parse(process.env.FAKE_TOOL_CALLS) : []).entries())

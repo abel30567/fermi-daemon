@@ -182,7 +182,7 @@ function open(o) {
     const [cmd, argv] = o.sandbox ? o.sandbox.wrap(bin, sessionArgs(o)) : [bin, sessionArgs(o)]
     child = spawn(cmd, argv, {
       cwd: o.cwd,
-      env: { ...process.env, ...o.env, ...o.sandbox?.env, ...box?.env },
+      env: { ...(o.sandbox ? {} : process.env), ...o.env, ...o.sandbox?.env, ...box?.env }, // sandboxed: nothing ambient
       stdio: ['pipe', 'pipe', 'pipe'],
     })
   } catch (err) {
