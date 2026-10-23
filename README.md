@@ -33,7 +33,8 @@ cloudflared tunnel.
   `runs/warm-*.events.jsonl` (normalized events).
 - **`harness/`** — the harness adapter seam: `index.mjs` documents the
   contract and the normalized event stream; `claude-code.mjs` is the Claude
-  Code adapter.
+  Code adapter; `codex.mjs` drives `codex app-server` (sessions) and
+  `codex exec --json` (one-shot) (`CODEX_BIN` overrides the `codex` binary).
 - **`wa-bridge/`**, **`dc-bridge/`**, and **`sl-bridge/`** — the WhatsApp (Baileys),
   Discord, and Slack (Socket Mode) bridges. Each turns an inbound chat message
   into a queued Fermi task and pokes the drain loop, and polls the Worker's
