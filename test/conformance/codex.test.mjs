@@ -7,7 +7,10 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runConformance } from './suite.mjs'
-import { createExecNormalizer, codexConfig, oneShotArgs, runOnce, startSession } from '../../harness/codex.mjs'
+import * as codex from '../../harness/codex.mjs'
+import { guardHarness } from '../run-worker.mjs'
+
+const { createExecNormalizer, codexConfig, oneShotArgs, runOnce, startSession } = guardHarness(codex)
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const bins = mkdtempSync(join(tmpdir(), 'dmn6-bin-'))
@@ -111,7 +114,8 @@ describe('codex adapter', () => {
 
     test('runOnce: spawn throws synchronously', () =>
       withTmp(async (o) => {
-        assert.throws(() => runOnce({ ...o, bin: 'co\0dex', prompt: 'x' }), /null bytes/)
+        // Unguarded: a bare name fails the guard, and spawn throws before running anything.
+        assert.throws(() => codex.runOnce({ ...o, bin: 'co\0dex', prompt: 'x' }), /null bytes/)
       }))
 
     test('runOnce: codex crashes (killed by a signal, no output)', () =>
@@ -129,8 +133,9 @@ describe('codex adapter', () => {
     test('startSession: missing binary emits exit and refuses sends', () =>
       withTmp(async (o) => {
         const s = startSession({ ...o, bin: '/nonexistent/codex' })
-        assert.equal(s.send('turn'), false)
+        // Wait for exit: right after a failed spawn stdin may still read as writable.
         await new Promise((resolve) => s.events.once('exit', resolve))
+        assert.equal(s.send('turn'), false)
         assert.equal(s.alive, false)
         await new Promise((resolve) => setTimeout(resolve, 50))
       }))

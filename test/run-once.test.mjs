@@ -1,10 +1,10 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync, symlinkSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ROOT, runWorker } from './run-worker.mjs'
+import { ROOT, runWorker, assertFakeHarness, harnessBin, guardHarness } from './run-worker.mjs'
 
 const RUN_ONCE = join(ROOT, 'bin/run-once.mjs')
 const FAKE_ONCE = join(ROOT, 'test/fixtures/fake-claude-once.mjs')
@@ -31,10 +31,12 @@ async function runOnceCli({ args = [], env = {}, act, prompt = 'drain the queue\
   const bin = join(dir, 'claude')
   writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_ONCE}" "$@"\n`)
   chmodSync(bin, 0o755)
+  const childEnv = { PATH: process.env.PATH, HOME: dir, CLAUDE_BIN: bin, FAKE_DIR: dir, ...env }
+  assertFakeHarness(harnessBin(childEnv))
   const child = spawn(
     process.execPath,
     [RUN_ONCE, '--prompt', 'prompts/drain.md', '--log', 'runs/r.log', '--lane', join(dir, 'lanes/1'), ...args],
-    { cwd: dir, env: { PATH: process.env.PATH, HOME: dir, CLAUDE_BIN: bin, FAKE_DIR: dir, ...env }, stdio: 'ignore' },
+    { cwd: dir, env: childEnv, stdio: 'ignore' },
   )
   writeFileSync(join(dir, 'lanes/1/pid'), String(child.pid))
   const exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })))
@@ -48,12 +50,21 @@ async function runOnceCli({ args = [], env = {}, act, prompt = 'drain the queue\
   return { dir, code, log, spawns, harnessPid, laneGone: !existsSync(join(dir, 'lanes/1')) }
 }
 
+const spawned = async (home) => {
+  const turns = join(home, 'turns.log')
+  for (const t0 = Date.now(); !(existsSync(turns) && readFileSync(turns, 'utf8').includes('"kind":"spawn"')); ) {
+    if (Date.now() - t0 > 20_000) throw new Error('warm worker never spawned the harness')
+    await new Promise((res) => setTimeout(res, 20))
+  }
+}
+
 const flag = (argv, name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined)
 
 describe('AC1: cold argv has the warm worker\'s settings surface', () => {
   test('setting sources and allowed tools match a live warm spawn; no skip-permissions', async () => {
     const [warm, cold] = await Promise.all([
-      runWorker({ result: SUCCESS, pending: 0, durationMs: 1000 }),
+      // Stop the warm worker once it has spawned the harness, not after a fixed time.
+      runWorker({ result: SUCCESS, pending: 0, durationMs: 0, act: ({ home }) => spawned(home) }),
       runOnceCli({ args: ['--model', 'claude-opus-4-6[1m]', '--max-turns', '50', '--timeout-s', '60'] }),
     ])
     const warmArgv = warm.events.find((e) => e.kind === 'spawn').argv
@@ -90,6 +101,38 @@ describe('AC1: cold argv has the warm worker\'s settings surface', () => {
     assert.equal(r.code, 3)
     assert.match(r.log, /boom: harness crashed/)
     assert.ok(r.laneGone)
+  })
+
+  test('harness binary missing: the spawn error lands in the log, lane removed', async () => {
+    const r = await runOnceCli({ env: { CLAUDE_BIN: '/nope' } })
+    assert.notEqual(r.code, 0)
+    assert.match(r.log, /^run-once: spawn error: spawn \/nope ENOENT$/m)
+    assert.ok(r.laneGone)
+  })
+})
+
+describe('test guard: no test spawns a real harness', () => {
+  test('a harness outside the temp dir and test/fixtures throws', async () => {
+    assert.throws(() => assertFakeHarness('/usr/bin/true'), /would spawn a real harness: \/usr\/bin\/true/)
+    assert.throws(() => assertFakeHarness('claude'), /from PATH/)
+    const link = join(mkdtempSync(join(tmpdir(), 'dmn20-')), 'claude')
+    symlinkSync('/usr/bin/true', link)
+    assert.throws(() => assertFakeHarness(link), /-> \/usr\/bin\/true/)
+    await assert.rejects(runOnceCli({ env: { CLAUDE_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
+    await assert.rejects(runWorker({ result: SUCCESS, durationMs: 0, env: { CLAUDE_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
+  })
+
+  test('pi and codex: the env default and direct adapter calls are guarded too', async () => {
+    assert.throws(() => assertFakeHarness(harnessBin({ HARNESS: 'pi' })), /from PATH/)
+    assert.equal(harnessBin({ HARNESS: 'codex', CODEX_BIN: '/x/codex' }), '/x/codex')
+    await assert.rejects(runWorker({ result: SUCCESS, durationMs: 0, env: { HARNESS: 'pi' } }), /from PATH/)
+    await assert.rejects(runWorker({ result: SUCCESS, durationMs: 0, env: { HARNESS: 'pi', PI_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
+    for (const name of ['claude-code', 'pi', 'codex']) {
+      const adapter = guardHarness(await import(`../harness/${name}.mjs`))
+      assert.throws(() => adapter.runOnce({ bin: '/usr/bin/true', prompt: 'x' }), /would spawn a real harness/, name)
+      assert.throws(() => adapter.startSession({ bin: '/usr/bin/true' }), /would spawn a real harness/, name)
+      if (name === 'pi' && !process.env.PI_BIN) assert.throws(() => adapter.runOnce({ prompt: 'x' }), /from PATH/) // no bin: `pi` on PATH
+    }
   })
 })
 
@@ -151,7 +194,7 @@ describe('AC2: watchdog kill and lane cleanup', () => {
     })
     assert.equal(r.code, 143)
     assert.match(r.log, /^run-once: SIGTERM: stopping harness$/m)
-    await new Promise((res) => setTimeout(res, 200))
+    for (const t0 = Date.now(); alive(r.harnessPid) && Date.now() - t0 < 5000; ) await new Promise((res) => setTimeout(res, 20))
     assert.ok(!alive(r.harnessPid))
     assert.ok(r.laneGone)
   })
@@ -199,7 +242,7 @@ function pollSh({ env = {}, pathNode, pending, setup } = {}) {
   fake(join(bin, 'curl'), pending === undefined ? 'exit 7' : `echo '{"pending":${pending}}'`)
   fake(join(bin, 'python3'), 'exit 0')
   const node = (name, version) =>
-    fake(join(home, name), `[ "$1" = -v ] && { echo ${version}; exit 0; }\nprintf '%s\\n' "$@" > "$FAKE_DIR/${name}.argv"\necho "${name} stderr" >&2`)
+    fake(join(home, name), `[ "$1" = -v ] && { echo ${version}; exit 0; }\nprintf '%s\\n' "$@" > "$FAKE_DIR/${name}.argv.tmp" && mv "$FAKE_DIR/${name}.argv.tmp" "$FAKE_DIR/${name}.argv"\necho "${name} stderr" >&2`)
   const nodes = { old: node('node14', 'v14.15.1'), new: node('node22', 'v22.3.0') }
   if (pathNode) fake(join(bin, 'node'), `exec "${nodes[pathNode]}" "$@"`)
   setup?.(daemon)
@@ -211,10 +254,10 @@ function pollSh({ env = {}, pathNode, pending, setup } = {}) {
   return { ...r, home, daemon, pollLog, lanes: readdirSync(join(daemon, 'lanes')) }
 }
 
-async function waitFor(path) {
-  for (const t0 = Date.now(); !existsSync(path); await new Promise((res) => setTimeout(res, 20)))
-    if (Date.now() - t0 > 5000) throw new Error(`${path} never appeared`)
-  await new Promise((res) => setTimeout(res, 50))
+// Waits until `path` exists and its content matches `done`.
+async function waitFor(path, done = /./) {
+  for (const t0 = Date.now(); !(existsSync(path) && done.test(readFileSync(path, 'utf8'))); await new Promise((res) => setTimeout(res, 20)))
+    if (Date.now() - t0 > 5000) throw new Error(`${path} never matched ${done}`)
   return readFileSync(path, 'utf8')
 }
 
@@ -247,7 +290,7 @@ describe('poll.sh node resolution for the cold path', () => {
     assert.match(r.pollLog, /spawned heartbeat\.md in lane 1/)
     assert.deepEqual(r.lanes, ['1'])
     const log = argv[argv.indexOf('--log') + 1]
-    assert.match(await waitFor(join(r.daemon, log)), /node22 stderr/)
+    assert.match(await waitFor(join(r.daemon, log), /node22 stderr/), /node22 stderr/)
   })
 })
 
