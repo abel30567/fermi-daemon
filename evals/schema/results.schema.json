@@ -39,7 +39,17 @@
         }
       },
       "costUsd": { "type": ["number", "null"], "minimum": 0 },
-      "errorKinds": { "type": "array", "items": { "type": "string" } }
+      "errorKinds": { "type": "array", "items": { "type": "string" } },
+      "builtinTools": { "type": ["array", "null"], "items": { "type": "string" } },
+      "surfaceDelta": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "required": ["added", "removed"],
+        "properties": {
+          "added": { "type": "array", "items": { "type": "string" } },
+          "removed": { "type": "array", "items": { "type": "string" } }
+        }
+      }
     }
   }
 }

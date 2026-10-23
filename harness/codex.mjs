@@ -18,7 +18,9 @@
 //              mcpConfig codex runs with the real CODEX_HOME (user config, MCP
 //              servers, connectors); the eval runner and judge always pass one.
 //   sandbox    spawn through harness/sandbox.mjs (eval mode); the per-run CODEX_HOME
-//              is then made inside the sandbox dir
+//              is then made inside the sandbox dir, and its config turns codex's own
+//              sandbox off (sandbox_mode = "danger-full-access"): a nested sandbox-exec
+//              fails inside ours, and ours already bounds it. Never set without `sandbox`.
 //   runOnce only: skipPermissions (--dangerously-bypass-approvals-and-sandbox)
 // allowedTools and runOnce's maxTurns/settingSources/resume have no codex
 // equivalent and are ignored. tokenFd, configDir and scrubSubprocessEnv are
@@ -69,13 +71,14 @@ export function oneShotArgs({ model, systemPrompt, skipPermissions }) {
 }
 
 // mcp.json → codex config.toml. Throws on a non-http or non-localhost server.
-export function codexConfig(mcpConfig) {
+// `sandboxMode` sets codex's own sandbox_mode (spawnCodex: only inside our sandbox).
+export function codexConfig(mcpConfig, { sandboxMode } = {}) {
   if (typeof mcpConfig !== 'string' && (typeof mcpConfig !== 'object' || mcpConfig === null))
     throw new Error('codex adapter: mcpConfig must be a path, a JSON string or an object')
   const parsed = typeof mcpConfig === 'object' ? mcpConfig : JSON.parse(mcpConfig.trim().startsWith('{') ? mcpConfig : readFileSync(mcpConfig, 'utf8'))
   const servers = parsed.mcpServers ?? {}
   const s = JSON.stringify // a JSON string is a TOML basic string
-  const out = [`[features]`, ...DISABLED_FEATURES.map((f) => `${f} = false`)]
+  const out = [...(sandboxMode ? [`sandbox_mode = ${s(sandboxMode)}`, ''] : []), `[features]`, ...DISABLED_FEATURES.map((f) => `${f} = false`)]
   for (const [key, srv] of Object.entries(servers)) {
     if (!srv?.url) throw new Error(`codex adapter: MCP server "${key}" has no url (only http servers are supported)`)
     if (!isLocalUrl(srv.url)) throw new Error(`codex adapter: refusing non-localhost MCP URL ${key}=${srv.url}`)
@@ -92,7 +95,7 @@ function spawnCodex(args, o) {
   const env = { ...process.env, ...o.env, ...o.sandbox?.env }
   let home = null
   if (o.mcpConfig) {
-    const config = codexConfig(o.mcpConfig)
+    const config = codexConfig(o.mcpConfig, o.sandbox ? { sandboxMode: 'danger-full-access' } : {})
     const auth = join(env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
     home = mkdtempSync(join(o.sandbox?.root ?? tmpdir(), 'codex-home-'))
     writeFileSync(join(home, 'config.toml'), config)

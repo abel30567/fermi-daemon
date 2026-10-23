@@ -10,7 +10,9 @@
 // The judge model and its harness are fixed in evals/judge.config.json, so every
 // run is scored by the same judge. The call goes through the harness adapter
 // (harness/index.mjs) exactly as an eval attempt does, so it reads the same
-// credentials (CLAUDE_BIN, CLAUDE_CONFIG_DIR, …) and nothing else. The judge sees
+// credentials (CLAUDE_BIN, …) and nothing else, with the same isolation: no tools
+// (--tools ""), strict MCP with no servers, setting sources project,local, inside
+// the OS sandbox (harness/sandbox.mjs) behind the egress proxy. The judge sees
 // only the user's message, the channel and the reply texts: never the harness,
 // model, trace or cost, so it is blind to which harness produced the reply.
 // --fake scores with fakeJudge (deterministic, no inference), for tests.
@@ -19,6 +21,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadHarness } from '../harness/index.mjs'
+import { createSandbox } from '../harness/sandbox.mjs'
+import { startEgressProxy } from './lib/egress-proxy.mjs'
+import { localModelPorts } from './lib/runner.mjs'
 import { expandScenarios, loadScenario } from './lib/scenario.mjs'
 
 export const CONFIG = JSON.parse(readFileSync(new URL('./judge.config.json', import.meta.url), 'utf8'))
@@ -59,26 +64,34 @@ export function parseVerdict(text) {
   return { helpful: v.helpful, tone: v.tone, format: v.format, notes: String(v.notes ?? ''), score: (v.helpful + v.tone + v.format) / 15 }
 }
 
-// The real judge: one runOnce through the configured adapter, no tools, no MCP servers.
+// The real judge: one sandboxed runOnce through the configured adapter, no tools, no MCP servers.
 export async function modelJudge(input, { config = CONFIG, harness } = {}) {
   harness ??= await loadHarness(config.harness)
   const cwd = mkdtempSync(join(tmpdir(), 'eval-judge-'))
+  const egress = await startEgressProxy()
   try {
     const mcpConfig = join(cwd, 'mcp.json')
     writeFileSync(mcpConfig, JSON.stringify({ mcpServers: {} }))
+    const sandbox = createSandbox({ root: join(cwd, 'home'), localPorts: localModelPorts(), egressProxy: egress.url })
     const run = harness.runOnce({
       prompt: judgePrompt(input),
       model: config.model,
       cwd,
       mcpConfig,
       maxTurns: 1,
-      env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
+      sandbox,
+      tools: [], // --tools "": no built-ins at all
+      strictMcpConfig: true,
+      settingSources: 'project,local',
+      permissionMode: 'default',
+      env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_CONFIG_DIR: join(sandbox.root, '.claude') },
     })
     let timer
-    const res = await Promise.race([run.done, new Promise((_, rej) => (timer = setTimeout(() => rej(new Error(`judge timed out after ${config.timeoutMs} ms`)), config.timeoutMs)))]).finally(() => clearTimeout(timer))
+    const res = await Promise.race([run.done, new Promise((_, rej) => (timer = setTimeout(() => rej(new Error(`judge timed out after ${config.timeoutMs} ms`)), config.timeoutMs)))]).finally(() => (clearTimeout(timer), run.close?.('SIGTERM')))
     if (res.outcome && !res.outcome.ok) throw new Error(`judge turn ended with ${res.outcome.kind}: ${res.outcome.detail}`)
     return parseVerdict(res.events.filter((e) => e.type === 'text').map((e) => e.text).join('\n'))
   } finally {
+    await egress.close().catch(() => {})
     rmSync(cwd, { recursive: true, force: true })
   }
 }

@@ -64,8 +64,9 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    in only `~/.pi/agent/auth.json`, deleted when pi exits (`harness/pi.mjs`).
    Claude Code also gets `--setting-sources project,local` (as the production
    lanes: never the user's settings, hooks or plugins), `--strict-mcp-config`,
-   `--permission-mode default` (never `bypassPermissions`) and `--tools ""`: no
-   built-in tools at all unless the scenario declares `tools` (e.g. `["Bash"]`).
+   `--permission-mode default` (never `bypassPermissions`) and `--tools Bash`:
+   the production surface, a shell next to Fermi, unless the scenario narrows
+   `tools` (`[]` → `--tools ""`).
    `--allowedTools mcp__fermi__*` only auto-approves; it restricts nothing.
    Every harness process (claude-code, hbar, pi, codex) runs in the same OS
    sandbox (`harness/sandbox.mjs`): `sandbox-exec` with a generated Seatbelt
@@ -78,16 +79,22 @@ mid-turn API errors can only be injected there, since the model API is not proxi
    which tunnels only to the model endpoints (`api.anthropic.com`, `chatgpt.com`,
    `api.openai.com`, `auth.openai.com`, `api.x.ai`) and notes every refusal in the
    trace (`source: "egress"`). On Linux only the filesystem part is enforced: an
-   unshared network namespace could not reach the runner's 127.0.0.1 servers.
+   unshared network namespace could not reach the runner's 127.0.0.1 servers
+   (follow-up DMN-29). codex runs with its own sandbox off (`sandbox_mode =
+   "danger-full-access"` in the per-attempt `CODEX_HOME`), and only ever inside ours.
    **Isolation assertion** (`lib/isolation.mjs`): the harness's `init` (pi and
    codex adapters report their always-on built-ins in one) may list no built-in
-   tool beyond the scenario's `tools`, and its MCP servers must be exactly
-   `{fermi}` (the config itself must be `{fermi → 127.0.0.1}`). Otherwise, or on a
-   tool call before any init, the harness is killed and the attempt fails with
-   errorKind `isolation_breach`, which is never an expected outcome, not even for
-   a negative control. pi (`read`, `bash`, `edit`, `write`) and codex (`Bash`,
-   `apply_patch`) cannot drop their built-ins yet, so their attempts breach unless
-   the scenario declares them.
+   beyond the scenario's `tools` (default `["Bash"]`) plus that harness's
+   irreducible built-ins (pi: `read`, `bash`, `edit`, `write`; codex: `Bash`,
+   `apply_patch`), which are allowed and recorded per attempt in `results.json` as
+   `builtinTools` and `surfaceDelta` (`{ added, removed }` against production's
+   `["Bash"]`). Its MCP servers must be exactly `{fermi}` (the config itself must
+   be `{fermi → 127.0.0.1}`). Each attempt also plants a sandbox canary, a random
+   token in a file under the real `$HOME`; the token showing up in any event means
+   the sandbox let the harness read there. On any of these, or on a tool call
+   before any init, the harness is killed and the attempt fails with errorKind
+   `isolation_breach`, which is never an expected outcome, not even for a
+   negative control.
 4. Enqueues `inbound` through the channel webhook, the same way the bridge does.
 5. Runs one drain through the adapter (`runOnce`, `prompts/drain.md` as the
    prompt, rendered with the eval overlay `fixtures/prompt-overlay.json`: owner
@@ -132,7 +139,7 @@ It also checks every URL it hands out (worker env, target, MCP config).
               "memory_recall": { "status": 500 }, "task_claim": { "result": "{\"tasks\":[{", "times": 1 } },
   "session": { "tasks": 200, "redrain": 1 }, // optional: one warm drain session (below)
   "credentials": { "canary": true },     // optional: plant a canary (below)
-  "tools": [ "Bash" ],                    // optional: built-in tools the harness may have (default none)
+  "tools": [],                            // optional: narrows the built-ins from production's ["Bash"]
   "schedule": "weekly",                   // optional: only run with --weekly
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
@@ -280,8 +287,9 @@ node evals/judge.mjs <run dir> --scenarios '<glob>'... [--fake]   # → <run dir
 - Rubric (1-5 each, score = mean / 5): helpful, tone (no "as an AI"), format
   (Slack mrkdwn: no pipe tables, `#` headers or `**`).
 - Judge harness and model are fixed in `evals/judge.config.json`. The call goes
-  through the harness adapter like an eval attempt (same credential env, no MCP
-  servers, one turn).
+  through the harness adapter like an eval attempt (same credential env, one
+  turn) with the same isolation: `--tools ""`, strict MCP with no servers,
+  `--setting-sources project,local`, inside the OS sandbox behind the egress proxy.
 - The judge sees only the channel, the inbound text and the `channel_send` texts,
   never the harness, model, trace or cost.
 - `--fake` uses the deterministic rule-based `fakeJudge` (no inference).
