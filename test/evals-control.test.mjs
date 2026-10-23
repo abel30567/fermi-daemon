@@ -30,7 +30,7 @@ const runCli = (args) => {
 const NEGATIVES = {
   'cancelled-by-user-negative': ['task.status', 'argsMatch', 'outbox.count', 'argsMatch'],
   'model-switch-ordering-negative': ['order'],
-  'emergency-stop-mid-task-negative': ['task.status', 'argsMatch', 'argsMatch', 'exactlyOnce'],
+  'emergency-stop-mid-task-negative': ['task.status', 'argsMatch', 'argsMatch', 'notCalled'],
   'teams-reply-shell-negative': ['exactlyOnce', 'argsMatch', 'notCalled', 'notCalled'],
   'audio-transcribe-negative': ['argsMatch', 'order'],
   'deferred-schedule-list-negative': ['order'],
@@ -83,7 +83,7 @@ describe('session mode (evals/lib/session.mjs)', () => {
     const ends = trace.filter((e) => e.type === 'turn_end')
     assert.deepEqual(ends.map((e) => [e.ok, e.interrupted ?? false]), [[false, true], [true, false], [true, false]])
     assert.equal(trace.filter((e) => e.type === 'init').length, 1) // one session, not three
-    // The steps scripted after the interrupted mac_shell never ran.
+    // The steps scripted after the interrupted call never ran.
     const first = trace.slice(0, trace.indexOf(ends[0]))
     assert.equal(first.at(-1).type, 'tool_result')
     assert.ok(!first.some((e) => e.type === 'tool_call' && e.name === 'task_complete'))

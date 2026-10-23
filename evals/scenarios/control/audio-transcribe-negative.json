@@ -4,7 +4,11 @@
   "expectOutcome": "fail",
   "fixtures": {
     "bindings": [{"channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner"}],
-    "mac": [{"tool": "mac_shell", "match": "tools/transcribe\\.sh", "result": "What is the capital of France?"}]
+    "mac": [
+      {"tool": "mac_shell", "match": "tools/transcribe\\.sh", "result": "What is the capital of France?"},
+      {"tool": "mac_shell", "match": "\\bfind\\b[^|;&]*media", "result": "/Users/eval/fermi-daemon/media/eval-voice-note.m4a"},
+      {"tool": "mac_shell", "match": "\\b(ls|stat|file)\\b[^|;&]*media", "result": "-rw-r--r--  1 eval  staff  48213 Oct 22 22:30 eval-voice-note.m4a"}
+    ]
   },
   "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "", "attachment": {"kind": "audio", "file": "eval-voice-note.m4a"}},
   "expect": [
