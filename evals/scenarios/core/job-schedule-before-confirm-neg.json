@@ -1,0 +1,88 @@
+{
+  "name": "job-schedule-before-confirm-neg",
+  "description": "Negative control for job-schedule-before-confirm: The drain promises a daily reminder without calling schedule_create.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Remind me every morning to take my vitamins."
+  },
+  "expect": [
+    {
+      "called": "schedule_create"
+    },
+    {
+      "argsMatch": {
+        "tool": "schedule_create",
+        "args": {
+          "channel": "sl",
+          "chat_id": "D0EVAL"
+        }
+      }
+    },
+    {
+      "order": [
+        "schedule_create",
+        "channel_send",
+        "task_complete"
+      ]
+    },
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "task.status": "done"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Sure, I'll remind you every morning!"
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "done",
+          "result": "promised reminder"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

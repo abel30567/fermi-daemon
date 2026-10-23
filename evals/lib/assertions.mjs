@@ -5,7 +5,8 @@
 //   { "notCalled": "phone_call_start" }             it never was
 //   { "exactlyOnce": "channel_send" }
 //   { "order": ["task_claim", "channel_send", "task_complete"] }
-//                                                   these calls happen in this order (a subsequence)
+//                                                   these calls happen in this order (a subsequence);
+//                                                   an entry may be { "tool", "args" } to match one call's args
 //   { "argsMatch": { "tool": "channel_send", "args": { "text": "/\\+15555550100/" }, "every": false } }
 //                                                   some (every, with every:true) call's args match;
 //                                                   "/re/flags" strings are regexes, null means absent
@@ -88,9 +89,10 @@ const CHECKS = {
     return n === 1 ? null : `${tool} was called ${n} time(s), expected exactly once`
   },
   order: (tools, { calls }) => {
+    const hit = (c, t) => (typeof t === 'string' ? c.name === t : c.name === t.tool && matches(c.input, t.args ?? {}))
     let i = 0
-    for (const c of calls) if (c.name === tools[i]) i++
-    return i === tools.length ? null : `calls ${JSON.stringify(calls.map((c) => c.name))} do not contain the order ${JSON.stringify(tools)} (stuck at ${tools[i]})`
+    for (const c of calls) if (i < tools.length && hit(c, tools[i])) i++
+    return i === tools.length ? null : `calls ${JSON.stringify(calls.map((c) => c.name))} do not contain the order ${JSON.stringify(tools)} (stuck at ${JSON.stringify(tools[i])})`
   },
   argsMatch: ({ tool, args, every = false }, { calls }) => {
     const mine = calls.filter((c) => c.name === tool)

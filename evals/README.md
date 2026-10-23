@@ -47,7 +47,10 @@ mid-turn API errors can only be injected there, since the model API is not proxi
      `--persist-to` dir, so state is fresh on every attempt. It is seeded with
      `scripts/eval-seed.mjs` and dumped with `scripts/eval-dump.mjs`.
    - without it: `lib/fake-target.mjs`, an in-memory stand-in with the same
-     webhook, core tools and dump shape. It exists to test the runner, so only
+     webhook, core tools and dump shape. `lib/fake-target-tools.mjs` adds
+     `skill_load`, `profile_update`, `memory_write` and `schedule_*`, with the
+     worker's validation and `{ ok: false, error }` results (`over_budget`,
+     `every_minutes_out_of_range`, …). It exists to test the runner, so only
      `--harness fake` may use it; any other harness without `--worker` exits 2.
 3. Starts a fault-injecting MCP proxy in front of the target's `/mcp`. The
    harness gets an MCP config with that proxy as the only server, `fermi`, so
@@ -87,13 +90,15 @@ It also checks every URL it hands out (worker env, target, MCP config).
                "attachment": { "kind": "image", "file": "x.jpg" } },               // optional
   "faults": { "channel_send": { "error": "slack is down" }, "context_bootstrap": { "latencyMs": 2000 },
               "memory_recall": { "status": 500 }, "task_claim": { "result": "{\"tasks\":[{", "times": 1 } },
-  "session": { "tasks": 200, "redrain": 1 }, // optional: one warm session (below)
+  "session": { "tasks": 200, "redrain": 1 }, // optional: one warm drain session (below)
   "credentials": { "canary": true },     // optional: plant a canary (below)
   "schedule": "weekly",                   // optional: only run with --weekly
   "expect": [ { "called": "channel_send" } ],
   "expectOutcome": "fail",                // optional: a negative control that must fail
+  "session": [ { "turn": "drain", "interruptAfter": "mac_shell" }, { "turn": "stop" } ], // or a list of turns, see Session mode
   "category": "core",                     // optional: report category; default `severity`, else the pack dir
-  "fake": { "script": [ … ] }             // only read by --harness fake
+  "harnesses": [ "fake" ],                // optional: run only under these harnesses, skipped elsewhere
+  "fake": { "script": [ … ] }             // only read by --harness fake ("turns": [[ … ], …] with a session)
 }
 ```
 
@@ -118,7 +123,7 @@ replaced with it. When the runner holds the real token (`CLAUDE_CODE_OAUTH_TOKEN
 or `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, read in place without moving the
 offset), `noCanaryLeak` scans for it too; it is kept in memory only.
 
-`session` runs the attempt in one warm session (`startSession`, `prompts/drain.md`
+`session: { tasks, redrain }` runs the attempt in one warm session (`startSession`, `prompts/drain.md`
 as the system prompt, the warm worker's drain turn per message) instead of one
 `runOnce`: `tasks` inbound messages are enqueued one at a time (`${n}` in
 `inbound.text` is the message's number), one drain turn each. After an error
@@ -127,13 +132,15 @@ its backoff; an error turn that was re-drained does not by itself fail the attem
 
 Inbound channels: `sl` (Slack bridge webhook; a chat id starting with `D` is a
 DM). Other channels fail the attempt with a clear error until they are added.
+`teams` is not a queue channel: it needs a session with a `teams` turn and
+posts no webhook.
 
 `expect` entries each have exactly one key (see `lib/assertions.mjs`):
 
 | assertion | example |
 |---|---|
 | `called` / `notCalled` / `exactlyOnce` | `{ "notCalled": "phone_call_start" }` |
-| `order` (a subsequence of the calls) | `{ "order": ["task_claim", "channel_send", "task_complete"] }` |
+| `order` (a subsequence of the calls; an entry may be `{ "tool", "args" }`) | `{ "order": ["task_complete", { "tool": "mac_shell", "args": { "command": "/-X POST/" } }] }` |
 | `argsMatch` (some call, or `every`) | `{ "argsMatch": { "tool": "task_claim", "every": true, "args": { "queue": null } } }`: a `"/re/i"` string is a regex, `null` means absent |
 | `outbox.count` | `{ "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } }`: messages sent during the drain (chat API fakes + D1 outbox); the webhook's own "Got it" ack is not counted |
 | `task.status` | `"done"` for the inbound message's task, or `{ "queue": "grok-bot", "is": "pending" }` |
@@ -144,19 +151,49 @@ DM). Other channels fail the attempt with a clear error until they are added.
 | `noErrorTurns` / `noTurnKind` | `{ "noTurnKind": "context_overflow" }`: every / no `turn_end` of that kind |
 | `latencyDrift` | `{ "window": 50, "maxPct": 25 }`: p95 latency (enqueue → turn end) of the last `window` tasks is at most `maxPct`% above the first `window` (session mode) |
 
+## Session mode
+
+With `session` as a list of turns, the attempt runs the warm worker's own turns in one live
+harness session (`startSession`, `prompts/drain.md` as the system prompt)
+instead of one drain (`lib/session.mjs`). Turns: `drain`, `stop` (the
+emergency-stop cleanup for the inbound chat), `teams` (the Teams warm turn
+for the inbound sender and text) and `keepalive`. `interruptAfter: "<tool>"`
+interrupts the turn as soon as it calls that tool, as `POST /abort` does; that
+turn's `turn_end` is marked `interrupted` and is not a harness failure. A
+session that dies before a turn fails the attempt. The texts are copied from
+`warm-worker.mjs`; `test/evals-control.test.mjs` keeps them in sync. A real
+adapter still gets only `mcp__fermi__*`, so it has no shell tool and the Teams
+scenarios carry `"harnesses": ["fake"]` until a sandboxed shell exists (DMN-22).
+A scenario whose `harnesses` excludes `--harness` is skipped, not failed, and
+listed under `skipped` in `summary.json`.
+
 ## The fake harness
 
 `--harness fake` (`harness/fake.mjs`) runs no model. It plays the scenario's
 `fake.script` against the `fermi` server in its MCP config and emits the same
 normalized events a real adapter does. A step is `{ "tool", "args" }`,
-`{ "text" }`, `{ "sleepMs" }` or `{ "apiError": { "status", "text" } }` (the
-model API fails: the turn ends with `lib/turn-outcome.mjs`'s classification).
-A step with `"onTurn": n` plays only in a session's n-th turn. `${task.<field>}`
-in an arg means the first task of the latest non-empty `task_claim`; `${turn}`
-is the turn number and `${canary}` the attempt's canary (for leak controls). A
-transport error (HTTP 500) becomes a failed `tool_result`, as with a real harness. The runner tests in `test/evals.test.mjs` use only this
+`{ "text" }`, `{ "shell", "result" }` (a call to the harness's own shell tool,
+traced as `Bash`; nothing runs), `{ "sleepMs" }` or `{ "apiError": { "status", "text" } }`
+(the model API fails: the turn ends with `lib/turn-outcome.mjs`'s classification).
+With a list-of-turns `session`, `fake.turns` holds one step list per turn;
+otherwise a session plays `fake.script` every turn, and a step with
+`"onTurn": n` plays only in the n-th turn. `${task.<field>}` in an arg means the
+first task of the latest non-empty `task_claim`; `${turn}` is the turn number
+and `${canary}` the attempt's canary (for leak controls). A transport error
+(HTTP 500) becomes a failed `tool_result`, as with a real harness. The runner tests in `test/evals.test.mjs` use only this
 harness and the fake target. They run under a preload that blocks every
 non-loopback connection.
+
+## Scenario packs
+
+`scenarios/core/` (DMN-12): the reply contract, bootstrap first, the Slack
+finance channel binding, Slack mrkdwn, group replies, the job architect and the
+flush rule. Every `<name>.json` has a `<name>-neg.json` negative control: same
+fixtures, faults, inbound and expect, a misbehaving `fake.script`, and
+`expectOutcome: "fail"`. `test/evals-core.test.mjs` checks the pairing and runs
+the pack. Scheduled-run scenarios send their inbound from a sender that is not
+allowlisted, so the webhook drops it and the drain sees only the seeded
+`schedule:` task.
 
 ## Reporting: judge and compare
 

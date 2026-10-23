@@ -6,6 +6,7 @@
 // and dumps state in eval-dump.mjs's shape. It is not a model of Fermi: grading
 // semantics only hold against the real target.
 import { randomUUID } from 'node:crypto'
+import { coreTools } from './fake-target-tools.mjs'
 import { extraTools } from './fake-tools.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
 import { readBody, sendJson, serve } from './net.mjs'
@@ -62,11 +63,13 @@ export async function startFakeTarget({ env, tools }) {
       await send(channel, chat_id, text)
       return { ok: true, channel }
     },
+    schedule_list: () => ({ schedules: db.schedules }),
     phone_call_start: async ({ to }) => {
       const body = await post(`${env.TWILIO_API_BASE}/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, { To: to, From: env.TWILIO_FROM_NUMBER })
       return { ok: true, call_id: JSON.parse(body).sid }
     },
     mac_shell: (args) => macCall('mac_shell', args),
+    ...coreTools(db, skillBodies),
   }
 
   const rpc = async (msg) => {

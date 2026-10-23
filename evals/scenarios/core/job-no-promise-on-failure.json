@@ -1,0 +1,94 @@
+{
+  "name": "job-no-promise-on-failure",
+  "description": "When schedule_create fails, the reply makes no promise of future work and the task completes as failed.",
+  "fixtures": {
+    "bindings": [
+      {
+        "channel": "sl",
+        "sender_id": "U0EVALOWNER",
+        "note": "owner"
+      }
+    ]
+  },
+  "faults": {
+    "schedule_create": {
+      "error": "{\"ok\":false,\"error\":\"scheduler_unavailable\"}"
+    }
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Remind me every Friday to water the plants."
+  },
+  "expect": [
+    {
+      "called": "schedule_create"
+    },
+    {
+      "exactlyOnce": "channel_send"
+    },
+    {
+      "argsMatch": {
+        "tool": "channel_send",
+        "every": true,
+        "args": {
+          "text": "/^(?![\\s\\S]*(\\bI'll\\b|\\bI will\\b|\\bremind you\\b|\\bscheduled\\b|\\ball set\\b))/i"
+        }
+      }
+    },
+    {
+      "task.status": "failed"
+    }
+  ],
+  "fake": {
+    "script": [
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      },
+      {
+        "tool": "context_bootstrap",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}"
+        }
+      },
+      {
+        "tool": "schedule_create",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "every_minutes": 10080,
+          "prompt": "Goal: remind the owner to water the plants. Delivery: always message."
+        }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "Sorry, the scheduler returned an error, so there is no plant reminder yet. Ask me again in a few minutes."
+        }
+      },
+      {
+        "tool": "task_complete",
+        "args": {
+          "id": "${task.id}",
+          "status": "failed",
+          "result": "schedule_create failed"
+        }
+      },
+      {
+        "tool": "task_claim",
+        "args": {
+          "limit": 1,
+          "stale_minutes": 25
+        }
+      }
+    ]
+  }
+}

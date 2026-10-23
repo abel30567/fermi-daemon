@@ -77,6 +77,12 @@ async function main() {
       return 2
     }
   }
+  // A scenario that lists `harnesses` only runs under those; elsewhere it is reported as skipped.
+  const skipped = scenarios
+    .filter((s) => s.harnesses && !s.harnesses.includes(opts.harness))
+    .map((s) => ({ scenario: s.name, reason: `harnesses: ${s.harnesses.join(', ')}` }))
+  scenarios = scenarios.filter((s) => !s.harnesses || s.harnesses.includes(opts.harness))
+  for (const s of skipped) console.log(`SKIP ${s.scenario} (${s.reason})`)
   const harness = opts.harness === 'fake' ? await import('./harness/fake.mjs') : await loadHarness(opts.harness)
   const out = opts.out ?? join('runs', `evals-${new Date().toISOString().replace(/[:.]/g, '-')}`)
   mkdirSync(out, { recursive: true })
@@ -97,10 +103,11 @@ async function main() {
     target: opts.worker ? 'wrangler' : 'fake',
     startedAt,
     finishedAt: new Date().toISOString(),
+    skipped,
   })
   writeFileSync(join(out, 'results.json'), JSON.stringify(results, null, 2) + '\n')
   writeFileSync(join(out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n')
-  console.log(`${summary.passed}/${summary.attempts} passed, ${summary.expectedFailures} expected failure(s), ${summary.unexpected.length} unexpected → ${out}`)
+  console.log(`${summary.passed}/${summary.attempts} passed, ${summary.expectedFailures} expected failure(s), ${summary.unexpected.length} unexpected, ${skipped.length} skipped → ${out}`)
   return summary.ok ? 0 : 1
 }
 
