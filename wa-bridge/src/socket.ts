@@ -6,6 +6,7 @@ import qrcodeTerminal from 'qrcode-terminal'
 import type { Config } from './config.ts'
 import { log } from './log.ts'
 import type { MentionDirectory } from './mentions.ts'
+import { quotePrefix } from './quote.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
 
@@ -245,7 +246,9 @@ export async function createSocket(
 			}
 			const text = msg.conversation ?? msg.extendedTextMessage?.text
 			if (text) {
-				await handlers.onTextMessage(sender, chatId, text)
+				const self = [sock?.user?.id, sock?.user?.lid].filter((x): x is string => typeof x === 'string')
+				const quote = quotePrefix(msg.extendedTextMessage?.contextInfo, directory.members(jid), self)
+				await handlers.onTextMessage(sender, chatId, quote ? `${quote} ${text}` : text)
 				return
 			}
 			log(
