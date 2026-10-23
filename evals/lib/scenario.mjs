@@ -88,28 +88,33 @@ export function expandVariants(s) {
 // entries ({ channel, sender_id, note? }), seeded into the worker's allowlist.
 // An inbound with `via: "task"` (a phone call result, a cloud handoff: nothing a
 // bridge webhook delivers) is seeded as the newest pending task instead.
-// `history` ({ role, text, minutes_ago? }) is the inbound chat's prior transcript.
+// `history` ({ role, text, minutes_ago? }) is the inbound chat's prior transcript,
+// seeded as eval-seed's `conversation` block (MCP-24). In a group chat its user
+// turns get the gateway's `[sender] ` attribution, so `sender` is set only there.
 export function seedFixture(fixtures = {}, inbound = null) {
   const { profile, memories, skills } = fixtures
   const allowlist = [...(fixtures.allowlist ?? []), ...(fixtures.bindings ?? [])]
   const tasks = [...(fixtures.tasks ?? [])]
   if (inbound?.via === 'task') tasks.push({ id: 'eval-inbound', channel: inbound.channel, sender: inbound.sender, chat_id: inbound.chat, payload: inbound.text })
-  const now = Date.now()
-  const history = (fixtures.history ?? []).map((m) => ({
-    channel: inbound?.channel,
-    chat_id: inbound?.chat,
-    role: m.role,
-    text: m.text,
-    created_at: now - (m.minutes_ago ?? 0) * 60_000,
-  }))
+  const history = (fixtures.history ?? []).map((m) => ({ role: m.role, text: m.text, minutes_ago: m.minutes_ago ?? 0 }))
+  const sender = groupAttribution(inbound)
+  const conversation = history.length && { channel: inbound?.channel, chat_id: inbound?.chat, ...(sender && { sender }), history }
   return {
     ...(profile && { profile }),
     ...(memories && { memories }),
     ...(skills && { skills }),
     ...((fixtures.tasks || tasks.length) && { tasks }),
     ...(allowlist.length && { allowlist }),
-    ...(history.length && { history }),
+    ...(conversation && { conversation }),
   }
+}
+
+// The name a channel gateway prefixes to a group chat's user turns (null in a DM):
+// Slack's display name for a non-D channel, the sender's number for a WhatsApp @g.us group.
+function groupAttribution(inbound) {
+  if (inbound?.channel === 'sl' && !inbound.chat.startsWith('D')) return inbound.display_name ?? inbound.sender
+  if (inbound?.channel === 'wa' && inbound.chat.endsWith('@g.us')) return inbound.sender
+  return null
 }
 
 // The channel webhook request that enqueues the inbound message, as a bridge sends it.
