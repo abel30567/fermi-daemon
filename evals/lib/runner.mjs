@@ -109,6 +109,8 @@ export const INFRA_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
 // `infraRetries` times, after the reset time the error names (retryAfterMs) or else
 // `backoff` (30 s, doubling, capped at 10 min). The earlier tries' dirs are kept as
 // <n>.infra-<i>. Still limited after that → status "invalid", pass null: never graded.
+// A reset further away than backoff.maxMs (e.g. "resets 2am") is not waited for: the
+// attempt is invalid at once, the reset time in its reason, no retries spent.
 // `pace(fn)`: runs each try (evals/lib/pacing.mjs, the backend lock and --min-gap-ms).
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
@@ -117,6 +119,10 @@ export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pa
   for (let n = 0; ; n++) {
     const { result, infra } = await pace(() => attemptOnce(args))
     if (!infra) return { ...result, status: 'valid', infraRetries: n }
+    if (infra.retryAfterMs > backoff.maxMs) {
+      const at = new Date(Date.now() + infra.retryAfterMs).toISOString()
+      return { ...result, pass: null, status: 'invalid', invalidReason: `${infra.kind} resets at ${at}, beyond the ${backoff.maxMs} ms infra wait cap: ${infra.detail}`, infraRetries: n }
+    }
     if (n >= infraRetries) return { ...result, pass: null, status: 'invalid', invalidReason: `${infra.kind} after ${n} infra retries: ${infra.detail}`, infraRetries: n }
     const waitMs = infra.retryAfterMs ?? Math.min(backoff.maxMs, backoff.baseMs * 2 ** n)
     rmSync(`${dir}.infra-${n + 1}`, { recursive: true, force: true })
