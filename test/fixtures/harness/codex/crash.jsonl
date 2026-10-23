@@ -1,0 +1,6 @@
+{"method":"item/started","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"crash","text_elements":[]}]}}}
+{"method":"item/completed","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"crash","text_elements":[]}]}}}
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"msg_a6","text":"","phase":null}}}
+{"method":"item/agentMessage/delta","params":{"itemId":"msg_a6","delta":"About to crash"}}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_a6","text":"About to crash","phase":null}}}
+{"$fake":"exit","code":1}
