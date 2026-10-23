@@ -8,7 +8,7 @@ final text.
 ```bash
 node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios '<glob>'... \
   [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
-  [--auth none|fd|keychain|proxy]
+  [--auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>]
 
 # the runner's own check: fake harness, fake target, no inference, localhost only
 node evals/run.mjs --harness fake --scenarios 'evals/scenarios/examples/*' --out /tmp/e && cat /tmp/e/summary.json
@@ -21,6 +21,33 @@ Exit code: 0 when every attempt ended as expected, 1 otherwise, 2 on a usage
 error or a non-localhost URL. `--out` defaults to `runs/evals-<timestamp>`.
 Scenarios marked `"schedule": "weekly"` (the soak) are skipped unless `--weekly`
 is given.
+
+## Infrastructure outcomes and pacing
+
+Throttling is infrastructure, not harness behaviour, so it is never graded. When an
+attempt fails on a `turn_end` of kind `rate_limit`, `spend_limit`, or `api_error`
+with a 5xx status or "overloaded" in its text (one a warm session re-drained through
+is the behaviour under test and does not count), the runner re-runs the whole
+attempt with fresh state, up to `--infra-retries` times (default 3). It first waits
+for the reset time `lib/turn-outcome.mjs` parsed from the error (`retryAfterMs`), or
+else 30 s, doubling, capped at 10 min. A reset further away than 10 min (for example
+`resets 2am`) is not waited for: the attempt is `invalid` at once, with the reset time
+in its `invalidReason`, and no further retries. Earlier tries keep their files in
+`<scenario>/<n>.infra-<i>/`. Every `results.json` entry has `infraRetries` and
+`status`: `valid`, or `invalid` when the attempt was still limited after the last
+retry. An invalid attempt has `pass: null` and an `invalidReason`. It is never graded
+either way: `summary.json` lists it under `invalid`, not as a failure, and a run with
+any invalid attempt exits 1.
+
+With `--auth proxy|keychain|fd`, every attempt holds the backend's lock file
+`~/.agent-orch/evals/locks/<backend>.lock` (`lib/pacing.mjs`), so runner processes
+sharing one subscription run their attempts one at a time. The lock is advisory: a
+file created exclusively, holding the owner's pid. A lock whose process is gone is
+stale and is removed, as is an empty lock (its creator died before writing its pid)
+older than 5 s. `--min-gap-ms` (default 0) is the least time between the end of
+one attempt on the backend and the start of the next, across processes
+(`<backend>.last` records the last end). With `--auth none` there is no lock and the
+gap applies within the process.
 
 ## Inference auth (`--auth`)
 
@@ -366,9 +393,12 @@ node evals/compare.mjs <baseline>/results.json <candidate>/results.json [--out <
 ```
 
 It prints markdown and writes `compare.md` and `compare.json` to `--out`
-(default: the candidate's dir). Exit 0 on GO, 1 on NO-GO, 2 on a usage error.
-Negative controls (`expectOutcome: "fail"`) are left out of every statistic. A
-`judge.json` next to a results file adds its mean score per category.
+(default: the candidate's dir). Exit 0 on GO, 1 on NO-GO, 2 on a usage error, 3 on
+INCONCLUSIVE.
+Negative controls (`expectOutcome: "fail"`) are left out of every statistic, and so
+are invalid attempts (`status: "invalid"`), which are counted per category as
+`invalidAttempts`. A `judge.json` next to a results file adds its mean score per
+category.
 
 The report has:
 - per category: pass rate, Wilson 95% interval, pass^5 (the unbiased estimate
@@ -388,4 +418,6 @@ The swap gate is GO only when every rule holds:
 | soak | category `endurance` present and every attempt passed |
 | credentials | category `credential-isolation` present and every attempt passed |
 
-A missing category fails its rule: the gate only passes on evidence.
+A missing category fails its rule: the gate only passes on evidence. When more than
+10% of a category's attempts in either run are invalid, the verdict is
+**INCONCLUSIVE**, whatever the rules say: re-run with more pacing, not a NO-GO.

@@ -7,13 +7,16 @@
   "items": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["scenario", "attempt", "pass", "expectedOutcome", "failed", "latencyMs", "toolCalls", "tokens", "costUsd", "errorKinds"],
+    "required": ["scenario", "attempt", "pass", "status", "infraRetries", "expectedOutcome", "failed", "latencyMs", "toolCalls", "tokens", "costUsd", "errorKinds"],
     "properties": {
       "scenario": { "type": "string", "minLength": 1 },
       "category": { "type": "string", "minLength": 1 },
       "attempt": { "type": "integer", "minimum": 1 },
       "authMode": { "enum": ["none", "fd", "keychain", "proxy"] },
-      "pass": { "type": "boolean" },
+      "pass": { "type": ["boolean", "null"], "description": "null when status is invalid: the attempt was never graded" },
+      "status": { "enum": ["valid", "invalid"], "description": "invalid: still rate/spend-limited or 5xx after every infra retry" },
+      "invalidReason": { "type": "string" },
+      "infraRetries": { "type": "integer", "minimum": 0, "description": "times the attempt was re-run after an infrastructure outcome" },
       "expectedOutcome": { "enum": ["pass", "fail"] },
       "failed": {
         "type": "array",

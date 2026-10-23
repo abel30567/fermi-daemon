@@ -4,12 +4,15 @@
 //
 //   node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios <glob>... \
 //     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly] \
-//     [--auth none|fd|keychain|proxy]
+//     [--auth none|fd|keychain|proxy] [--infra-retries <n>] [--min-gap-ms <ms>]
 //
 // --auth decides how the sandboxed harness gets inference credentials (lib/auth.mjs).
 // When a scenario has semantic assertions, the semantic judge (lib/semantic.mjs) is
 // calibrated first; below its accuracy threshold they grade on their regex alone.
 // --harness fake uses the fake judge (calibration labels, no inference).
+// An attempt that hits a rate/spend limit or a 5xx is re-run up to --infra-retries times
+// (default 3), then recorded as status "invalid" (lib/runner.mjs runAttempt). Attempts on
+// one --auth backend run one at a time across processes, --min-gap-ms apart (lib/pacing.mjs).
 // Scenarios with `"schedule": "weekly"` (the soak) are skipped unless --weekly is given.
 // Exit 0 when every attempt's outcome is the expected one, 1 otherwise, 2 on a
 // usage error or a non-localhost URL.
@@ -21,6 +24,7 @@ import { internalToolCalls } from './lib/assertions.mjs'
 import { CONFIG as JUDGE, semanticAsk, semanticCacheFile } from './judge.mjs'
 import { createAuth } from './lib/auth.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
+import { createPacer } from './lib/pacing.mjs'
 import { runAttempt, summarize } from './lib/runner.mjs'
 import { expandScenarios, expandVariants, loadScenario } from './lib/scenario.mjs'
 import { fakeAsk, prepareSemantic, semanticSpecs } from './lib/semantic.mjs'
@@ -30,7 +34,7 @@ import { fakeAsk, prepareSemantic, semanticSpecs } from './lib/semantic.mjs'
 const GUARDED_ENV = ['FERMI_URL', 'MACOS_MCP_URL', 'SLACK_API_BASE', 'TELEGRAM_API_BASE', 'DISCORD_API_BASE', 'TWILIO_API_BASE', 'ANTHROPIC_API_BASE']
 
 function parseArgs(argv) {
-  const o = { k: 1, scenarios: [], timeoutMs: 300_000, auth: 'none' }
+  const o = { k: 1, scenarios: [], timeoutMs: 300_000, auth: 'none', infraRetries: 3, minGapMs: 0 }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     const val = () => {
@@ -46,6 +50,8 @@ function parseArgs(argv) {
     else if (a === '--weekly') o.weekly = true
     else if (a === '--fake-script') o.fakeScript = val()
     else if (a === '--auth') o.auth = val()
+    else if (a === '--infra-retries') o.infraRetries = Number(val())
+    else if (a === '--min-gap-ms') o.minGapMs = Number(val())
     else if (a === '--scenarios') {
       o.scenarios.push(val())
       while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) o.scenarios.push(argv[++i])
@@ -54,6 +60,8 @@ function parseArgs(argv) {
   if (!o.harness) throw new Error('--harness is required')
   if (!o.scenarios.length) throw new Error('--scenarios is required')
   if (!(Number.isInteger(o.k) && o.k > 0)) throw new Error('-k must be a positive integer')
+  if (!(Number.isInteger(o.infraRetries) && o.infraRetries >= 0)) throw new Error('--infra-retries must be a non-negative integer')
+  if (!(Number.isFinite(o.minGapMs) && o.minGapMs >= 0)) throw new Error('--min-gap-ms must be a non-negative number')
   // Only the fake harness may run against the in-process fake target; real grades need the eval worker.
   if (o.harness !== 'fake' && !o.worker) throw new Error(`--harness ${o.harness} needs --worker <fermi-mcp checkout>`)
   if (o.fakeScript && o.harness !== 'fake') throw new Error('--fake-script needs --harness fake')
@@ -118,6 +126,7 @@ async function main() {
   const harness = opts.harness === 'fake' ? await import('./harness/fake.mjs') : await loadHarness(opts.harness)
   const out = opts.out ?? join('runs', `evals-${new Date().toISOString().replace(/[:.]/g, '-')}`)
   mkdirSync(out, { recursive: true })
+  const pacer = createPacer({ backend: auth.mode, minGapMs: opts.minGapMs })
   let semantic = null
   if (scenarios.some((s) => semanticSpecs(s.expect).length)) {
     let ask
@@ -133,17 +142,19 @@ async function main() {
       }
       ask = semanticAsk({ auth: judgeAuth })
     }
-    semantic = await prepareSemantic({ ask, cacheFile: opts.harness === 'fake' ? null : semanticCacheFile() })
+    // Calibration's inference holds the backend lock like an attempt.
+    semantic = await pacer.run(() => prepareSemantic({ ask, cacheFile: opts.harness === 'fake' ? null : semanticCacheFile() }))
   }
 
   const startedAt = new Date().toISOString()
   const results = []
   for (const scenario of scenarios)
     for (let attempt = 1; attempt <= opts.k; attempt++) {
-      const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out, auth, semanticJudge: semantic?.judge })
+      const onInfraRetry = (x) => console.log(`RETRY ${scenario.name} #${attempt} (${x.retry}/${opts.infraRetries}) ${x.kind}, waiting ${Math.round(x.waitMs / 1000)}s: ${x.detail}`)
+      const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out, auth, semanticJudge: semantic?.judge, infraRetries: opts.infraRetries, pace: pacer.run, onInfraRetry })
       r.internalToolCalls = internalCalls(out, r)
       results.push(r)
-      const tag = r.pass ? 'PASS' : r.expectedOutcome === 'fail' ? 'FAIL (expected)' : 'FAIL'
+      const tag = r.status === 'invalid' ? 'INVALID' : r.pass ? 'PASS' : r.expectedOutcome === 'fail' ? 'FAIL (expected)' : 'FAIL'
       console.log(`${tag} ${r.scenario} #${attempt} ${r.latencyMs}ms ${r.failed.map((f) => f.message).join(' | ')}`.trimEnd())
     }
   const summary = summarize(results, {
@@ -159,7 +170,7 @@ async function main() {
   })
   writeFileSync(join(out, 'results.json'), JSON.stringify(results, null, 2) + '\n')
   writeFileSync(join(out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n')
-  console.log(`${summary.passed}/${summary.attempts} passed, ${summary.expectedFailures} expected failure(s), ${summary.unexpected.length} unexpected, ${skipped.length} skipped → ${out}`)
+  console.log(`${summary.passed}/${summary.attempts} passed, ${summary.expectedFailures} expected failure(s), ${summary.unexpected.length} unexpected, ${summary.invalid.length} invalid, ${skipped.length} skipped → ${out}`)
   return summary.ok ? 0 : 1
 }
 

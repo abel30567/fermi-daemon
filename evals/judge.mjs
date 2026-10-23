@@ -152,6 +152,7 @@ export async function judgeRun(runDir, scenarios, judge = modelJudge) {
     const entry = { scenario: r.scenario, category: r.category ?? null, attempt: r.attempt, score: null }
     const s = scenarios[r.scenario]
     if (!s) entry.notes = 'scenario file not given'
+    else if (r.status === 'invalid') entry.notes = 'invalid attempt, not judged'
     else {
       const input = judgeInput(s, readTrace(join(runDir, r.scenario, String(r.attempt), 'trace.jsonl')))
       if (!input.replies.length) entry.notes = 'no channel_send'

@@ -156,7 +156,7 @@ describe('AC2: the markdown report', () => {
   test('renders a per-category table and the verdict line', () => {
     const md = renderMarkdown(compare(run(), run({ critical: { fails: 1 } })))
     assert.match(md, /^## Per category$/m)
-    assert.match(md, /^\| category \| baseline pass \| baseline 95% CI \| baseline pass\^5 \| candidate pass \| candidate 95% CI \| candidate pass\^5 \| judge \(b \/ c\) \|$/m)
+    assert.match(md, /^\| category \| baseline pass \| baseline 95% CI \| baseline pass\^5 \| candidate pass \| candidate 95% CI \| candidate pass\^5 \| judge \(b \/ c\) \| invalid \(b \/ c\) \|$/m)
     for (const c of ['core', 'critical', 'credential-isolation', 'endurance']) assert.match(md, new RegExp(`^\\| ${c} \\|`, 'm'))
     assert.match(md, /^\| critical \| 10\/10 \(100\.0%\) \| \[72\.2%, 100\.0%\] \| 100\.0% \| 9\/10 \(90\.0%\) \| \[59\.6%, 98\.2%\] \| 50\.0% \|/m)
     assert.match(md, /^\*\*Swap gate: NO-GO\*\* \(failed: critical\)$/m)
@@ -177,7 +177,7 @@ describe('AC2: the markdown report', () => {
     const json = JSON.parse(readFileSync(join(dir, 'c/compare.json'), 'utf8'))
     assert.equal(json.verdict, 'GO')
     assert.equal(json.categories.candidate.core.judgeScore, 0.8)
-    assert.match(r.stdout, /^\| core \|.*\| n\/a \/ 0\.80 \|$/m)
+    assert.match(r.stdout, /^\| core \|.*\| n\/a \/ 0\.80 \| 0 \/ 0 \|$/m)
 
     writeFileSync(join(dir, 'c/results.json'), JSON.stringify(run({ core: { fails: 20 } })))
     r = spawnSync(process.execPath, [COMPARE, join(dir, 'b/results.json'), join(dir, 'c/results.json'), '--out', join(dir, 'o')], { encoding: 'utf8' })
