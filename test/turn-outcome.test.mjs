@@ -1,9 +1,9 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { classifyResult, parseResetMs, Backoff, chatFromEvent } from '../lib/turn-outcome.mjs'
-import { ROOT, runWorker, sim } from './run-worker.mjs'
+import { ROOT, runWorker, sim, until } from './run-worker.mjs'
 
 const FIXTURE = join(ROOT, 'test/fixtures/blocking-limit-result.json')
 const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8'))
@@ -88,38 +88,65 @@ describe('Backoff', () => {
 
 // ---- integration: real warm-worker.mjs against a fake harness ---------------
 const noResetTime = { ...fixture, result: fixture.result.replace(/ · your weekly limit resets.*$/, '') }
+// Drain turns the fake harness has started so far (read live from turns.log).
+const drainsSoFar = (home) => {
+  const f = join(home, 'turns.log')
+  return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter((l) => l.includes('"drain":true')).length : 0
+}
+const errorTurns = (log) => (log.match(/next drain in/g) ?? []).length
 
 describe('warm-worker with a failing harness', { concurrency: true }, () => {
   test('fixture result for 10 simulated minutes: at most 5 drain turns, alert logged only', async (t) => {
-    const { drains, narrations, log } = await runWorker({ result: fixture, durationMs: sim(600_000) })
+    // The window bounds the drain count from above (load only slows drains);
+    // the first error turn is awaited, not assumed to fit in the window.
+    const { drains, narrations, log } = await runWorker({
+      result: fixture,
+      durationMs: sim(600_000),
+      act: ({ log }) => until(() => /drain turn error \(spend_limit\)/.test(log())),
+    })
     t.diagnostic(`${drains.length} drain turns`)
     assert.ok(drains.length >= 1 && drains.length <= 5, `${drains.length} drain turns\n${log}`)
     assert.equal(narrations.length, 0) // no task claimed → no known channel → log only
     assert.match(log, /drain turn error \(spend_limit\)/)
   })
 
-  test('no reset time: exponential backoff, >= 30 s apart, one alert to the claimed chat', async (t) => {
-    const { drains, narrations, log } = await runWorker({ result: noResetTime, claim: true, durationMs: sim(600_000) })
-    t.diagnostic(`${drains.length} drain turns`)
-    assert.ok(drains.length >= 2 && drains.length <= 5, `${drains.length} drain turns\n${log}`)
-    for (let i = 1; i < drains.length; i++) assert.ok(drains[i].t - drains[i - 1].t >= sim(30_000))
+  test('no reset time: exponential backoff, >= 30 s apart, one alert to the claimed chat', async () => {
+    // Stop after the third error turn; the fourth is a 2-minute (simulated) backoff away.
+    const { drains, narrations, log } = await runWorker({
+      result: noResetTime,
+      claim: true,
+      durationMs: 0,
+      act: ({ log, narrations }) => until(() => errorTurns(log()) >= 3 && narrations.length >= 1),
+    })
+    assert.equal(drains.length, 3, log)
+    assert.equal(errorTurns(log), drains.length, log) // one line per error turn, not per poll
+    // 30 s, then 60 s: doubling backoff, so at most 5 drain turns in 10 minutes.
+    for (let i = 1; i < drains.length; i++) assert.ok(drains[i].t - drains[i - 1].t >= sim(30_000 * 2 ** (i - 1)), log)
     assert.equal(narrations.length, 1)
     assert.equal(narrations[0].channel, 'wa')
     assert.equal(narrations[0].chat_id, '+15555550100')
-    assert.equal(log.match(/next drain in/g).length, drains.length) // one line per error turn, not per poll
   })
 
   test('a successful turn after errors resets the backoff and drains normally', async () => {
-    const { drains, log } = await runWorker({ result: noResetTime, errors: 2, durationMs: sim(180_000) })
+    const { drains, log } = await runWorker({
+      result: noResetTime,
+      errors: 2,
+      durationMs: 0,
+      act: ({ home }) => until(() => drainsSoFar(home) >= 7),
+    })
     assert.match(log, /drain recovered after 2 error turn\(s\)/)
     const after = drains.slice(2) // turns from the first success on
     assert.ok(after.length >= 5, `${after.length} drain turns after recovery\n${log}`)
-    for (let i = 1; i < after.length; i++) assert.ok(after[i].t - after[i - 1].t < sim(30_000))
+    assert.equal(errorTurns(log), 2, log) // no backoff wait after the recovery
   })
 
   test('context overflow respawns the harness before the retry', async () => {
     const overflow = { type: 'result', subtype: 'success', is_error: true, terminal_reason: 'blocking_limit', result: 'Prompt is too long' }
-    const { events, drains, log } = await runWorker({ result: overflow, durationMs: 6000 }) // respawn waits a fixed 2 s
+    const { events, drains, log } = await runWorker({
+      result: overflow,
+      durationMs: 0,
+      act: ({ home }) => until(() => drainsSoFar(home) >= 2),
+    })
     assert.ok(drains.length >= 2, log)
     const first = events.indexOf(drains[0])
     const second = events.indexOf(drains[1])

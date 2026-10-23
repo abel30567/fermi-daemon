@@ -1,14 +1,16 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, openSync, closeSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, openSync, closeSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { once } from 'node:events'
 import http from 'node:http'
 import { loadHarness, bareToolName } from '../harness/index.mjs'
-import { normalizeEvent, startSession, runOnce } from '../harness/claude-code.mjs'
-import { ROOT, runWorker, sim } from './run-worker.mjs'
+import * as claudeCode from '../harness/claude-code.mjs'
+import { ROOT, runWorker, sim, guardHarness } from './run-worker.mjs'
+
+const { normalizeEvent, startSession, runOnce } = guardHarness(claudeCode)
 
 const FAKE = join(ROOT, 'test/fixtures/fake-claude.mjs')
 const STREAM = join(ROOT, 'test/fixtures/claude-stream.jsonl')
@@ -42,8 +44,12 @@ const TODAY_WARM_ARGV = [
 ]
 
 describe('AC1: HARNESS unset spawns claude with today\'s argv', { concurrency: true }, () => {
+  // Stop the worker once the harness has spawned, not after a fixed time.
+  const spawned = ({ home }) =>
+    until(() => existsSync(join(home, 'turns.log')) && records(home).some((r) => r.kind === 'spawn'), 20_000)
+
   test('default bin (~/.local/bin/claude)', async () => {
-    const { events, log } = await runWorker({ result: SUCCESS, pending: 0, durationMs: 1000 })
+    const { events, log } = await runWorker({ result: SUCCESS, pending: 0, durationMs: 0, act: spawned })
     const spawns = events.filter((e) => e.kind === 'spawn')
     assert.equal(spawns.length, 1, log)
     assert.equal(spawns[0].bin, 'default')
@@ -54,7 +60,7 @@ describe('AC1: HARNESS unset spawns claude with today\'s argv', { concurrency: t
 
   test('CLAUDE_BIN picks the binary, argv unchanged', async () => {
     const alt = script(join(tmp(), 'hbar'), `FAKE_BIN=hbar exec "${process.execPath}" "${FAKE}" "$@"`)
-    const { events, log } = await runWorker({ result: SUCCESS, pending: 0, durationMs: 1000, env: { CLAUDE_BIN: alt } })
+    const { events, log } = await runWorker({ result: SUCCESS, pending: 0, durationMs: 0, env: { CLAUDE_BIN: alt }, act: spawned })
     const spawns = events.filter((e) => e.kind === 'spawn')
     assert.equal(spawns.length, 1, log)
     assert.equal(spawns[0].bin, 'hbar')
@@ -135,7 +141,17 @@ describe('AC2: recorded Claude stream → normalized events (golden)', () => {
   })
 
   test('the warm worker writes the raw log and the normalized log for a drain turn', async () => {
-    const { runs, log } = await runWorker({ result: SUCCESS, durationMs: 1500, env: { FAKE_STREAM: STREAM } })
+    // Stop the worker once the first drain turn's logs are complete, not after a fixed time.
+    const stream = readFileSync(STREAM, 'utf8')
+    const act = ({ home }) => {
+      const dir = join(home, 'fermi-daemon/runs')
+      const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : '')
+      return until(() => {
+        const first = readdirSync(dir).filter((f) => /^warm-\d+\.log$/.test(f)).sort()[0]
+        return first && read(first) === stream && read(first.replace(/\.log$/, '.events.jsonl')).split('\n').length > GOLDEN.length
+      }, 20_000)
+    }
+    const { runs, log } = await runWorker({ result: SUCCESS, durationMs: 0, env: { FAKE_STREAM: STREAM }, act })
     const first = Object.keys(runs).filter((f) => /^warm-\d+\.log$/.test(f)).sort()[0]
     assert.ok(first, log)
     assert.equal(runs[first], readFileSync(STREAM, 'utf8'))
@@ -227,7 +243,7 @@ describe('AC3: interrupt sends today\'s control_request and the session survives
     let abort
     const { events, log } = await runWorker({
       result: SUCCESS,
-      durationMs: 6000,
+      durationMs: 0,
       env: { FAKE_DELAY_MS: '1000' },
       act: async ({ log, home }) => {
         await until(() => /control endpoint on 127\.0\.0\.1:\d+/.test(log()))
@@ -237,6 +253,12 @@ describe('AC3: interrupt sends today\'s control_request and the session survives
           method: 'POST',
           body: JSON.stringify({ channel: 'wa', chat_id: '+15555550100' }),
         }).then((r) => r.json())
+        // Wait for the cleanup turn that follows the interrupt.
+        await until(() => {
+          const recs = records(home)
+          const ci = recs.findIndex((r) => r.kind === 'control')
+          return ci >= 0 && recs.slice(ci + 1).some((r) => r.kind === 'turn' && !r.drain)
+        }, 20_000)
       },
     })
     assert.deepEqual(abort, { ok: true, interrupted: true }, log)
