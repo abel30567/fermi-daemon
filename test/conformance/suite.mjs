@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { once } from 'node:events'
 import http from 'node:http'
 import { supervise } from '../../harness/supervise.mjs'
+import { guardHarness } from '../run-worker.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
 export const ERROR_KINDS = ['auth', 'spend_limit', 'rate_limit', 'context_overflow', 'api_error', 'unknown_error']
@@ -76,7 +77,7 @@ export function runConformance(adapterFactory, fakeHarness, { expectedFail = {} 
   }
   const contractCase = (key, title, fn) =>
     test(title, expectedFail[key] ? { todo: expectedFail[key] } : {}, async () => {
-      adapter = await adapterFactory()
+      adapter = guardHarness(await adapterFactory())
       try {
         await fn()
       } finally {

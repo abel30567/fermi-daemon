@@ -7,8 +7,10 @@ import { join } from 'node:path'
 import { once } from 'node:events'
 import http from 'node:http'
 import { loadHarness, bareToolName } from '../harness/index.mjs'
-import { normalizeEvent, startSession, runOnce } from '../harness/claude-code.mjs'
-import { ROOT, runWorker, sim } from './run-worker.mjs'
+import * as claudeCode from '../harness/claude-code.mjs'
+import { ROOT, runWorker, sim, guardHarness } from './run-worker.mjs'
+
+const { normalizeEvent, startSession, runOnce } = guardHarness(claudeCode)
 
 const FAKE = join(ROOT, 'test/fixtures/fake-claude.mjs')
 const STREAM = join(ROOT, 'test/fixtures/claude-stream.jsonl')

@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync, symlinkSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ROOT, runWorker, assertFakeHarness } from './run-worker.mjs'
+import { ROOT, runWorker, assertFakeHarness, harnessBin, guardHarness } from './run-worker.mjs'
 
 const RUN_ONCE = join(ROOT, 'bin/run-once.mjs')
 const FAKE_ONCE = join(ROOT, 'test/fixtures/fake-claude-once.mjs')
@@ -32,7 +32,7 @@ async function runOnceCli({ args = [], env = {}, act, prompt = 'drain the queue\
   writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_ONCE}" "$@"\n`)
   chmodSync(bin, 0o755)
   const childEnv = { PATH: process.env.PATH, HOME: dir, CLAUDE_BIN: bin, FAKE_DIR: dir, ...env }
-  assertFakeHarness(childEnv.CLAUDE_BIN || join(childEnv.HOME, '.local/bin/claude'))
+  assertFakeHarness(harnessBin(childEnv))
   const child = spawn(
     process.execPath,
     [RUN_ONCE, '--prompt', 'prompts/drain.md', '--log', 'runs/r.log', '--lane', join(dir, 'lanes/1'), ...args],
@@ -120,6 +120,19 @@ describe('test guard: no test spawns a real harness', () => {
     assert.throws(() => assertFakeHarness(link), /-> \/usr\/bin\/true/)
     await assert.rejects(runOnceCli({ env: { CLAUDE_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
     await assert.rejects(runWorker({ result: SUCCESS, durationMs: 0, env: { CLAUDE_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
+  })
+
+  test('pi and codex: the env default and direct adapter calls are guarded too', async () => {
+    assert.throws(() => assertFakeHarness(harnessBin({ HARNESS: 'pi' })), /from PATH/)
+    assert.equal(harnessBin({ HARNESS: 'codex', CODEX_BIN: '/x/codex' }), '/x/codex')
+    await assert.rejects(runWorker({ result: SUCCESS, durationMs: 0, env: { HARNESS: 'pi' } }), /from PATH/)
+    await assert.rejects(runWorker({ result: SUCCESS, durationMs: 0, env: { HARNESS: 'pi', PI_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
+    for (const name of ['claude-code', 'pi', 'codex']) {
+      const adapter = guardHarness(await import(`../harness/${name}.mjs`))
+      assert.throws(() => adapter.runOnce({ bin: '/usr/bin/true', prompt: 'x' }), /would spawn a real harness/, name)
+      assert.throws(() => adapter.startSession({ bin: '/usr/bin/true' }), /would spawn a real harness/, name)
+      if (name === 'pi' && !process.env.PI_BIN) assert.throws(() => adapter.runOnce({ prompt: 'x' }), /from PATH/) // no bin: `pi` on PATH
+    }
   })
 })
 
