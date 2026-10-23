@@ -33,6 +33,8 @@
       "latencyMs": { "type": "integer", "minimum": 0 },
       "toolCalls": { "type": "array", "items": { "type": "string" } },
       "internalToolCalls": { "type": "array", "items": { "type": "string" } },
+      "regradedAt": { "type": "string", "minLength": 1, "description": "regraded.json only (judge.mjs --regrade): when the entry was graded again" },
+      "assertionsVersion": { "type": "string", "minLength": 1, "description": "regraded.json only: hash of the grading code and the scenario's expect it was graded with" },
       "tokens": {
         "type": ["object", "null"],
         "additionalProperties": false,
@@ -52,6 +54,24 @@
         "properties": {
           "added": { "type": "array", "items": { "type": "string" } },
           "removed": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "semantic": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["question", "tool", "expect", "regex", "judge", "answers"],
+          "properties": {
+            "question": { "type": "string", "minLength": 1 },
+            "tool": { "type": "string", "minLength": 1 },
+            "expect": { "enum": ["yes", "no"] },
+            "regex": { "enum": ["pass", "fail", null] },
+            "regexMessage": { "type": "string" },
+            "judge": { "enum": ["pass", "fail", "error", "disabled"] },
+            "answers": { "type": "array", "items": { "enum": ["yes", "no"] } },
+            "error": { "type": "string" }
+          }
         }
       }
     }
