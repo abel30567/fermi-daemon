@@ -33,7 +33,8 @@ cloudflared tunnel.
   `runs/warm-*.events.jsonl` (normalized events).
 - **`harness/`** — the harness adapter seam: `index.mjs` documents the
   contract and the normalized event stream; `claude-code.mjs` is the Claude
-  Code adapter.
+  Code adapter; `codex.mjs` drives `codex app-server` (sessions) and
+  `codex exec --json` (one-shot) (`CODEX_BIN` overrides the `codex` binary).
 - **`wa-bridge/`**, **`dc-bridge/`**, and **`sl-bridge/`** — the WhatsApp (Baileys),
   Discord, and Slack (Socket Mode) bridges. Each turns an inbound chat message
   into a queued Fermi task and pokes the drain loop, and polls the Worker's
@@ -53,8 +54,14 @@ cloudflared tunnel.
   `wrangler.eval.jsonc`) and fake chat/Twilio/Mac services, and grades the
   normalized trace and resulting state. See [`evals/README.md`](evals/README.md).
 - **`prompts/`** — `drain.md` (the worker system prompt / tool policy) and
-  `heartbeat.md` (the idle check-in prompt). `npm test` runs
-  `scripts/prompt-lint.mjs`, which fails if a prompt names a Fermi tool missing
+  `heartbeat.md` (the idle check-in prompt). Private values (owner sender, call
+  list, finance channel id) are `{{NAME}}` placeholders, filled from the
+  gitignored `prompts/local.json` by `lib/prompt.mjs`; copy
+  `prompts/local.example.json`, which lists every key, and fill in the real
+  values. `warm-worker.mjs` and `bin/run-once.mjs` refuse to start when the
+  file or a key is missing. `npm test` runs
+  `scripts/prompt-lint.mjs`, which renders each prompt with the example overlay
+  and fails if a placeholder has no key or a prompt names a Fermi tool missing
   from fermi-mcp's `tool-surface.json` (vendored in `test/fixtures/`; refresh
   with `node scripts/prompt-lint.mjs --refresh`; fetched live when `CI` is set).
 - **`tools/`** — local speech-to-text helpers (`transcribe.sh` via whisper.cpp,

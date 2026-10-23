@@ -68,6 +68,7 @@ describe('AC1: HARNESS unset spawns claude with today\'s argv', { concurrency: t
   test('HARNESS selects the adapter; an unknown one is an error', async () => {
     assert.equal((await loadHarness()).name, 'claude-code')
     assert.equal((await loadHarness('claude-code')).name, 'claude-code')
+    assert.equal((await loadHarness('codex')).name, 'codex')
     await assert.rejects(loadHarness('nope'), /unknown HARNESS "nope"/)
   })
 })

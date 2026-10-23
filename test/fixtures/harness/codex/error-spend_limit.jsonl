@@ -1,0 +1,3 @@
+{"method":"item/started","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"error-spend_limit","text_elements":[]}]}}}
+{"method":"item/completed","params":{"item":{"type":"userMessage","id":"msg_u","clientId":null,"content":[{"type":"text","text":"error-spend_limit","text_elements":[]}]}}}
+{"method":"turn/completed","params":{"turn":{"items":[],"itemsView":"notLoaded","status":"failed","error":{"additionalDetails":null,"misalignment":null,"message":"Quota exceeded. Check your plan and billing details.","codexErrorInfo":"usageLimitExceeded"},"durationMs":900}}}

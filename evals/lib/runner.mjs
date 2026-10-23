@@ -1,10 +1,13 @@
 // One scenario attempt: fresh fakes + eval target + fault proxy, enqueue the
 // inbound message through the channel webhook, run one drain through the
-// harness adapter with prompts/drain.md, then dump state and grade the trace.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+// harness adapter with prompts/drain.md (rendered with the eval overlay), then dump state and grade the trace.
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { loadPrompt } from '../../lib/prompt.mjs'
 import { evaluate } from './assertions.mjs'
+import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
 import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
@@ -15,11 +18,14 @@ import { startWranglerTarget } from './wrangler-target.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 export const DRAIN_PROMPT = join(ROOT, 'prompts/drain.md')
+// Placeholder owner, call list and channel ids, matching the scenario fixtures; never the private prompts/local.json.
+export const EVAL_OVERLAY = join(ROOT, 'evals/fixtures/prompt-overlay.json')
 
 // Fake credentials for the eval worker; the fakes accept anything.
 const EVAL_SECRETS = {
   SLACK_BOT_TOKEN: 'xoxb-eval-fake',
   SLACK_BRIDGE_SECRET: 'eval-sl-bridge-secret',
+  WA_WEBHOOK_SECRET: 'eval-wa-bridge-secret',
   TELEGRAM_BOT_TOKEN: '1000:eval-fake',
   DISCORD_BOT_TOKEN: 'eval-discord-fake',
   TWILIO_ACCOUNT_SID: 'ACeval',
@@ -27,6 +33,20 @@ const EVAL_SECRETS = {
   TWILIO_FROM_NUMBER: '+15555550199',
   MACOS_MCP_TOKEN: 'eval-mac-fake',
   FERMI_BEARER_TOKEN: 'eval-bearer-fake',
+}
+
+// `fixtures.secrets` ({ name, value }) go in through the target's own secret_set,
+// opted in to secret_resolve; the high-risk approval token is replayed once.
+async function seedSecrets(url, secrets = []) {
+  if (!secrets.length) return
+  const mcp = await mcpConnect(`${url}/mcp`, { clientName: 'fermi-eval-seed' })
+  for (const { name, value } of secrets) {
+    const args = { name, value, scope: 'app', allowed_capabilities: ['secret_resolve'] }
+    let r = await mcp.callTool('secret_set', args)
+    const token = /"status":"pending_approval"/.test(resultText(r)) && JSON.parse(resultText(r)).token
+    if (token) r = await mcp.callTool('secret_set', { ...args, approval_token: token })
+    if (r.isError || /"error"|pending_approval/.test(resultText(r))) throw new Error(`secret_set ${name}: ${resultText(r).slice(0, 200)}`)
+  }
 }
 
 const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v))))
@@ -39,6 +59,10 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
   const errorKinds = new Set()
   let failed = []
   let latencyMs = 0
+  const record = (ev) => {
+    trace.push(ev)
+    appendFileSync(join(dir, 'trace.jsonl'), JSON.stringify(ev) + '\n')
+  }
   try {
     const fakes = await startFakes({ mac: { canned: scenario.fixtures?.mac } })
     closers.push(fakes.close)
@@ -47,8 +71,13 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     const target = worker ? await startWranglerTarget({ worker, env, logDir: dir }) : await startFakeTarget({ env })
     closers.push(target.close)
     assertLocalUrls({ target: target.url })
-    await target.seed(seedFixture(scenario.fixtures))
-    const proxy = await startMcpProxy({ target: target.url, faults: scenario.faults })
+    await target.seed(seedFixture(scenario.fixtures, scenario.inbound))
+    await seedSecrets(target.url, scenario.fixtures?.secrets)
+    const proxy = await startMcpProxy({
+      target: target.url,
+      faults: scenario.faults,
+      onError: (err) => record({ type: 'note', source: 'mcp-proxy', detail: [err?.message ?? String(err), err?.cause?.message].filter(Boolean).join(': ') }), // non-fatal
+    })
     closers.push(proxy.close)
     const mcpConfig = { mcpServers: { fermi: { type: 'http', url: `${proxy.url}/mcp` } } }
     assertLocalUrls(Object.fromEntries(Object.entries(mcpConfig.mcpServers).map(([k, s]) => [`mcp:${k}`, s.url])))
@@ -63,11 +92,15 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     }
     fakes.setPhase('drain')
 
-    const drainPrompt = readFileSync(DRAIN_PROMPT, 'utf8')
+    const drainPrompt = loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY)
+    // A per-attempt HOME for adapters that read MCP servers from it (pi); others ignore it.
+    const sandboxHome = mkdtempSync(join(tmpdir(), 'eval-home-'))
+    closers.push(async () => rmSync(sandboxHome, { recursive: true, force: true }))
     const harnessOpts = {
       model,
       cwd: dir,
       mcpConfig: mcpConfigFile,
+      sandboxHome,
       allowedTools: ['mcp__fermi__*'],
       env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }, // no claude.ai connectors (the production Fermi) next to the eval server
     }
@@ -75,10 +108,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     const run = scenario.session
       ? runSession(harness, { ...harnessOpts, systemPrompt: drainPrompt, script: scenario.fake?.turns }, { turns: scenario.session, inbound: scenario.inbound })
       : harness.runOnce({ ...harnessOpts, prompt: drainPrompt, script: scenario.fake?.script }) // the fake harness's script; real adapters ignore it
-    run.events.on('event', (ev) => {
-      trace.push(ev)
-      appendFileSync(join(dir, 'trace.jsonl'), JSON.stringify(ev) + '\n')
-    })
+    run.events.on('event', record)
     run.events.on('raw', (line) => appendFileSync(join(dir, 'raw.log'), line + '\n'))
     run.events.on('stderr', (s) => appendFileSync(join(dir, 'stderr.log'), s))
     let timer
