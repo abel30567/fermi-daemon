@@ -20,6 +20,9 @@ export const until = async (cond, ms = 20_000) => {
   }
 }
 
+// Taken at load: a test may point TMPDIR at a nested dir while it runs.
+const FAKE_ROOTS = [realpathSync(tmpdir()), realpathSync(join(ROOT, 'test/fixtures'))]
+
 // Throws unless the harness binary a test is about to spawn resolves inside the
 // temp dir or test/fixtures, so no test can launch the real installed claude.
 // A bare name (PATH lookup) throws; a missing path passes, since spawning it
@@ -33,9 +36,26 @@ export function assertFakeHarness(bin) {
     if (e.code === 'ENOENT') return
     throw e
   }
-  const roots = [realpathSync(tmpdir()), realpathSync(join(ROOT, 'test/fixtures'))]
-  if (!roots.some((r) => real.startsWith(r + sep))) throw new Error(`test would spawn a real harness: ${bin} -> ${real}`)
+  if (!FAKE_ROOTS.some((r) => real.startsWith(r + sep))) throw new Error(`test would spawn a real harness: ${bin} -> ${real}`)
 }
+
+// The binary each adapter spawns when no `bin` is given (mirrors harness/*.mjs).
+const DEFAULT_BIN = {
+  'claude-code': (env) => env.CLAUDE_BIN || join(env.HOME, '.local/bin/claude'),
+  pi: (env) => env.PI_BIN || 'pi',
+  codex: (env) => env.CODEX_BIN || 'codex',
+}
+
+// The harness binary a warm-worker / run-once child with this env would spawn.
+export const harnessBin = (env) => DEFAULT_BIN[env.HARNESS || 'claude-code'](env)
+
+// `adapter` with runOnce/startSession passed through assertFakeHarness, for
+// tests that drive an adapter directly.
+export const guardHarness = (adapter) => ({
+  ...adapter,
+  runOnce: (o = {}) => (assertFakeHarness(o.bin || DEFAULT_BIN[adapter.name](process.env)), adapter.runOnce(o)),
+  startSession: (o = {}) => (assertFakeHarness(o.bin || DEFAULT_BIN[adapter.name](process.env)), adapter.startSession(o)),
+})
 
 // `env` adds/overrides worker env vars; `prompt` is prompts/drain.md, `overlay` (if set) prompts/local.json; `act({ log, home, narrations })` runs
 // alongside the worker (log() is its output so far). Returns the fake harness's records and
@@ -68,7 +88,7 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
     ...(claim && { FAKE_CLAIM: '1' }),
     ...env,
   }
-  assertFakeHarness(childEnv.CLAUDE_BIN || join(childEnv.HOME, '.local/bin/claude'))
+  assertFakeHarness(harnessBin(childEnv))
 
   const narrations = []
   const server = http.createServer((req, res) => {
