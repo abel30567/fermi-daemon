@@ -17,6 +17,22 @@ export function workerDir(checkout) {
   throw new Error(`no wrangler.eval.jsonc under ${checkout} (need a fermi-mcp checkout with MCP-11)`)
 }
 
+// The --worker checkout's HEAD and dirty flag (summary.json's workerCommit and workerDirty),
+// and how many commits it is behind origin/master: fetched first, with a timeout,
+// null when offline or without that remote. → { commit, dirty, behind } (all null outside git)
+export async function workerCheckout(checkout, { fetchTimeoutMs = 10_000 } = {}) {
+  const git = (...args) => run('git', ['-C', checkout, ...args], { timeout: fetchTimeoutMs, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).then((r) => r.stdout.trim())
+  const commit = await git('rev-parse', 'HEAD').catch(() => null)
+  if (!commit) return { commit: null, dirty: null, behind: null }
+  const dirty = (await git('status', '--porcelain')) !== ''
+  let behind = null
+  try {
+    await git('fetch', '--quiet', 'origin', 'master')
+    behind = Number(await git('rev-list', '--count', 'HEAD..origin/master'))
+  } catch {}
+  return { commit, dirty, behind }
+}
+
 export async function startWranglerTarget({ worker, env, logDir, bootTimeoutMs = 90_000 }) {
   const cwd = workerDir(worker)
   const state = mkdtempSync(join(tmpdir(), 'fermi-eval-state-'))

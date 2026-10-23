@@ -104,12 +104,24 @@ mid-turn API errors can only be injected there, since the model API is not proxi
      (MCP-11) under `wrangler dev --local`. It gets a free port and its own
      `--persist-to` dir, so state is fresh on every attempt. It is seeded with
      `scripts/eval-seed.mjs` and dumped with `scripts/eval-dump.mjs`.
+     `summary.json` records the checkout's `git rev-parse HEAD` and dirty flag as
+     `workerCommit` and `workerDirty` (null without `--worker`), and the runner
+     warns when it is behind `origin/master` (fetched with a 10 s timeout; skipped
+     offline or without that remote).
    - without it: `lib/fake-target.mjs`, an in-memory stand-in with the same
      webhook, core tools and dump shape. `lib/fake-target-tools.mjs` adds
      `skill_load`, `profile_update`, `memory_write` and `schedule_*`, with the
      worker's validation and `{ ok: false, error }` results (`over_budget`,
      `every_minutes_out_of_range`, …). It exists to test the runner, so only
      `--harness fake` may use it; any other harness without `--worker` exits 2.
+   After seeding, every fixture section sent is read back through the target
+   (`lib/seed-check.mjs`): `conversation` through MCP `conversation_history` for
+   the inbound chat (every seeded turn present), profile keys, memory bodies, skill
+   slugs, allowlist entries and tasks through the dump. A section that did not land
+   (a stale worker whose eval-seed.mjs predates it) ends the attempt before the
+   harness starts, with errorKind `setup_error`, `status: "setup_error"` and
+   `pass: null`: never graded. `summary.json` lists such attempts under
+   `setupErrors`, and a run with any exits 1.
 3. Starts a fault-injecting MCP proxy in front of the target's `/mcp`. The
    harness gets an MCP config with that proxy as the only server, `fermi`, so
    its tools are `mcp__fermi__*`, plus `ENABLE_CLAUDEAI_MCP_SERVERS=false`.
@@ -451,7 +463,8 @@ It prints markdown and writes `compare.md` and `compare.json` to `--out`
 INCONCLUSIVE.
 Negative controls (`expectOutcome: "fail"`) are left out of every statistic, and so
 are invalid attempts (`status: "invalid"`), which are counted per category as
-`invalidAttempts`. A `judge.json` next to a results file adds its mean score per
+`invalidAttempts`, and setup errors (`status: "setup_error"`), counted per category as
+`setupErrorAttempts` and reported per run under the category table. A `judge.json` next to a results file adds its mean score per
 category.
 
 The report has:

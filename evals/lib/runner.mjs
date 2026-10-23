@@ -27,6 +27,7 @@ import { startFakes } from './fakes.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
 import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
+import { SetupError, verifySeed } from './seed-check.mjs'
 import { judgeSemantic } from './semantic.mjs'
 import { runSession } from './session.mjs'
 import { startWranglerTarget } from './wrangler-target.mjs'
@@ -151,11 +152,13 @@ export const INFRA_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
 // `semanticJudge`: lib/semantic.mjs createSemanticJudge() for semantic assertions (default: none, regex only).
+// `startTarget`: tests only, replaces the eval target (default: the wrangler worker with `worker`, else the fake).
+// A fixture section the target did not keep (seed-check.mjs) → status "setup_error", pass null: never graded.
 export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pace = (fn) => fn(), onInfraRetry, ...args }) {
   const dir = join(args.outDir, args.scenario.name, String(args.attempt))
   for (let n = 0; ; n++) {
     const { result, infra } = await pace(() => attemptOnce(args))
-    if (!infra) return { ...result, status: 'valid', infraRetries: n }
+    if (!infra) return { ...result, status: result.errorKinds.includes('setup_error') ? 'setup_error' : 'valid', infraRetries: n }
     if (infra.retryAfterMs > backoff.maxMs) {
       const at = new Date(Date.now() + infra.retryAfterMs).toISOString()
       return { ...result, pass: null, status: 'invalid', invalidReason: `${infra.kind} resets at ${at}, beyond the ${backoff.maxMs} ms infra wait cap: ${infra.detail}`, infraRetries: n }
@@ -169,7 +172,7 @@ export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pa
   }
 }
 
-async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth, semanticJudge }) {
+async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutMs, outDir, sandboxReadable = [], auth, semanticJudge, startTarget }) {
   const dir = join(outDir, scenario.name, String(attempt))
   mkdirSync(dir, { recursive: true })
   const closers = []
@@ -213,10 +216,16 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
     closers.push(fakes.close)
     const env = { ...fakes.env, ...EVAL_SECRETS }
     assertLocalUrls(urlEntries(env))
-    const target = worker ? await startWranglerTarget({ worker, env, logDir: dir }) : await startFakeTarget({ env, tools: fixtures?.tools })
+    const target = startTarget
+      ? await startTarget({ env, tools: fixtures?.tools })
+      : worker
+        ? await startWranglerTarget({ worker, env, logDir: dir })
+        : await startFakeTarget({ env, tools: fixtures?.tools })
     closers.push(target.close)
     assertLocalUrls({ target: target.url })
-    await target.seed(seedFixture(fixtures, scenario.inbound))
+    const seed = seedFixture(fixtures, scenario.inbound)
+    await target.seed(seed)
+    await verifySeed(target, seed)
     await seedSecrets(target.url, fixtures?.secrets)
     const proxy = await startMcpProxy({
       target: target.url,
@@ -324,7 +333,7 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
     failed = evaluate(scenario.expect, ctx)
     if (ctx.semantic.size) semantic = [...ctx.semantic.keys()].map((spec) => semanticOutcome(spec, ctx))
   } catch (err) {
-    errorKinds.add('runner_error')
+    errorKinds.add(err instanceof SetupError ? 'setup_error' : 'runner_error')
     failed.push({ assertion: null, message: String(err?.message ?? err) })
   } finally {
     for (const close of closers.reverse()) await close().catch(() => {})
@@ -357,7 +366,7 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
     ...(scenario.category != null && { category: String(scenario.category) }),
     attempt,
     authMode: auth?.mode ?? 'none', // the mode only, never a value
-    pass: failed.length === 0,
+    pass: errorKinds.has('setup_error') ? null : failed.length === 0,
     expectedOutcome: scenario.expectOutcome ?? 'pass',
     failed: failed.map((f) => ({ assertion: f.assertion, message: f.message })),
     latencyMs,
@@ -418,15 +427,18 @@ async function runDrainSession({ harness, opts, systemPrompt, scenario, enqueue,
   }
 }
 
-// Invalid attempts (status "invalid": infrastructure-limited) are graded neither way;
-// they are listed apart, and a run with any is not ok: it has no verdict for them.
+// Invalid attempts (status "invalid": infrastructure-limited) and setup errors (status
+// "setup_error": the seed did not land) are graded neither way; they are listed apart,
+// and a run with any is not ok: it has no verdict for them.
 export function summarize(results, meta) {
   const invalid = results.filter((r) => r.status === 'invalid')
-  const valid = results.filter((r) => r.status !== 'invalid')
+  const setupErrors = results.filter((r) => r.status === 'setup_error')
+  const valid = results.filter((r) => r.status !== 'invalid' && r.status !== 'setup_error')
   const byScenario = {}
   for (const r of results) {
-    const s = (byScenario[r.scenario] ??= { attempts: 0, passes: 0, invalid: 0, expectedOutcome: r.expectedOutcome })
+    const s = (byScenario[r.scenario] ??= { attempts: 0, passes: 0, invalid: 0, setupErrors: 0, expectedOutcome: r.expectedOutcome })
     if (r.status === 'invalid') s.invalid++
+    else if (r.status === 'setup_error') s.setupErrors++
     else s.attempts++
     if (r.pass) s.passes++
   }
@@ -442,7 +454,8 @@ export function summarize(results, meta) {
     expectedFailures: valid.filter((r) => !r.pass && r.expectedOutcome === 'fail').length,
     unexpected: unexpected.map((r) => ({ scenario: r.scenario, attempt: r.attempt, pass: r.pass })),
     invalid: invalid.map((r) => ({ scenario: r.scenario, attempt: r.attempt, reason: r.invalidReason })),
-    ok: unexpected.length === 0 && invalid.length === 0,
+    setupErrors: setupErrors.map((r) => ({ scenario: r.scenario, attempt: r.attempt, reason: r.failed[0]?.message })),
+    ok: unexpected.length === 0 && invalid.length === 0 && setupErrors.length === 0,
     byScenario,
   }
 }
