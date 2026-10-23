@@ -4,7 +4,7 @@
 // Every results.json entry is graded again from <run>/<scenario>/<attempt>/trace.jsonl
 // and state.json with its scenario's current `expect`. The runner's own failures
 // (timeout, error turns, isolation breach: `assertion: null`) are kept as recorded.
-// Kept as recorded too: an invalid attempt (never graded), one whose runner errored
+// Kept as recorded too: an invalid or setup_error attempt (never graded), one whose runner errored
 // (it may have no state), and the assertions whose input is never written to the
 // attempt dir (NOT_REPLAYABLE: the canary, per-task latencies).
 import { createHash } from 'node:crypto'
@@ -35,7 +35,7 @@ export async function regradeRun(runDir, scenarios, { judge = null, now = new Da
   for (const r of results) {
     const s = scenarios[r.scenario]
     const stamp = { regradedAt, assertionsVersion: assertionsVersion(s.expect) }
-    if (r.status === 'invalid' || r.errorKinds?.includes('runner_error')) {
+    if (r.status === 'invalid' || r.status === 'setup_error' || r.errorKinds?.includes('runner_error')) {
       out.push({ ...r, ...stamp })
       continue
     }

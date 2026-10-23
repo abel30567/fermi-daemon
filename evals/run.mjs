@@ -13,7 +13,10 @@
 // macOS for a Claude judge model), so the same judge grades every harness's run.
 // --harness fake uses the fake judge (calibration labels, no inference).
 // An attempt that hits a rate/spend limit or a 5xx is re-run up to --infra-retries times
-// (default 3), then recorded as status "invalid" (lib/runner.mjs runAttempt). Attempts on
+// (default 3), then recorded as status "invalid" (lib/runner.mjs runAttempt). A seeded fixture
+// section the target did not keep (lib/seed-check.mjs) makes the attempt status "setup_error", never graded.
+// summary.json records the --worker checkout's workerCommit and workerDirty; a checkout behind
+// origin/master (fetched with a timeout, skipped offline) is warned about. Attempts on
 // one --auth backend run one at a time across processes, --min-gap-ms apart (lib/pacing.mjs).
 // Scenarios with `"schedule": "weekly"` (the soak) are skipped unless --weekly is given.
 // Exit 0 when every attempt's outcome is the expected one, 1 otherwise, 2 on a
@@ -28,6 +31,7 @@ import { createAuth, createJudgeAuth } from './lib/auth.mjs'
 import { assertLocalUrls } from './lib/net.mjs'
 import { createPacer } from './lib/pacing.mjs'
 import { runAttempt, summarize } from './lib/runner.mjs'
+import { workerCheckout } from './lib/wrangler-target.mjs'
 import { expandScenarios, expandVariants, isNegativeControl, loadScenario } from './lib/scenario.mjs'
 import { fakeAsk, prepareSemantic, semanticSpecs } from './lib/semantic.mjs'
 
@@ -156,6 +160,10 @@ async function main() {
     semantic = await judgePacer.run(() => prepareSemantic({ ask, model, cacheFile: opts.harness === 'fake' ? null : semanticCacheFile() }))
   }
 
+  // Which fermi-mcp the grades came from: a stale checkout can silently drop seed sections.
+  const checkout = opts.worker ? await workerCheckout(opts.worker) : null
+  if (checkout?.behind) console.warn(`WARNING: --worker ${opts.worker} is ${checkout.behind} commit(s) behind origin/master (HEAD ${checkout.commit})`)
+
   const startedAt = new Date().toISOString()
   const results = []
   for (const scenario of scenarios)
@@ -164,7 +172,7 @@ async function main() {
       const r = await runAttempt({ scenario, attempt, harness, model: opts.model, worker: opts.worker, timeoutMs: opts.timeoutMs, outDir: out, auth, semanticJudge: semantic?.judge, infraRetries: opts.infraRetries, pace: pacer.run, onInfraRetry })
       r.internalToolCalls = internalCalls(out, r)
       results.push(r)
-      const tag = r.status === 'invalid' ? 'INVALID' : r.pass ? 'PASS' : r.expectedOutcome === 'fail' ? 'FAIL (expected)' : 'FAIL'
+      const tag = r.status === 'invalid' ? 'INVALID' : r.status === 'setup_error' ? 'SETUP_ERROR' : r.pass ? 'PASS' : r.expectedOutcome === 'fail' ? 'FAIL (expected)' : 'FAIL'
       console.log(`${tag} ${r.scenario} #${attempt} ${r.latencyMs}ms ${r.failed.map((f) => f.message).join(' | ')}`.trimEnd())
     }
   const summary = summarize(results, {
@@ -174,6 +182,8 @@ async function main() {
     judgeAuthMode: judgeAuth?.mode ?? null, // null: no real semantic judge in this run
     k: opts.k,
     target: opts.worker ? 'wrangler' : 'fake',
+    workerCommit: checkout?.commit ?? null, // null: no --worker, or not a git checkout
+    workerDirty: checkout?.dirty ?? null,
     startedAt,
     finishedAt: new Date().toISOString(),
     skipped,
@@ -181,7 +191,7 @@ async function main() {
   })
   writeFileSync(join(out, 'results.json'), JSON.stringify(results, null, 2) + '\n')
   writeFileSync(join(out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n')
-  console.log(`${summary.passed}/${summary.attempts} passed, ${summary.expectedFailures} expected failure(s), ${summary.unexpected.length} unexpected, ${summary.invalid.length} invalid, ${skipped.length} skipped → ${out}`)
+  console.log(`${summary.passed}/${summary.attempts} passed, ${summary.expectedFailures} expected failure(s), ${summary.unexpected.length} unexpected, ${summary.invalid.length} invalid, ${summary.setupErrors.length} setup error(s), ${skipped.length} skipped → ${out}`)
   return summary.ok ? 0 : 1
 }
 
