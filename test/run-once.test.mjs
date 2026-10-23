@@ -296,7 +296,8 @@ describe('poll.sh node resolution for the cold path', () => {
 
 // poll.sh's live-lane count drives how many cold drain lanes it may spawn:
 // with 10 pending it spawns MAX_CONCURRENT - live of them.
-describe('poll.sh live-lane count', () => {
+// poll.sh is the macOS daemon's poller: it reads lane ages with BSD `stat -f %m`.
+describe('poll.sh live-lane count', { skip: process.platform !== 'darwin' && 'poll.sh uses BSD stat (macOS only)' }, () => {
   const sleeper = () => spawn('sleep', ['60'], { stdio: 'ignore' })
   const deadPid = () => spawnSync('true').pid
   const lane = (daemon, name, pid, ageS = 0) => {

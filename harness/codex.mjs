@@ -11,17 +11,20 @@
 //   mcpConfig  a Claude-style mcp.json (path, JSON string or object) of http servers. codex
 //              has no --mcp-config flag, so each session/run gets its own CODEX_HOME:
 //              a temp dir holding config.toml with those servers (and no user config,
-//              connectors, plugins or browser/computer use) plus a copy of auth.json
-//              from the real CODEX_HOME (~/.codex); it is removed when the process
-//              closes or fails to spawn (not if this process is SIGKILLed). Every
-//              server URL must be localhost, else the adapter throws. Without
+//              connectors, plugins or browser/computer use) plus a copy of authFile if
+//              given; it is removed when the process closes or fails to spawn (not if
+//              this process is SIGKILLed). Every server URL must be localhost, else the
+//              adapter throws. Without
 //              mcpConfig codex runs with the real CODEX_HOME (user config, MCP
 //              servers, connectors); the eval runner and judge always pass one.
+//   authFile   with mcpConfig: an auth.json (e.g. ~/.codex/auth.json, passed by
+//              evals/run.mjs --auth-file) copied into the per-run CODEX_HOME. The real
+//              CODEX_HOME is never read: without authFile (or provider) codex gets no credential.
 //   provider   with mcpConfig: { baseUrl, apiKey }, an OpenAI Responses endpoint
 //              (CLIProxyAPI, evals --auth proxy) as the only model provider: config.toml
 //              sets model_provider = "cliproxy" and model = <model>, the key reaches
-//              codex only as PROXY_ENV_KEY (kept out of its shell tool's env), and no
-//              auth.json is copied. With a custom provider codex makes no ChatGPT
+//              codex only as PROXY_ENV_KEY (kept out of its shell tool's env), and
+//              authFile is not copied. With a custom provider codex makes no ChatGPT
 //              startup calls (model refresh, workspace routing); its first request is
 //              the turn's POST <baseUrl>/responses. A non-localhost baseUrl is refused.
 //   sandbox    spawn through harness/sandbox.mjs (eval mode); the per-run CODEX_HOME
@@ -51,8 +54,8 @@
 
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isLocalUrl } from '../evals/lib/net.mjs'
 import { classifyResult } from '../lib/turn-outcome.mjs'
@@ -110,16 +113,16 @@ export function codexConfig(mcpConfig, { sandboxMode, provider, model } = {}) {
 function spawnCodex(args, o) {
   const bad = UNSUPPORTED.filter((k) => o[k] != null)
   if (o.provider != null && !o.mcpConfig) bad.push('provider without mcpConfig')
+  if (o.authFile != null && !o.mcpConfig) bad.push('authFile without mcpConfig')
   if (bad.length) throw new Error(`codex adapter: unsupported option(s) ${bad.join(', ')} (see harness/codex.mjs)`)
   const env = { ...(o.sandbox ? {} : process.env), ...o.env, ...o.sandbox?.env } // sandboxed: nothing ambient
   let home = null
   if (o.mcpConfig) {
     const config = codexConfig(o.mcpConfig, { ...(o.sandbox && { sandboxMode: 'danger-full-access' }), provider: o.provider, model: o.model })
-    const auth = join(env.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
     home = mkdtempSync(join(o.sandbox?.root ?? tmpdir(), 'codex-home-'))
     writeFileSync(join(home, 'config.toml'), config)
     if (o.provider) env[PROXY_ENV_KEY] = o.provider.apiKey
-    else if (existsSync(auth)) copyFileSync(auth, join(home, 'auth.json'))
+    else if (o.authFile != null) copyFileSync(o.authFile, join(home, 'auth.json'))
     env.CODEX_HOME = home
   }
   const cleanup = () => home && rmSync(home, { recursive: true, force: true })

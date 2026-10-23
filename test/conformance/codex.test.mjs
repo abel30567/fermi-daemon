@@ -54,16 +54,19 @@ describe('codex adapter', () => {
     assert.throws(() => runOnce({ bin, cwd: dir, prompt: 'turn', mcpConfig: cfg({ fermi: { url: 'http://10.0.0.5/mcp' } }) }), /refusing non-localhost/)
   })
 
-  test('mcpConfig: a per-run CODEX_HOME with the servers and only auth.json from the real one, removed after exit', async () => {
+  test('mcpConfig: a per-run CODEX_HOME with the servers and only the authFile copy, removed after exit; the real one is never read', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dmn6-'))
     const real = join(dir, 'real-codex-home')
     mkdirSync(real)
-    writeFileSync(join(real, 'auth.json'), '{"tokens":"fake"}')
+    writeFileSync(join(real, 'auth.json'), '{"tokens":"SENTINEL"}')
+    chmodSync(join(real, 'auth.json'), 0o000) // any read of the real CODEX_HOME's auth.json throws
+    const authFile = join(dir, 'stub-auth.json')
+    writeFileSync(authFile, '{"tokens":"fake"}')
     writeFileSync(join(real, 'config.toml'), '[mcp_servers.prod]\nurl = "https://fermi.example.com/mcp"\n')
     const spy = script('codex-spy', `echo "$CODEX_HOME" > "$FAKE_DIR/home-path"; cp -R "$CODEX_HOME" "$FAKE_DIR/home"; exec "${process.execPath}" "${fake}" "$@"`)
     const mcpConfig = join(dir, 'mcp.json')
     writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { fermi: { type: 'http', url: 'http://127.0.0.1:4100/mcp', headers: { Authorization: 'Bearer eval' } } } }))
-    const { outcome } = await runOnce({ bin: spy, cwd: dir, prompt: 'turn', mcpConfig, env: { FAKE_DIR: dir, CODEX_HOME: real } }).done
+    const { outcome } = await runOnce({ bin: spy, cwd: dir, prompt: 'turn', mcpConfig, authFile, env: { FAKE_DIR: dir, CODEX_HOME: real } }).done
     assert.equal(outcome.ok, true)
     assert.deepEqual(readFileSync(join(dir, 'home/auth.json'), 'utf8'), '{"tokens":"fake"}')
     const toml = readFileSync(join(dir, 'home/config.toml'), 'utf8')
@@ -73,6 +76,7 @@ describe('codex adapter', () => {
     const home = readFileSync(join(dir, 'home-path'), 'utf8').trim()
     assert.notEqual(home, real)
     assert.equal(existsSync(home), false, 'the per-run CODEX_HOME (holding the auth copy) is removed')
+    assert.throws(() => runOnce({ bin, cwd: dir, prompt: 'turn', authFile }), /unsupported option\(s\) authFile without mcpConfig/)
   })
 
   test('mcpConfig: an object is accepted; anything else is refused with a clear message', () => {
@@ -87,14 +91,13 @@ describe('codex adapter', () => {
     const withTmp = async (fn) => {
       const saved = process.env.TMPDIR
       const tmp = mkdtempSync(join(tmpdir(), 'dmn6-tmp-'))
-      const real = join(tmp, 'real-codex-home')
-      mkdirSync(real)
-      writeFileSync(join(real, 'auth.json'), '{"tokens":"fake"}')
+      const authFile = join(tmp, 'stub-auth.json')
+      writeFileSync(authFile, '{"tokens":"fake"}')
       process.env.TMPDIR = tmp
       try {
-        await fn({ mcpConfig: { mcpServers: { fermi: { url: 'http://127.0.0.1:4100/mcp' } } }, env: { CODEX_HOME: real } })
+        await fn({ mcpConfig: { mcpServers: { fermi: { url: 'http://127.0.0.1:4100/mcp' } } }, authFile })
       } finally {
-        process.env.TMPDIR = saved
+        saved == null ? delete process.env.TMPDIR : (process.env.TMPDIR = saved) // unset on Linux: never the string "undefined"
       }
       assert.deepEqual(readdirSync(tmp).filter((f) => f.startsWith('codex-home-')), [], 'no codex-home-* left behind')
     }
