@@ -50,7 +50,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const text = msg.message?.content?.[0]?.text || ''
   const drain = text.includes('pending tasks')
   const errored = drain ? drainsSoFar() < maxErrors : true
-  record({ kind: 'turn', drain })
+  record({ kind: 'turn', drain, text })
   pending = setTimeout(() => {
     pending = null
     if (drain && process.env.FAKE_STREAM) {

@@ -57,10 +57,10 @@ export const guardHarness = (adapter) => ({
   startSession: (o = {}) => (assertFakeHarness(o.bin || DEFAULT_BIN[adapter.name](process.env)), adapter.startSession(o)),
 })
 
-// `env` adds/overrides worker env vars; `prompt` is prompts/drain.md, `overlay` (if set) prompts/local.json; `act({ log, home, narrations })` runs
+// `env` adds/overrides worker env vars; `dotenv` is extra ~/fermi-daemon/.env lines; `prompt` is prompts/drain.md, `overlay` (if set) prompts/local.json; `act({ log, home, narrations })` runs
 // alongside the worker (log() is its output so far). Returns the fake harness's records and
 // the worker's runs/ files.
-export async function runWorker({ result, errors, claim, durationMs, pending = 1, env = {}, act, prompt = 'test prompt\n', overlay, worker = join(ROOT, 'warm-worker.mjs') }) {
+export async function runWorker({ result, errors, claim, durationMs, pending = 1, env = {}, dotenv = '', act, prompt = 'test prompt\n', overlay, worker = join(ROOT, 'warm-worker.mjs') }) {
   const home = mkdtempSync(join(tmpdir(), 'dmn2-'))
   const daemon = join(home, 'fermi-daemon')
   mkdirSync(join(daemon, 'prompts'), { recursive: true })
@@ -105,7 +105,7 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
     res.writeHead(404).end()
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
-  writeFileSync(join(daemon, '.env'), `FERMI_URL=http://127.0.0.1:${server.address().port}\nFERMI_BEARER_TOKEN=test\n`)
+  writeFileSync(join(daemon, '.env'), `FERMI_URL=http://127.0.0.1:${server.address().port}\nFERMI_BEARER_TOKEN=test\n${dotenv}`)
 
   const child = spawn(process.execPath, [worker], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
   const exited = new Promise((r) => child.on('exit', r)) // the worker may exit on its own (refusing to start)

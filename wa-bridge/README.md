@@ -31,7 +31,7 @@ live in `../bridge-lib/outbound-media.ts` (also used by dc-bridge / sl-bridge).
 
 1. `state/mention-aliases.json` — manual aliases, exact then case/accent-insensitive:
    ```json
-   { "1203634...@g.us": { "Pollito": "11600723472408@lid", "Sebastián": "15551234567" } }
+   { "1203634...@g.us": { "Pollito": "10000000000000@lid", "Sebastián": "15555554567" } }
    ```
    Values may be `@lid`, `@s.whatsapp.net`, or bare digits (treated as a phone).
    The file is re-read when it changes; no restart needed.
@@ -52,7 +52,7 @@ text match the jid in `mentions`. Groups now report an `addressingMode`
 (`lid` or `pn`); by default (`WA_MENTION_JID_MODE=auto`) we use the member's
 LID (`@lid`) in LID groups and the phone jid (`@s.whatsapp.net`) in PN groups.
 Override with `WA_MENTION_JID_MODE=lid|pn` in `~/fermi-daemon/.env` if a group
-misbehaves. The `@11600723472408` seen in inbound text is a LID, not a phone,
+misbehaves. The `@10000000000000` seen in inbound text is a LID, not a phone,
 which is why LID groups must mention with `…@lid`.
 
 **Chunking.** Long bodies are split at 4000 chars; a cut never lands inside an

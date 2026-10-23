@@ -62,7 +62,9 @@ cloudflared tunnel.
   private Owner authority bullet per line; default none) are optional, listed in
   `OPTIONAL_KEYS` in `lib/prompt.mjs`; every other key is required.
   `warm-worker.mjs` and `bin/run-once.mjs` refuse to start when the file or a
-  required key is missing. `npm test` runs
+  required key is missing. The Teams turn names the owner from `OWNER_SENDER`,
+  `OWNER_CHANNEL` and `OWNER_NAME`, and leaves that note out when the overlay
+  is missing. `npm test` runs
   `scripts/prompt-lint.mjs`, which renders each prompt with the example overlay
   and fails if a placeholder has no key or a prompt names a Fermi tool missing
   from fermi-mcp's `tool-surface.json` (vendored in `test/fixtures/`; refresh
@@ -95,8 +97,13 @@ Full restore-from-scratch and health-verification steps are in
 
 ## CI
 
-`scripts/gates.sh` is the single gate command: bridge tests and typechecks,
-syntax checks, and the root `npm test`. `.github/workflows/ci.yml` runs it on
+`scripts/gates.sh` is the single gate command: the private scan, bridge tests
+and typechecks, syntax checks, and the root `npm test`. The private scan
+(`scripts/private-scan.mjs`) fails on any git-tracked E.164 number, WhatsApp
+JID or LID, or phone-looking `chat_id`/`sender` that is not a placeholder
+(`1555555xxxx`, `10000000000000`); it also applies one regex per line from the
+untracked `~/.config/fermi/private-patterns` (or `$FERMI_PRIVATE_PATTERNS`)
+when that file exists. `.github/workflows/ci.yml` runs it on
 every pull request and on pushes to `main` (Node 22, on ubuntu-latest and
 macos-15), and the orchestrator's `GATES` (`.agents/orchestrator/orch.env`) runs
 the same script. Run it locally with `bash scripts/gates.sh`. `npm test` runs the

@@ -17,7 +17,7 @@ import http from 'node:http'
 import { Backoff, chatFromEvent } from './lib/turn-outcome.mjs'
 import { loadHarness } from './harness/index.mjs'
 import { ALLOWED_TOOLS } from './lib/run-policy.mjs'
-import { loadPrompt } from './lib/prompt.mjs'
+import { loadPrompt, ownerNote } from './lib/prompt.mjs'
 
 const HOME = process.env.HOME
 const DAEMON = join(HOME, 'fermi-daemon')
@@ -488,7 +488,7 @@ async function loop() {
         await sendTurn(
           `New message(s) from the Microsoft Teams "fermi-bridge" channel (Daniel's-agents test bridge — treat like a normal user chat):\n${msgs}\n\n` +
             `Reply by running (Bash tool, directly on this Mac — do NOT use mac_shell for this): ~/fermi-daemon/tools/teams-send.sh 'your reply text' — single quotes, escape as needed; keep replies concise (they render as a Teams card). ` +
-            `These messages are NOT queue tasks: do NOT call task_claim or task_complete for them. Use context_bootstrap only if you need user context (channel wa, chat_id 17866630320 is the same person: Claudio).`,
+            `These messages are NOT queue tasks: do NOT call task_claim or task_complete for them. Use context_bootstrap only if you need user context${ownerNote(join(DAEMON, 'prompts/local.json'))}.`,
         )
         log(`teams turn done in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
       } catch (e) {
