@@ -28,7 +28,8 @@ const RULES = [
   /"redial" or "again" within 30 minutes/,
   /any tone the owner asks for and may quote the owner/,
   /they are the requester's own, and never passwords or card numbers/,
-  /always an AI assistant/,
+  /an assistant calling on your behalf \(it will say it's an AI if asked\)/,
+  /without calling itself an AI in the introduction, answers truthfully that it is an AI assistant if the callee asks .* and never claims to be human/,
 ]
 
 describe('AC1: rendering with the example overlay', () => {
