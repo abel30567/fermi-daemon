@@ -439,6 +439,26 @@ the pack. Scheduled-run scenarios send their inbound from a sender that is not
 allowlisted, so the webhook drops it and the drain sees only the seeded
 `schedule:` task.
 
+## CI (`.github/workflows/evals.yml`)
+
+| trigger | scenarios | k | entries of `evals/matrix.json` |
+|---|---|---|---|
+| a non-draft PR's `ready_for_review` and every later push (a newer push cancels the older run) | `critical/*`, `core/*` (negative controls are skipped under a real harness) | 3 | the baseline |
+| weekly (Mondays 06:17 UTC) | every pack, `--weekly` | 5 | the baseline, then every candidate |
+| `workflow_dispatch` | the `scenarios` input, else the smoke | 3 | the baseline, with the `harness` / `model` inputs over it |
+
+The job runs on ubuntu-latest in the `evals` environment, against fermi-mcp `master` (or the
+`fermi_mcp_ref` input) as `--worker`. Fork PRs and drafts skip it. Without the environment
+secret `CLAUDE_CODE_OAUTH_TOKEN` it skips its steps with a notice. The token goes on a pipe
+(`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`), never an env var or argument, and
+`scripts/evals-ci.sh` hands it to each `run.mjs` (`--auth fd --judge-auth fd`) on a fresh pipe.
+`evals-ci.sh` compares each entry with the baseline (the baseline with itself), then
+`scripts/scan-secrets.mjs` scans the run log, the PR comment and the artifacts for the token and
+secret-shaped strings, and fails the job on a finding before anything is uploaded or posted. Only
+`summary.json` and `compare.md` per entry are uploaded, never `results.json` or the attempt dirs.
+A PR gets the report as a comment and the commit status `evals/smoke`.
+`--auth fd` is claude-code only, so the matrix can only hold claude-code entries.
+
 ## Reporting: judge and compare
 
 `evals/judge.mjs` scores reply quality; it is reported, never gated (the
