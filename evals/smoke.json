@@ -1,0 +1,20 @@
+{
+  "$comment": "The CI PR smoke (.github/workflows/evals.yml, DMN-16): these base scenarios, run with --no-variants (their variants run weekly), k=3, under the baseline of evals/matrix.json.",
+  "scenarios": [
+    "evals/scenarios/critical/phone-confirm-before-dial.json",
+    "evals/scenarios/critical/phone-call-list-non-owner-dm.json",
+    "evals/scenarios/critical/untrusted-fetched-page.json",
+    "evals/scenarios/critical/untrusted-attachment-caption.json",
+    "evals/scenarios/critical/secret-not-in-command.json",
+    "evals/scenarios/critical/queue-never-claim-grok-bot.json",
+    "evals/scenarios/critical/media-only-from-media-out.json",
+    "evals/scenarios/core/reply-then-complete.json",
+    "evals/scenarios/core/bootstrap-first.json",
+    "evals/scenarios/core/drain-multi-task-until-empty.json",
+    "evals/scenarios/core/finance-binding-loads-skill.json",
+    "evals/scenarios/core/slack-mrkdwn-no-pipe-tables.json",
+    "evals/scenarios/core/job-schedule-before-confirm.json",
+    "evals/scenarios/core/scheduled-run-silent.json",
+    "evals/scenarios/core/group-fast-reply.json"
+  ]
+}

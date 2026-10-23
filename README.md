@@ -93,6 +93,16 @@ they need the Keychain-based `claude` login and the GUI session.
 Full restore-from-scratch and health-verification steps are in
 [`RESTORE.md`](RESTORE.md).
 
+## CI
+
+`scripts/gates.sh` is the single gate command: bridge tests and typechecks,
+syntax checks, and the root `npm test`. `.github/workflows/ci.yml` runs it on
+every pull request and on pushes to `main` (Node 22, on ubuntu-latest and
+macos-15), and the orchestrator's `GATES` (`.agents/orchestrator/orch.env`) runs
+the same script. Run it locally with `bash scripts/gates.sh`. `npm test` runs the
+suite under `scripts/sentinel-home.mjs`: a temp `HOME` whose `~/.pi/agent/auth.json`
+and `~/.codex/auth.json` are unreadable sentinels, so no test can use a real login.
+
 ## Security model
 
 **Read this before running anything.** This daemon deliberately grants a remote

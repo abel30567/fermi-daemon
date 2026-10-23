@@ -104,20 +104,24 @@ describe('AC1: the generated config.toml points only at the localhost proxy', ()
     assert.deepEqual(a, { localPorts: ['8317'], egressAllow: ['127.0.0.1:8317'], secrets: [token], provider: { baseUrl: 'http://127.0.0.1:8317/v1', apiKey: token } })
   })
 
-  test('no auth.json is copied in proxy mode, even when the real CODEX_HOME has one', async () => {
+  test('no auth.json is copied in proxy mode, even with an authFile; without one the real CODEX_HOME\'s is never copied', async () => {
     const dir = tmp()
     const real = join(dir, 'real-codex-home')
     mkdirSync(real)
     writeFileSync(join(real, 'auth.json'), '{"tokens":"chatgpt"}')
+    const authFile = join(dir, 'stub-auth.json')
+    writeFileSync(authFile, '{"tokens":"stub"}')
     const token = fakeToken()
     const provider = { baseUrl: `${PROXY_URL}/v1`, apiKey: token }
-    const r = await codex.runOnce({ bin: SPY, cwd: dir, prompt: 'p', model: MODEL, mcpConfig: { mcpServers: {} }, provider, env: { CODEX_HOME: real } }).done
+    const r = await codex.runOnce({ bin: SPY, cwd: dir, prompt: 'p', model: MODEL, mcpConfig: { mcpServers: {} }, provider, authFile, env: { CODEX_HOME: real } }).done
     const seen = spyReport(r.stderr)
     assert.equal(seen.authJson, false)
     assert.equal(seen.keySha256, sha(token))
     assert.deepEqual(seen.envHoldingKey, ['CLIPROXY_API_KEY'])
-    const plain = await codex.runOnce({ bin: SPY, cwd: dir, prompt: 'p', mcpConfig: { mcpServers: {} }, env: { CODEX_HOME: real } }).done
-    assert.equal(spyReport(plain.stderr).authJson, true, 'without a provider the auth.json copy stays')
+    const plain = await codex.runOnce({ bin: SPY, cwd: dir, prompt: 'p', mcpConfig: { mcpServers: {} }, authFile, env: { CODEX_HOME: real } }).done
+    assert.equal(spyReport(plain.stderr).authJson, true, 'without a provider the authFile copy stays')
+    const none = await codex.runOnce({ bin: SPY, cwd: dir, prompt: 'p', mcpConfig: { mcpServers: {} }, env: { CODEX_HOME: real } }).done
+    assert.equal(spyReport(none.stderr).authJson, false, 'no authFile: no auth.json, whatever CODEX_HOME holds')
   })
 })
 
