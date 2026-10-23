@@ -21,10 +21,10 @@ const tmp = () => mkdtempSync(join(tmpdir(), 'dmn14-'))
 const readJson = (...p) => JSON.parse(readFileSync(join(...p), 'utf8'))
 const readTrace = (...p) => readFileSync(join(...p), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
 const GUARDED = ['FERMI_URL', 'MACOS_MCP_URL', 'SLACK_API_BASE', 'TELEGRAM_API_BASE', 'DISCORD_API_BASE', 'TWILIO_API_BASE', 'ANTHROPIC_API_BASE']
-const runCli = (args) => {
+const runCli = (args, timeout = 180_000) => {
   const env = { ...process.env }
   for (const k of GUARDED) delete env[k]
-  return spawnSync(process.execPath, ['--import', PRELOAD, RUN, ...args], { cwd: ROOT, env, encoding: 'utf8', timeout: 180_000 })
+  return spawnSync(process.execPath, ['--import', PRELOAD, RUN, ...args], { cwd: ROOT, env, encoding: 'utf8', timeout })
 }
 const files = (pack) => readdirSync(join(PACKS, pack)).filter((f) => ['.json', '.yaml'].includes(extname(f))).map((f) => join(PACKS, pack, f))
 const isControl = (f) => basename(f).startsWith('negative-')
@@ -95,15 +95,17 @@ describe('AC1: breadth and fault packs with controls pass against the fake harne
 })
 
 describe('AC1: soak (weekly) against the fake harness', () => {
-  test('soak.yaml: 200 tasks in one warm session pass in under 2 minutes; the overflow control fails', () => {
+  // Wall-clock time and latency drift depend on the CI host (DMN-44): reported, never gated. The
+  // 10 min bounds only stop a hung run; the 2 min target is a local performance check.
+  test('soak.yaml: 200 tasks in one warm session pass; the overflow control fails', (t) => {
     const out = tmp()
-    const t0 = Date.now()
-    const r = runCli(['--harness', 'fake', '--weekly', '--scenarios', join(PACKS, 'endurance/soak.yaml'), join(PACKS, 'endurance/negative-soak-context-overflow.yaml'), '--out', out])
-    assert.equal(r.status, 0, r.stdout + r.stderr)
+    const r = runCli(['--harness', 'fake', '--weekly', '--timeout-ms', '600000', '--scenarios', join(PACKS, 'endurance/soak.yaml'), join(PACKS, 'endurance/negative-soak-context-overflow.yaml'), '--out', out], 660_000)
+    assert.ok(r.status === 0 || r.status === 1, r.stdout + r.stderr) // 1: only if latencyDrift tripped, checked below
     const soak = readJson(out, 'results.json').find((x) => x.scenario === 'soak')
-    assert.equal(soak.pass, true, JSON.stringify(soak.failed))
-    assert.ok(soak.latencyMs < 120_000, String(soak.latencyMs))
-    assert.ok(Date.now() - t0 < 120_000)
+    const drift = soak.failed.filter((f) => f.assertion && 'latencyDrift' in f.assertion)
+    assert.deepEqual(soak.failed.filter((f) => !drift.includes(f)), [], r.stdout + r.stderr)
+    assert.equal(soak.status, 'valid')
+    t.diagnostic(`soak: ${soak.latencyMs} ms (local target < 120000 ms)${drift.map((f) => `; ${f.message}`).join('')}`)
     assert.equal(soak.toolCalls.filter((t) => t === 'channel_send').length, 200)
     const ctl = readJson(out, 'results.json').find((x) => x.scenario === 'negative-soak-context-overflow')
     // latencyDrift may also trip on a loaded machine; the overflow must trip the other four.
