@@ -8,12 +8,15 @@
 //
 // Options beyond the contract:
 //   bin        default env CODEX_BIN, else `codex` on PATH
-//   mcpConfig  a Claude-style mcp.json (path or JSON string) of http servers. codex
+//   mcpConfig  a Claude-style mcp.json (path, JSON string or object) of http servers. codex
 //              has no --mcp-config flag, so each session/run gets its own CODEX_HOME:
 //              a temp dir holding config.toml with those servers (and no user config,
 //              connectors, plugins or browser/computer use) plus a copy of auth.json
 //              from the real CODEX_HOME (~/.codex); it is removed when the process
-//              exits. Every server URL must be localhost, else the adapter throws.
+//              closes or fails to spawn (not if this process is SIGKILLed). Every
+//              server URL must be localhost, else the adapter throws. Without
+//              mcpConfig codex runs with the real CODEX_HOME (user config, MCP
+//              servers, connectors); the eval runner and judge always pass one.
 //   runOnce only: skipPermissions (--dangerously-bypass-approvals-and-sandbox)
 // allowedTools and runOnce's maxTurns/settingSources/resume have no codex
 // equivalent and are ignored. tokenFd, configDir and scrubSubprocessEnv are
@@ -61,8 +64,10 @@ export function oneShotArgs({ model, systemPrompt, skipPermissions }) {
 
 // mcp.json → codex config.toml. Throws on a non-http or non-localhost server.
 export function codexConfig(mcpConfig) {
-  const text = mcpConfig.trim().startsWith('{') ? mcpConfig : readFileSync(mcpConfig, 'utf8')
-  const servers = JSON.parse(text).mcpServers ?? {}
+  if (typeof mcpConfig !== 'string' && (typeof mcpConfig !== 'object' || mcpConfig === null))
+    throw new Error('codex adapter: mcpConfig must be a path, a JSON string or an object')
+  const parsed = typeof mcpConfig === 'object' ? mcpConfig : JSON.parse(mcpConfig.trim().startsWith('{') ? mcpConfig : readFileSync(mcpConfig, 'utf8'))
+  const servers = parsed.mcpServers ?? {}
   const s = JSON.stringify // a JSON string is a TOML basic string
   const out = [`[features]`, ...DISABLED_FEATURES.map((f) => `${f} = false`)]
   for (const [key, srv] of Object.entries(servers)) {
@@ -88,8 +93,16 @@ function spawnCodex(args, o) {
     if (existsSync(auth)) copyFileSync(auth, join(home, 'auth.json'))
     env.CODEX_HOME = home
   }
-  const child = spawn(o.bin || process.env.CODEX_BIN || 'codex', args, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
-  if (home) child.on('close', () => rmSync(home, { recursive: true, force: true }))
+  const cleanup = () => home && rmSync(home, { recursive: true, force: true })
+  let child
+  try {
+    child = spawn(o.bin || process.env.CODEX_BIN || 'codex', args, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+  } catch (err) {
+    cleanup()
+    throw err
+  }
+  child.on('error', cleanup) // a spawn failure (missing bin, bad cwd)
+  child.on('close', cleanup)
   return child
 }
 
@@ -116,6 +129,10 @@ function pipe(child, events, onJson) {
   })
   child.stderr.on('data', (d) => events.emit('stderr', d.toString()))
   child.on('exit', (code) => events.emit('exit', code))
+  child.on('error', (err) => {
+    events.emit('stderr', `codex adapter: ${err.message}\n`)
+    if (child.pid == null) events.emit('exit', null) // never spawned, so no 'exit' follows
+  })
 }
 
 const contentText = (c) =>
@@ -275,6 +292,12 @@ export function startSession(o) {
     })
   }
   const interruptTurn = () => request('turn/interrupt', { threadId, turnId: turn.id }).catch(() => {})
+
+  // The process is gone: fail whatever still waits on an answer (initialize, turn/start).
+  child.on('close', () => {
+    for (const p of pending.values()) p.reject(new Error('codex app-server exited'))
+    pending.clear()
+  })
 
   pipe(child, events, (j) => {
     if (j.id != null && j.method) {
