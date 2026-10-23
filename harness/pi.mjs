@@ -15,14 +15,16 @@
 //                pi runs with HOME=<sandboxHome> and PI_CODING_AGENT_DIR=
 //                <sandboxHome>/.pi/agent, whose mcp.json is written from
 //                mcpConfig (a path or an object; `url` servers only, every URL
-//                localhost or the adapter refuses to start). The real
-//                ~/.pi/agent/mcp.json is never read; only ~/.pi/agent/auth.json
-//                is copied in, for inference login (the credential-isolation
-//                blocker below), and that copy is deleted when pi exits.
+//                localhost or the adapter refuses to start). Nothing under the
+//                real ~/.pi is read: the only credential pi gets is authFile's.
+//   authFile     eval mode with sandboxHome: an auth.json (e.g. ~/.pi/agent/auth.json,
+//                passed by evals/run.mjs --auth-file) copied in for inference login
+//                (the credential-isolation blocker below); the copy is deleted when
+//                pi exits. Without it (and without provider) pi gets no credential.
 //   provider     eval mode with sandboxHome: { baseUrl, apiKey }, an OpenAI-compatible
 //                endpoint (CLIProxyAPI, evals --auth proxy). Written to <agent-dir>/models.json
 //                as the only provider (PROXY_PROVIDER, deleted when pi exits) and --model
-//                becomes PROXY_PROVIDER/<model>; auth.json is then not copied. A
+//                becomes PROXY_PROVIDER/<model>; authFile is then not copied. A
 //                non-localhost baseUrl is refused.
 //   sandbox      spawn through harness/sandbox.mjs (eval mode)
 // pi has no init record, so the adapter reports one when pi starts, listing its
@@ -95,10 +97,10 @@ export function piModelsConfig({ baseUrl, apiKey }, model) {
   return { providers: { [PROXY_PROVIDER]: { baseUrl, api: 'openai-completions', apiKey, models } } }
 }
 
-// Eval mode: a HOME holding only the generated mcp.json and either a copy of the real
-// auth.json or, with `provider`, a models.json. Returns the env overrides and the cleanup
+// Eval mode: a HOME holding only the generated mcp.json and either a copy of `authFile`,
+// with `provider` a models.json, or no credential. Returns the env overrides and the cleanup
 // for when pi exits.
-function sandbox({ mcpConfig, sandboxHome, provider, model }) {
+function sandbox({ mcpConfig, sandboxHome, provider, model, authFile }) {
   const config = piMcpConfig(mcpConfig)
   const models = provider && piModelsConfig(provider, model)
   const agentDir = join(sandboxHome, '.pi/agent')
@@ -106,7 +108,7 @@ function sandbox({ mcpConfig, sandboxHome, provider, model }) {
   writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify(config, null, 2))
   const cred = join(agentDir, provider ? 'models.json' : 'auth.json')
   if (provider) writeFileSync(cred, JSON.stringify(models, null, 2), { mode: 0o600 })
-  else copyFileSync(join(process.env.HOME, '.pi/agent/auth.json'), cred)
+  else if (authFile != null) copyFileSync(authFile, cred)
   return { env: { HOME: sandboxHome, PI_CODING_AGENT_DIR: agentDir }, cleanup: () => rmSync(cred, { force: true }) }
 }
 
@@ -178,6 +180,7 @@ function open(o) {
   const bad = UNSUPPORTED.filter((k) => o[k] != null)
   if (o.mcpConfig != null && o.sandboxHome == null) bad.push('mcpConfig without sandboxHome')
   if (o.provider != null && o.sandboxHome == null) bad.push('provider without sandboxHome')
+  if (o.authFile != null && o.sandboxHome == null) bad.push('authFile without sandboxHome')
   if (bad.length) throw new Error(`pi adapter: unsupported option(s) ${bad.join(', ')} (see harness/pi.mjs)`)
   const box = o.sandboxHome != null ? sandbox(o) : null
   let child
