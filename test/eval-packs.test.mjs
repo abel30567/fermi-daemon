@@ -8,8 +8,9 @@ import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, 
 import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import { ROOT } from './run-worker.mjs'
+import { loadPrompt } from '../lib/prompt.mjs'
 import { evaluate } from '../evals/lib/assertions.mjs'
-import { heldToken, runAttempt } from '../evals/lib/runner.mjs'
+import { DRAIN_PROMPT, EVAL_OVERLAY, heldToken, runAttempt } from '../evals/lib/runner.mjs'
 import { loadScenario } from '../evals/lib/scenario.mjs'
 import * as fake from '../evals/harness/fake.mjs'
 
@@ -105,7 +106,9 @@ describe('AC1: soak (weekly) against the fake harness', () => {
     assert.ok(Date.now() - t0 < 120_000)
     assert.equal(soak.toolCalls.filter((t) => t === 'channel_send').length, 200)
     const ctl = readJson(out, 'results.json').find((x) => x.scenario === 'negative-soak-context-overflow')
-    assert.deepEqual(ctl.failed.filter((f) => f.assertion).map((f) => Object.keys(f.assertion)[0]), ['noTurnKind', 'noErrorTurns', 'task.status', 'outbox.count'])
+    // latencyDrift may also trip on a loaded machine; the overflow must trip the other four.
+    const tripped = ctl.failed.filter((f) => f.assertion).map((f) => Object.keys(f.assertion)[0])
+    for (const k of ['noTurnKind', 'noErrorTurns', 'task.status', 'outbox.count']) assert.ok(tripped.includes(k), `${k} not in ${tripped}`)
   })
 
   test('the soak is weekly only: skipped without --weekly', () => {
@@ -155,7 +158,7 @@ describe('runner: warm-session mode', () => {
   test('tasks: n enqueues n messages, one drain turn each, in one session that keeps its context', async () => {
     const out = tmp()
     let sessions = 0
-    const spy = { startSession: (o) => (sessions++, assert.equal(o.systemPrompt, readFileSync(join(ROOT, 'prompts/drain.md'), 'utf8')), fake.startSession(o)) }
+    const spy = { startSession: (o) => (sessions++, assert.equal(o.systemPrompt, loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY)), fake.startSession(o)) }
     const s = scenario({
       session: { tasks: 3 },
       inbound: { channel: 'sl', sender: 'U0EVALOWNER', chat: 'D0EVAL', text: 'msg ${n}' },

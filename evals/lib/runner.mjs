@@ -1,16 +1,17 @@
 // One scenario attempt: fresh fakes + eval target + fault proxy, enqueue the
 // inbound message through the channel webhook, run one drain through the
-// harness adapter with prompts/drain.md, then dump state and grade the trace.
+// harness adapter with prompts/drain.md (rendered with the eval overlay), then dump state and grade the trace.
 // A scenario with `session` runs in one warm session instead: a list of turns
 // (session.mjs runSession) or { tasks, redrain } (runDrainSession below).
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, fstatSync, mkdirSync, readFileSync, readSync, writeFileSync } from 'node:fs'
+import { appendFileSync, fstatSync, mkdirSync, readSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { loadPrompt } from '../../lib/prompt.mjs'
 import { evaluate } from './assertions.mjs'
+import { mcpConnect, resultText } from './mcp-client.mjs'
 import { startFakeTarget } from './fake-target.mjs'
 import { startFakes } from './fakes.mjs'
-import { mcpConnect } from './mcp-client.mjs'
 import { startMcpProxy } from './mcp-proxy.mjs'
 import { assertLocalUrls } from './net.mjs'
 import { seedFixture, webhookRequest } from './scenario.mjs'
@@ -19,11 +20,14 @@ import { startWranglerTarget } from './wrangler-target.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 export const DRAIN_PROMPT = join(ROOT, 'prompts/drain.md')
+// Placeholder owner, call list and channel ids, matching the scenario fixtures; never the private prompts/local.json.
+export const EVAL_OVERLAY = join(ROOT, 'evals/fixtures/prompt-overlay.json')
 
 // Fake credentials for the eval worker; the fakes accept anything.
 const EVAL_SECRETS = {
   SLACK_BOT_TOKEN: 'xoxb-eval-fake',
   SLACK_BRIDGE_SECRET: 'eval-sl-bridge-secret',
+  WA_WEBHOOK_SECRET: 'eval-wa-bridge-secret',
   TELEGRAM_BOT_TOKEN: '1000:eval-fake',
   DISCORD_BOT_TOKEN: 'eval-discord-fake',
   TWILIO_ACCOUNT_SID: 'ACeval',
@@ -71,6 +75,20 @@ export function heldToken(env = process.env) {
   }
 }
 
+// `fixtures.secrets` ({ name, value }) go in through the target's own secret_set,
+// opted in to secret_resolve; the high-risk approval token is replayed once.
+async function seedSecrets(url, secrets = []) {
+  if (!secrets.length) return
+  const mcp = await mcpConnect(`${url}/mcp`, { clientName: 'fermi-eval-seed' })
+  for (const { name, value } of secrets) {
+    const args = { name, value, scope: 'app', allowed_capabilities: ['secret_resolve'] }
+    let r = await mcp.callTool('secret_set', args)
+    const token = /"status":"pending_approval"/.test(resultText(r)) && JSON.parse(resultText(r)).token
+    if (token) r = await mcp.callTool('secret_set', { ...args, approval_token: token })
+    if (r.isError || /"error"|pending_approval/.test(resultText(r))) throw new Error(`secret_set ${name}: ${resultText(r).slice(0, 200)}`)
+  }
+}
+
 const urlEntries = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => /^[a-z]+:\/\//i.test(String(v))))
 
 export async function runAttempt({ scenario, attempt, harness, model, worker, timeoutMs, outDir }) {
@@ -94,7 +112,8 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
     const target = worker ? await startWranglerTarget({ worker, env, logDir: dir }) : await startFakeTarget({ env, tools: fixtures?.tools })
     closers.push(target.close)
     assertLocalUrls({ target: target.url })
-    await target.seed(seedFixture(fixtures))
+    await target.seed(seedFixture(fixtures, scenario.inbound))
+    await seedSecrets(target.url, fixtures?.secrets)
     const proxy = await startMcpProxy({ target: target.url, faults: scenario.faults })
     closers.push(proxy.close)
     const mcpConfig = { mcpServers: { fermi: { type: 'http', url: `${proxy.url}/mcp` } } }
@@ -115,7 +134,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
       fakes.setPhase('drain')
     }
 
-    const drainPrompt = readFileSync(DRAIN_PROMPT, 'utf8')
+    const drainPrompt = loadPrompt(DRAIN_PROMPT, EVAL_OVERLAY)
     const opts = {
       model,
       cwd: dir,
@@ -154,7 +173,7 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
       await enqueue(scenario.inbound)
       timedOut = await finish(runSession(harness, { ...opts, systemPrompt: drainPrompt, script: scenario.fake?.turns }, { turns: scenario.session, inbound: scenario.inbound }))
     } else if (scenario.session) {
-      ;({ timedOut, taskLatencies } = await runDrainSession({ harness, opts, scenario, enqueue, record, retried, deadline: t0 + timeoutMs }))
+      ;({ timedOut, taskLatencies } = await runDrainSession({ harness, opts, systemPrompt: drainPrompt, scenario, enqueue, record, retried, deadline: t0 + timeoutMs }))
     } else {
       await enqueue(scenario.inbound)
       timedOut = await finish(harness.runOnce({ prompt: drainPrompt, ...opts }))
@@ -206,9 +225,9 @@ export async function runAttempt({ scenario, attempt, harness, model, worker, ti
 // messages one at a time (`${n}` in inbound.text is the message's number), one
 // DRAIN_TURN each. After an error turn it re-sends the drain turn, up to k times
 // per message. → { timedOut, taskLatencies } (enqueue → that message's last turn_end).
-async function runDrainSession({ harness, opts, scenario, enqueue, record, retried, deadline }) {
+async function runDrainSession({ harness, opts, systemPrompt, scenario, enqueue, record, retried, deadline }) {
   const { tasks = 1, redrain = 0 } = scenario.session
-  const session = harness.startSession({ ...opts, systemPrompt: readFileSync(DRAIN_PROMPT, 'utf8') })
+  const session = harness.startSession({ ...opts, systemPrompt })
   record(session.events)
   const turn = () =>
     new Promise((resolve) => {
