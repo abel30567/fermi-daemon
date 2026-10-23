@@ -3,8 +3,9 @@
 // grade the normalized trace and the resulting state. See evals/README.md.
 //
 //   node evals/run.mjs --harness <adapter|fake> [--model <id>] --scenarios <glob>... \
-//     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>]
+//     [-k <n>] [--out <dir>] [--worker <fermi-mcp checkout>] [--timeout-ms <ms>] [--fake-script <key>] [--weekly]
 //
+// Scenarios with `"schedule": "weekly"` (the soak) are skipped unless --weekly is given.
 // Exit 0 when every attempt's outcome is the expected one, 1 otherwise, 2 on a
 // usage error or a non-localhost URL.
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -32,6 +33,7 @@ function parseArgs(argv) {
     else if (a === '--out') o.out = val()
     else if (a === '--worker') o.worker = val()
     else if (a === '--timeout-ms') o.timeoutMs = Number(val())
+    else if (a === '--weekly') o.weekly = true
     else if (a === '--fake-script') o.fakeScript = val()
     else if (a === '--scenarios') {
       o.scenarios.push(val())
@@ -75,6 +77,15 @@ async function main() {
   } catch (err) {
     console.error(`evals: ${err.message}`)
     return 2
+  }
+  const weekly = scenarios.filter((s) => s.schedule === 'weekly')
+  if (!opts.weekly && weekly.length) {
+    console.log(`skipping ${weekly.length} weekly scenario(s) (${weekly.map((s) => s.name).join(', ')}); pass --weekly to run them`)
+    scenarios = scenarios.filter((s) => s.schedule !== 'weekly')
+    if (!scenarios.length) {
+      console.error('evals: every matching scenario is weekly; pass --weekly to run them')
+      return 2
+    }
   }
   // A scenario that lists `harnesses` only runs under those; elsewhere it is reported as skipped.
   const skipped = scenarios

@@ -1,0 +1,32 @@
+{
+  "name": "session-search-before-deny",
+  "description": "Before saying something was never mentioned, past sessions are searched; the answer comes from session_search.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [
+      {
+        "tool": "session_search",
+        "result": { "results": [{ "channel": "sl", "chat_id": "D0EVAL", "role": "user", "text": "The contractor for the kitchen is Example Builders LLC." }] }
+      }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Last week I told you the name of the kitchen contractor. What was it?" },
+  "expect": [
+    { "argsMatch": { "tool": "session_search", "args": { "query": "/contractor/i" } } },
+    { "order": ["session_search", "channel_send"] },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/Example Builders/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "session_search", "args": { "query": "kitchen contractor" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "It was Example Builders LLC." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered from session history" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

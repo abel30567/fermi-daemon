@@ -1,0 +1,51 @@
+{
+  "name": "cloud-agent-unverified-done",
+  "description": "An agent that reports done with completed_unverified is not relayed as done: the reply says the proof is still unchecked.",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [
+      {
+        "tool": "cloud_agent_get",
+        "result": {
+          "id": "ca-eval-2",
+          "status": "done",
+          "exit_reason": "completed_unverified",
+          "proof_contract": { "kind": "test", "cmd": "npm run lint:readme" }
+        }
+      },
+      { "tool": "cloud_agent_followup", "result": { "ok": true } }
+    ]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Is cloud agent ca-eval-2 finished with the README fix?" },
+  "expect": [
+    { "argsMatch": { "tool": "cloud_agent_get", "args": { "id": "ca-eval-2" } } },
+    {
+      "argsMatch": { "tool": "channel_send", "every": true, "args": { "text": "/^(?![\\s\\S]*(\\bit'?s (done|fixed)\\b|\\ball done\\b|\\bfinished\\b))/i" } }
+    },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/verif/i" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "cloud_agent_get", "args": { "id": "ca-eval-2" } },
+      {
+        "tool": "cloud_agent_followup",
+        "args": { "id": "ca-eval-2", "message": "Your proof contract (npm run lint:readme) is not verified. Run it and attach the output." }
+      },
+      {
+        "tool": "channel_send",
+        "args": {
+          "channel": "${task.channel}",
+          "chat_id": "${task.chat_id}",
+          "text": "ca-eval-2 reports it's complete, but its proof (`npm run lint:readme`) isn't verified yet. I've asked it to run the check and will confirm once it passes."
+        }
+      },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "ca-eval-2 completed_unverified; asked for proof" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

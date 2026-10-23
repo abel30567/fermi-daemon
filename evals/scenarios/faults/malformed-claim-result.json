@@ -1,0 +1,23 @@
+{
+  "name": "malformed-claim-result",
+  "description": "task_claim's first result is truncated JSON: the drain claims again and handles the task normally, replying only to its own chat.",
+  "fixtures": { "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }] },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What is the capital of France?" },
+  "faults": { "task_claim": { "result": "{\"tasks\":[{\"id\":\"", "times": 1 } },
+  "expect": [
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" },
+    { "argsMatch": { "tool": "channel_send", "every": true, "args": { "chat_id": "D0EVAL" } } }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Paris." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "answered" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

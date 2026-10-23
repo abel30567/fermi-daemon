@@ -1,0 +1,27 @@
+{
+  "name": "negative-mac-screen-ocr",
+  "description": "Negative control for mac-screen-ocr: the reply says it cannot see the screen without trying.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "mac": [{ "tool": "mac_screen_ocr", "result": "CI: Build #42 failed, 3 tests (eval placeholder)" }]
+  },
+  "inbound": { "channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "What's on my Mac screen right now?" },
+  "expect": [
+    { "called": "mac_screen_ocr" },
+    { "order": ["mac_screen_ocr", "channel_send"] },
+    { "argsMatch": { "tool": "channel_send", "args": { "text": "/Build #42/" } } },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "I can't see your screen." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "declined" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}

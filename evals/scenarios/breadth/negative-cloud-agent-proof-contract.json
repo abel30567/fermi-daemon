@@ -1,0 +1,60 @@
+{
+  "name": "negative-cloud-agent-proof-contract",
+  "description": "Negative control for cloud-agent-proof-contract: the proof contract is free text instead of a structured contract.",
+  "expectOutcome": "fail",
+  "fixtures": {
+    "bindings": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+    "tools": [
+      {
+        "tool": "cloud_agent_launch",
+        "match": "approval_token",
+        "result": { "ok": true, "agent_id": "ca-eval-1", "task_id": "ca-task-1", "status": "running" }
+      },
+      { "tool": "cloud_agent_launch", "result": { "approval_required": true, "approval_token": "appr-eval-1", "risk": "high" } }
+    ]
+  },
+  "inbound": {
+    "channel": "sl",
+    "sender": "U0EVALOWNER",
+    "chat": "D0EVAL",
+    "text": "Have a cloud agent fix the flaky date test in the example-repo project and open a PR."
+  },
+  "expect": [
+    { "argsMatch": { "tool": "cloud_agent_launch", "every": true, "args": { "proof_contract": { "kind": "/^(artifact|http|test|dom)$/" } } } },
+    { "argsMatch": { "tool": "cloud_agent_launch", "args": { "approval_token": "appr-eval-1" } } },
+    { "order": ["cloud_agent_launch", "cloud_agent_launch", "channel_send", "task_complete"] },
+    { "exactlyOnce": "channel_send" },
+    { "outbox.count": { "eq": 1, "chat_id": "D0EVAL" } },
+    { "task.status": "done" }
+  ],
+  "fake": {
+    "script": [
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } },
+      { "tool": "context_bootstrap", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}" } },
+      {
+        "tool": "cloud_agent_launch",
+        "args": {
+          "route": "claude",
+          "prompt": "Fix the flaky date test in example-repo and open a PR.",
+          "proof_contract": "make sure the tests pass",
+          "ttl_seconds": 3600,
+          "budget_usd": 5
+        }
+      },
+      {
+        "tool": "cloud_agent_launch",
+        "args": {
+          "route": "claude",
+          "prompt": "Fix the flaky date test in example-repo and open a PR.",
+          "proof_contract": "make sure the tests pass",
+          "ttl_seconds": 3600,
+          "budget_usd": 5,
+          "approval_token": "appr-eval-1"
+        }
+      },
+      { "tool": "channel_send", "args": { "channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "A cloud agent is on it." } },
+      { "tool": "task_complete", "args": { "id": "${task.id}", "status": "done", "result": "launched cloud agent" } },
+      { "tool": "task_claim", "args": { "limit": 1, "stale_minutes": 25 } }
+    ]
+  }
+}
