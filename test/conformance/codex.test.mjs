@@ -127,10 +127,14 @@ describe('codex adapter', () => {
         assert.equal(r.outcome, null)
       }))
 
+    // DMN-41: codex exits before reading stdin, and a prompt larger than the pipe buffer
+    // makes the prompt write fail with EPIPE every time; it is never an uncaught exception.
     test('runOnce: codex exits non-zero', () =>
       withTmp(async (o) => {
-        const r = await runOnce({ ...o, bin: script('codex-fail', 'exit 3'), prompt: 'x' }).done
+        const r = await runOnce({ ...o, bin: script('codex-fail', 'echo "codex: bad config" >&2; exit 3'), prompt: 'x'.repeat(1 << 20) }).done
         assert.equal(r.code, 3)
+        assert.equal(r.outcome, null)
+        assert.match(r.stderr, /codex: bad config/)
       }))
 
     test('startSession: missing binary emits exit and refuses sends', () =>
