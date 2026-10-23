@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // private-scan.mjs [dir] — fails (exit 1) when a git-tracked file under `dir` (default: the
 // current directory's repo) holds a personal number: an E.164 number, a WhatsApp JID or LID,
-// or a phone-looking chat_id/sender, unless it is a placeholder (1555555xxxx, 10000000000000).
+// a phone-looking chat_id/sender, or a number written with separators (+1 (xxx) xxx-xxxx,
+// tel:+44 xxxx xxxxxx, xxx.xxx.xxxx), unless it is a placeholder (5555550xxx, 1555555xxxx,
+// 10000000000000, 20000000000000).
 // Extra patterns (one regex per line, # comments; a line that is not a valid regex matches
 // literally) come from the untracked $FERMI_PRIVATE_PATTERNS, default
 // ~/.config/fermi/private-patterns, skipped if absent. Findings name the file, line and kind,
@@ -20,9 +22,20 @@ export const PATTERNS = [
   ['phone-looking chat id', /\b(?:chat_id|sender|phone)["'`\s:=]{0,4}\+?[1-9]\d{9,14}\b/gi],
 ]
 
-const PLACEHOLDER = /^(?:1555555\d{4}|10000000000000)$/
+// Numbers written with space, dash, dot or parenthesis separators. A hit is flagged when its
+// digits, joined, are 10 to 15 long and not a placeholder.
+export const FORMATTED = [
+  ['formatted number', /(?:\+|\btel:\+?)\d+(?:[ .-]?\(\d+\)|[ .-]\d+)+/g],
+  ['formatted US number', /(?<![\w.+-])(?:1[ .-])?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\w-]|\.\d)/g],
+]
+
+const PLACEHOLDER = /^(?:5555550\d{3}|1555555\d{4}|10000000000000|20000000000000)$/
 // A hit is a placeholder when the first digit run in it is one.
 const isPlaceholder = (match) => PLACEHOLDER.test(/\d+/.exec(match)[0])
+const isFormattedNumber = (match) => {
+  const digits = match.replace(/\D/g, '')
+  return digits.length >= 10 && digits.length <= 15 && !PLACEHOLDER.test(digits)
+}
 
 export const DEFAULT_PATTERNS_FILE = join(homedir(), '.config/fermi/private-patterns')
 
@@ -47,6 +60,7 @@ export function scanText(text, privatePatterns = []) {
   const hits = []
   text.split('\n').forEach((l, i) => {
     for (const [kind, re] of PATTERNS) if ([...l.matchAll(re)].some((m) => !isPlaceholder(m[0]))) hits.push({ line: i + 1, kind })
+    for (const [kind, re] of FORMATTED) if ([...l.matchAll(re)].some((m) => isFormattedNumber(m[0]))) hits.push({ line: i + 1, kind })
     privatePatterns.forEach((re, n) => re.test(l) && hits.push({ line: i + 1, kind: `private pattern #${n + 1}` }))
   })
   return hits

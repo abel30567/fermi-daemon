@@ -12,6 +12,8 @@ import { ROOT } from './run-worker.mjs'
 const SCAN = join(ROOT, 'scripts/private-scan.mjs')
 // Built at runtime so this file holds no number itself: a UK drama-range (fictional) mobile.
 const PLANTED = '7700' + '900' + '123'
+// A US-shaped number in the unassigned 555 area code, outside the 555-555-0xxx placeholders.
+const [AREA, EXCH, LINE] = ['5' + '55', '77' + '0', '09' + '00']
 const NO_PATTERNS = join(tmpdir(), 'dmn43-no-such-patterns-file')
 
 // A temp git repo with `files` ({ name: text }) added to the index.
@@ -47,6 +49,43 @@ for (const [kind, line] of [
     assert.ok(!(r.stdout + r.stderr).includes(PLANTED), 'the scanner printed the value')
   })
 }
+
+for (const [kind, line] of [
+  ['formatted number', `call +1 (${AREA}) ${EXCH}-${LINE} now`],
+  ['formatted number', `+44 77 ${PLANTED.slice(2, 6)} ${PLANTED.slice(6)}`],
+  ['formatted number', `tel:+44 ${PLANTED.slice(0, 4)} ${PLANTED.slice(4)}`],
+  ['formatted number', `+44 (0) ${PLANTED.slice(0, 4)} ${PLANTED.slice(4, 7)}-${PLANTED.slice(7)}`],
+  ['formatted number', `+44.${PLANTED.slice(0, 4)}.${PLANTED.slice(4)}`],
+  ['formatted US number', `${AREA}-${EXCH}-${LINE}`],
+  ['formatted US number', `call ${AREA}.${EXCH}.${LINE}.`],
+  ['formatted US number', `(${AREA}) ${EXCH}-${LINE}`],
+  ['formatted US number', `(${AREA})${EXCH}-${LINE}`],
+  ['formatted US number', `1 ${AREA} ${EXCH} ${LINE}`],
+]) {
+  test(`a planted ${kind} (${line.replace(/\d/g, '#')}) fails the scan without printing it`, () => {
+    const r = scan(repo({ 'f.txt': `clean\n${line}\n` }))
+    assert.equal(r.status, 1, r.stdout)
+    assert.match(r.stderr, new RegExp(`f\\.txt:2: ${kind}`))
+    assert.ok(![EXCH + '-' + LINE, PLANTED.slice(4)].some((v) => (r.stdout + r.stderr).includes(v)), 'the scanner printed the value')
+  })
+}
+
+test('formatted placeholders and number-like non-phone text pass', () => {
+  const text = [
+    'call +1 (555) 555-0100, +1 555 555 0101, 1 555 555 0102, tel:+1-555-555-0199',
+    '555-555-0123, 555.555.0124, (555) 555-0125, "lid": "+20 000 000 000 000"',
+    'commit abaae0b27e0b868ff72e5622529adfb272331007, short 08922af',
+    'at 2026-10-23T09:30:00.123Z, 2026-10-23 21:30:05, ts 1761200000000 1761200000001',
+    'node 22.11.0, macOS 10.15.7, v1.2.3-rc.4, 2.0.0-beta.12',
+    'took 12:34:56, 1h 23m 45s, 123.456 ms, 1,234,567 bytes',
+    'localhost:8080, 127.0.0.1:3000, 192.168.100.200, http://[::1]:5432',
+    'id 123e4567-e89b-12d3-a456-426614174000 or 12345678-1234-5678-1234-567812345678',
+    '# tests 656 # pass 650 # fail 0, pass (14/0), 1 2 3 4 5 6 7 8 9 10',
+    '@@ -120,7 +121,8 @@, +100 -20, +1 more, +3.5%, x +12 345 / 2',
+  ].join('\n')
+  const r = scan(repo({ 'p.md': text }))
+  assert.equal(r.status, 0, r.stderr)
+})
 
 test('the placeholders pass', () => {
   const text = [
