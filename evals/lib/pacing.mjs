@@ -5,7 +5,8 @@
 // after the previous attempt on that backend ended (in any process).
 // The lock is advisory: an exclusively created file holding the owner's pid. A lock
 // whose pid is gone is stale and is removed, under a short-lived steal lock so two
-// processes recovering it at once cannot remove each other's fresh lock.
+// processes recovering it at once cannot remove each other's fresh lock. So is an
+// empty lock older than EMPTY_STALE_MS: its creator died before writing its pid.
 import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +14,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 export const LOCKED_BACKENDS = ['proxy', 'keychain', 'fd']
 const STEAL_STALE_MS = 10_000 // a steal lock is only held for an unlink; older means its holder died
+const EMPTY_STALE_MS = 5_000 // an empty lock is one being written; this old, its writer died
 
 export const lockDir = (home = homedir()) => join(home, '.agent-orch/evals/locks')
 
@@ -52,6 +54,17 @@ function create(path) {
 // The lock's owner pid; an empty file is a lock being written, so counts as live.
 const owner = (path) => Number(read(path)?.trim()) || null
 
+// Its owner is dead, or it is still empty EMPTY_STALE_MS after it was created.
+function stale(path) {
+  const pid = owner(path)
+  if (pid) return !alive(pid)
+  try {
+    return read(path)?.trim() === '' && Date.now() - statSync(path).mtimeMs > EMPTY_STALE_MS
+  } catch {
+    return false
+  }
+}
+
 function recoverStale(path) {
   const steal = `${path}.steal`
   if (!create(steal)) {
@@ -61,8 +74,7 @@ function recoverStale(path) {
     return
   }
   try {
-    const pid = owner(path) // re-read under the steal lock
-    if (pid && !alive(pid)) unlinkSync(path)
+    if (stale(path)) unlinkSync(path) // re-checked under the steal lock
   } catch {
   } finally {
     try {
@@ -81,8 +93,7 @@ export async function acquireLock(path, { pollMs = 100 } = {}) {
         held = false
       }
     }
-    const pid = owner(path)
-    if (pid && !alive(pid)) recoverStale(path)
+    if (stale(path)) recoverStale(path)
     await sleep(pollMs)
   }
 }

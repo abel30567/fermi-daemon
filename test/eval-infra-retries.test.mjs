@@ -5,14 +5,15 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ROOT } from './run-worker.mjs'
 import { compare, renderMarkdown } from '../evals/compare.mjs'
 import { validate } from '../evals/lib/json-schema.mjs'
 import { acquireLock, createPacer, lockDir } from '../evals/lib/pacing.mjs'
-import { runAttempt, summarize } from '../evals/lib/runner.mjs'
+import { INFRA_BACKOFF, runAttempt, summarize } from '../evals/lib/runner.mjs'
+import { classifyResult } from '../lib/turn-outcome.mjs'
 import * as fake from '../evals/harness/fake.mjs'
 
 const RUN = join(ROOT, 'evals/run.mjs')
@@ -81,6 +82,20 @@ describe('AC1: rate-limited twice, then a pass → one passing attempt with infr
     const reset = await attempt(ending([{ ...limited, retryAfterMs: 7 }, OK]), { infraRetries: 3 })
     assert.deepEqual(reset.waits, [7])
     assert.equal(reset.r.infraRetries, 1)
+  })
+
+  test('a reset beyond the 10 min wait cap ("resets 2am") is invalid at once, the reset time in the reason', async () => {
+    const now = Date.parse('2026-10-19T05:00:00Z') // 01:00 in New York: the reset is 1 h away
+    const end = classifyResult({ type: 'result', subtype: 'success', is_error: true, result: 'Claude usage limit reached · resets 2am (America/New_York)' }, now)
+    assert.equal(end.retryAfterMs, 60 * 60_000)
+    const t0 = Date.now()
+    const { r, waits } = await attempt(ending([end, OK]), { infraRetries: 3, backoff: INFRA_BACKOFF })
+    assert.ok(Date.now() - t0 < 5_000, 'no long sleep')
+    assert.deepEqual([r.pass, r.status, r.infraRetries, waits], [null, 'invalid', 0, []])
+    const at = Date.parse(/resets at (\S+),/.exec(r.invalidReason)?.[1])
+    assert.ok(Math.abs(at - (t0 + 60 * 60_000)) < 5_000, r.invalidReason)
+    assert.match(r.invalidReason, /^rate_limit resets at .* beyond the 600000 ms infra wait cap: .*resets 2am/)
+    assert.deepEqual(validate(SCHEMA, [r]), [])
   })
 
   test('spend limits and 5xx/overloaded are infrastructure; other API errors and harness failures are graded', async () => {
@@ -219,6 +234,23 @@ describe('AC3: runner processes sharing an --auth backend never run attempts con
     const lock = join(lockDir(home), 'keychain.lock')
     writeFileSync(lock, `${dead}\n`)
     const release = await acquireLock(lock, { pollMs: 10 })
+    assert.equal(readFileSync(lock, 'utf8').trim(), String(process.pid))
+    release()
+    assert.ok(!existsSync(lock))
+  })
+
+  test('an empty lock (its creator died before writing its pid) is recovered once it is 5 s old', async () => {
+    const home = tmp()
+    mkdirSync(lockDir(home), { recursive: true })
+    const lock = join(lockDir(home), 'proxy.lock')
+    writeFileSync(lock, '')
+    let got = false
+    const p = acquireLock(lock, { pollMs: 10 }).then((release) => ((got = true), release))
+    await new Promise((r) => setTimeout(r, 150))
+    assert.equal(got, false, 'a fresh empty lock is one being written')
+    const old = (Date.now() - 10_000) / 1000
+    utimesSync(lock, old, old)
+    const release = await p
     assert.equal(readFileSync(lock, 'utf8').trim(), String(process.pid))
     release()
     assert.ok(!existsSync(lock))

@@ -30,7 +30,9 @@ with a 5xx status or "overloaded" in its text (one a warm session re-drained thr
 is the behaviour under test and does not count), the runner re-runs the whole
 attempt with fresh state, up to `--infra-retries` times (default 3). It first waits
 for the reset time `lib/turn-outcome.mjs` parsed from the error (`retryAfterMs`), or
-else 30 s, doubling, capped at 10 min. Earlier tries keep their files in
+else 30 s, doubling, capped at 10 min. A reset further away than 10 min (for example
+`resets 2am`) is not waited for: the attempt is `invalid` at once, with the reset time
+in its `invalidReason`, and no further retries. Earlier tries keep their files in
 `<scenario>/<n>.infra-<i>/`. Every `results.json` entry has `infraRetries` and
 `status`: `valid`, or `invalid` when the attempt was still limited after the last
 retry. An invalid attempt has `pass: null` and an `invalidReason`. It is never graded
@@ -41,7 +43,8 @@ With `--auth proxy|keychain|fd`, every attempt holds the backend's lock file
 `~/.agent-orch/evals/locks/<backend>.lock` (`lib/pacing.mjs`), so runner processes
 sharing one subscription run their attempts one at a time. The lock is advisory: a
 file created exclusively, holding the owner's pid. A lock whose process is gone is
-stale and is removed. `--min-gap-ms` (default 0) is the least time between the end of
+stale and is removed, as is an empty lock (its creator died before writing its pid)
+older than 5 s. `--min-gap-ms` (default 0) is the least time between the end of
 one attempt on the backend and the start of the next, across processes
 (`<backend>.last` records the last end). With `--auth none` there is no lock and the
 gap applies within the process.
