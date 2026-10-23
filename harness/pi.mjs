@@ -5,6 +5,9 @@
 // or at the prompt's `response` when pi rejects or handles it without a run.
 // runOnce uses the same RPC session: one prompt, then stdin is closed (pi's
 // orderly shutdown), so the prompt never reaches argv.
+// A pi that exits (or never spawns) with a turn in flight ends it as
+// turn_end { ok: false, kind: 'crash' } once its output is drained; stream
+// errors (EPIPE on a write after pi died) are ignored, never thrown.
 //
 // Options beyond the contract:
 //   bin          default env PI_BIN, else `pi` on PATH
@@ -146,6 +149,7 @@ export function createNormalizer() {
     abort() {
       aborted = true
     },
+    elapsed: () => (since ? Date.now() - since : 0),
     normalize(j) {
       switch (j?.type) {
         case 'message_end':
@@ -194,6 +198,15 @@ function open(o) {
     child.on('error', box.cleanup)
   }
   const events = new EventEmitter()
+  let inTurn = false
+  let closed = false
+  const emit = (ev) => {
+    if (ev.type === 'turn_end') inTurn = false
+    events.emit('event', ev)
+  }
+  // pi may exit before reading a prompt: its stdin then fails with EPIPE.
+  for (const s of [child.stdin, child.stdout, child.stderr]) s.on('error', () => {})
+  child.on('error', (err) => events.emit('stderr', `pi adapter: ${err.message}\n`)) // 'close' follows
   setImmediate(() => events.emit('event', { type: 'init', harness: name, version: null, model: o.model ?? null, tools: PI_BUILTINS }))
   const norm = createNormalizer()
   // Split on LF only: pi's records may hold U+2028/U+2029, which readline splits on.
@@ -212,30 +225,41 @@ function open(o) {
       } catch {
         continue
       }
-      for (const ev of norm.normalize(j)) events.emit('event', ev)
+      for (const ev of norm.normalize(j)) emit(ev)
     }
   })
   child.stderr.on('data', (d) => events.emit('stderr', d.toString()))
   child.on('exit', (code) => events.emit('exit', code))
+  // 'close': stdout and stderr are drained, so a real turn_end and all of stderr came first.
+  child.on('close', (code, signal) => {
+    closed = true
+    if (inTurn) emit({ type: 'turn_end', ok: false, kind: 'crash', detail: `pi exited (${code ?? signal}) mid-turn`, durationMs: norm.elapsed(), raw: null })
+  })
   const write = (msg) => {
-    if (!child.stdin.writable) return false
+    if (closed || !child.stdin.writable) return false
     child.stdin.write(JSON.stringify(msg) + '\n')
     return true
   }
   const send = (text) => {
     norm.start()
-    return write({ type: 'prompt', message: text })
+    inTurn = write({ type: 'prompt', message: text })
+    return inTurn
   }
-  return { child, events, norm, write, send }
+  // A pi we kill (a timeout, the session's end) did not crash.
+  const kill = (signal) => {
+    inTurn = false
+    child.kill(signal)
+  }
+  return { child, events, norm, write, send, kill, alive: () => !closed && child.stdin.writable }
 }
 
 export function startSession(o) {
-  const { child, events, norm, write, send } = open(o)
+  const { child, events, norm, write, send, kill, alive } = open(o)
   return {
     pid: child.pid,
     events,
     get alive() {
-      return child.stdin.writable
+      return alive()
     },
     send,
     // Abort the in-flight turn; the process (and its session) stays alive.
@@ -243,14 +267,12 @@ export function startSession(o) {
       norm.abort()
       return write({ type: 'abort' })
     },
-    close(signal) {
-      child.kill(signal)
-    },
+    close: kill,
   }
 }
 
 export function runOnce(o) {
-  const { child, events, send } = open(o)
+  const { child, events, send, kill } = open(o)
   const all = []
   let outcome = null
   let stderr = ''
@@ -264,5 +286,5 @@ export function runOnce(o) {
   events.on('stderr', (s) => (stderr += s))
   const done = new Promise((resolve) => child.on('close', (code) => resolve({ code, outcome, events: all, stderr })))
   send(o.prompt ?? '')
-  return { pid: child.pid, events, done, close: (signal) => child.kill(signal) }
+  return { pid: child.pid, events, done, close: kill }
 }

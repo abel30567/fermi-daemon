@@ -19,7 +19,9 @@
 // bwrap (Linux):
 //   - writes only under root (and /dev/null);
 //   - no reads of the real $HOME (os.userInfo().homedir and $HOME), except the
-//     harness binary's directory, the node runtime and `readable`. Metadata
+//     harness binary's directory (the whole node_modules tree when the binary is in
+//     one: a node package needs its package.json and dependencies), the node
+//     runtime and `readable`. Metadata
 //     (stat) stays allowed, listing a directory or reading a file does not;
 //   - network (macOS): 127.0.0.1 on `localPorts` only; model endpoints are reached
 //     through the egress proxy, which allows only MODEL_HOSTS. No unix sockets
@@ -47,6 +49,11 @@ const which = (bin) => {
   throw new Error(`sandbox: ${bin} not found on PATH`)
 }
 const real = (p) => (existsSync(p) ? realpathSync(p) : p)
+// …/node_modules/<pkg>/dist/cli.js → …/node_modules (the outermost one); else the binary's directory.
+const binRoot = (exe) => {
+  const i = exe.indexOf('/node_modules/')
+  return i < 0 ? dirname(exe) : exe.slice(0, i + '/node_modules'.length)
+}
 
 // 'sandbox-exec' | 'bwrap' | null for this machine.
 export function sandboxBackend(platform = process.platform) {
@@ -103,8 +110,8 @@ export function createSandbox({ root, readable = [], localPorts = [], egressProx
     wrap(bin, args) {
       if (!backend) throw new Error(`sandbox: no sandbox backend on ${platform} (sandbox-exec on macOS, bwrap on Linux); refusing to run the harness unsandboxed`)
       const exe = real(which(bin))
-      // The harness and its runtime: the binary's directory and the node install (node-based harnesses and fakes).
-      const runtime = [dirname(exe), dirname(dirname(real(process.execPath)))]
+      // The harness and its runtime: the binary's directory or node_modules tree and the node install (node-based harnesses and fakes).
+      const runtime = [binRoot(exe), dirname(dirname(real(process.execPath)))]
       const paths = [...new Set([...runtime, ...readable.map(real)])]
       if (backend === 'sandbox-exec') return [SANDBOX_EXEC, ['-p', seatbeltProfile({ root, homes, readable: paths, localPorts: ports }), exe, ...args]]
       return ['bwrap', [...bwrapArgs({ root, homes, readable: paths }), '--', exe, ...args]]
