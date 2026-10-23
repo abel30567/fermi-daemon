@@ -7,10 +7,16 @@
 //   { text }            emit assistant text
 //   { shell, result? }  a call to the harness's own shell tool (`Bash`); nothing
 //                       runs, the tool result is `result` (default "")
+//   { shell, exec: true }
+//                       the same call, but `/bin/sh -c <shell>` really runs, under
+//                       the attempt's `sandbox` (harness/sandbox.mjs; refused without
+//                       one); the result is its output, ok when it exits 0
 //   { sleepMs }         think for that long (a number, or a string such as "${turn}")
 //   { apiError: { status?, text } }
 //                       the model API fails mid-turn: the turn ends here with
 //                       lib/turn-outcome.mjs's classification of that error
+// `builtins` (an adapter option, the scenario's fake.builtins) are the built-in
+// tools its init reports next to the fermi tools, e.g. ["Bash"].
 // String args may use ${task.<field>} (the first task of the latest non-empty
 // task_claim result), ${turn} and ${canary} (the runner's FERMI_EVAL_CANARY from
 // `env`, there only so a negative control can leak it). Each step becomes the same normalized
@@ -22,6 +28,7 @@
 // only in the n-th turn (runOnce is turn 1). Either way the context carries
 // across turns, like a warm session remembers what it claimed, and interrupt()
 // ends the turn after the step in flight.
+import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -49,12 +56,24 @@ async function connect(o, emit) {
   const url = config.mcpServers?.[SERVER]?.url
   if (!url) throw new Error(`fake harness: mcpConfig has no "${SERVER}" server`)
   const mcp = await mcpConnect(url, { clientName: 'fake-harness' })
-  emit({ type: 'init', harness: name, version: null, model: o.model ?? null, tools: (await mcp.listTools()).map((t) => `mcp__${SERVER}__${t.name}`) })
+  emit({ type: 'init', harness: name, version: null, model: o.model ?? null, tools: [...(o.builtins ?? []), ...(await mcp.listTools()).map((t) => `mcp__${SERVER}__${t.name}`)] })
   return mcp
 }
 
 // Play `steps` as turn `ctx.turn`; returns the turn_end payload, or null if `stopped()` cut it short.
-async function play(steps, { mcp, ctx, emit, stopped }) {
+// A shell step with exec: true, run under the sandbox → its tool_result.
+function execShell(command, sandbox, cwd) {
+  if (!sandbox) return { ok: false, content: 'fake harness: exec needs a sandbox' }
+  try {
+    const [cmd, argv] = sandbox.wrap('/bin/sh', ['-c', command])
+    const r = spawnSync(cmd, argv, { cwd, env: { ...process.env, ...sandbox.env }, encoding: 'utf8', timeout: 10_000 })
+    return { ok: r.status === 0, content: `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? r.error.message : ''}` }
+  } catch (err) {
+    return { ok: false, content: String(err?.message ?? err) }
+  }
+}
+
+async function play(steps, { mcp, ctx, emit, stopped, o }) {
   for (const step of steps) {
     if (stopped()) return null
     if (step.onTurn != null && step.onTurn !== ctx.turn) continue
@@ -69,8 +88,9 @@ async function play(steps, { mcp, ctx, emit, stopped }) {
     }
     const id = `fake_${++ctx.n}`
     if (step.shell != null) {
-      emit({ type: 'tool_call', id, name: 'Bash', rawName: 'Bash', input: { command: fill(step.shell, ctx) } })
-      emit({ type: 'tool_result', id, ok: true, content: String(step.result ?? '') })
+      const command = fill(step.shell, ctx)
+      emit({ type: 'tool_call', id, name: 'Bash', rawName: 'Bash', input: { command } })
+      emit({ type: 'tool_result', id, ...(step.exec ? execShell(command, o.sandbox, o.cwd) : { ok: true, content: String(step.result ?? '') }) })
       continue
     }
     const input = fill(step.args ?? {}, ctx)
@@ -122,7 +142,7 @@ export function startSession(o) {
         if (!Array.isArray(steps)) throw new Error(`fake harness: no script for turn ${turn} (scenario.fake.script or scenario.fake.turns)`)
         mcp ??= await connect(o, emit)
         // A real interrupted turn ends with an error result, which classifies as unknown_error.
-        return (await play(steps, { mcp, ctx, emit, stopped: () => interrupted || !alive })) ?? { ok: false, kind: 'unknown_error', detail: 'interrupted' }
+        return (await play(steps, { mcp, ctx, emit, stopped: () => interrupted || !alive, o })) ?? { ok: false, kind: 'unknown_error', detail: 'interrupted' }
       })()
         .catch(failed)
         .then((res) => emit(turnEnd(res, since)))
@@ -154,7 +174,7 @@ export function runOnce(o) {
     if (!Array.isArray(o.script)) throw new Error('fake harness: no script (scenario.fake.script)')
     const mcp = await connect(o, emit)
     const ctx = { n: 0, turn: 1, canary: o.env?.FERMI_EVAL_CANARY }
-    return (await play(o.script, { mcp, ctx, emit, stopped: () => stopped })) ?? { ok: false, kind: 'unknown_error', detail: 'killed' }
+    return (await play(o.script, { mcp, ctx, emit, stopped: () => stopped, o })) ?? { ok: false, kind: 'unknown_error', detail: 'killed' }
   })()
     .catch(failed)
     .then((res) => {

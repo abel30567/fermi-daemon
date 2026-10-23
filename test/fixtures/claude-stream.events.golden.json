@@ -13,6 +13,10 @@
       "mcp__claude_ai_Fermi__task_complete",
       "mcp__claude_ai_Fermi__skill_load",
       "mcp__playwright__browser_navigate"
+    ],
+    "mcpServers": [
+      "claude.ai Fermi",
+      "playwright"
     ]
   },
   {

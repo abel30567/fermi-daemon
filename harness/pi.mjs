@@ -16,6 +16,9 @@
 //                ~/.pi/agent/mcp.json is never read; only ~/.pi/agent/auth.json
 //                is copied in, for inference login (the credential-isolation
 //                blocker below), and that copy is deleted when pi exits.
+//   sandbox      spawn through harness/sandbox.mjs (eval mode)
+// pi has no init record, so the adapter reports one when pi starts, listing its
+// always-on built-ins (PI_BUILTINS) for the eval runner's isolation assertion.
 // allowedTools is ignored and runOnce's skipPermissions/maxTurns have no pi
 // equivalent. tokenFd, configDir and scrubSubprocessEnv are refused, and so is
 // mcpConfig without sandboxHome (they promise an isolation pi cannot give; see
@@ -24,7 +27,7 @@
 // Known gaps vs the Claude Code adapter:
 //   - No per-turn cost or session id. pi has no turn-level result record (Claude's
 //     total_cost_usd / session_id) and no init record, so turn_end carries no
-//     costUsd or token counts and no `init` event is emitted. The session id is
+//     costUsd or token counts and the init event carries no version. The session id is
 //     only available through the get_state command.
 //   - Broader built-in tools. pi enables read, bash, edit and write and never asks
 //     for permission; Claude's lane allows only Bash + MCP. Built-in names are
@@ -52,6 +55,8 @@ import { bareToolName } from './index.mjs'
 export const name = 'pi'
 
 const UNSUPPORTED = ['tokenFd', 'configDir', 'scrubSubprocessEnv']
+// pi's built-in tools, always enabled (see "Broader built-in tools" above).
+export const PI_BUILTINS = ['read', 'bash', 'edit', 'write']
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
 
 const isLocalUrl = (url) => {
@@ -154,9 +159,11 @@ function open(o) {
   const box = o.sandboxHome != null ? sandbox(o) : null
   let child
   try {
-    child = spawn(o.bin || process.env.PI_BIN || 'pi', sessionArgs(o), {
+    const bin = o.bin || process.env.PI_BIN || 'pi'
+    const [cmd, argv] = o.sandbox ? o.sandbox.wrap(bin, sessionArgs(o)) : [bin, sessionArgs(o)]
+    child = spawn(cmd, argv, {
       cwd: o.cwd,
-      env: { ...process.env, ...o.env, ...box?.env },
+      env: { ...process.env, ...o.env, ...o.sandbox?.env, ...box?.env },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
   } catch (err) {
@@ -168,6 +175,7 @@ function open(o) {
     child.on('error', box.cleanup)
   }
   const events = new EventEmitter()
+  setImmediate(() => events.emit('event', { type: 'init', harness: name, version: null, model: o.model ?? null, tools: PI_BUILTINS }))
   const norm = createNormalizer()
   // Split on LF only: pi's records may hold U+2028/U+2029, which readline splits on.
   let buf = ''

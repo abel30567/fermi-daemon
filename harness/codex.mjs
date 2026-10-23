@@ -17,6 +17,8 @@
 //              server URL must be localhost, else the adapter throws. Without
 //              mcpConfig codex runs with the real CODEX_HOME (user config, MCP
 //              servers, connectors); the eval runner and judge always pass one.
+//   sandbox    spawn through harness/sandbox.mjs (eval mode); the per-run CODEX_HOME
+//              is then made inside the sandbox dir
 //   runOnce only: skipPermissions (--dangerously-bypass-approvals-and-sandbox)
 // allowedTools and runOnce's maxTurns/settingSources/resume have no codex
 // equivalent and are ignored. tokenFd, configDir and scrubSubprocessEnv are
@@ -26,8 +28,10 @@
 //   - Tool names. codex items carry no tool name: an MCP call is reported as
 //     mcp__<server>__<tool> and a shell command (commandExecution) as `Bash` with
 //     input { command } as codex reports it, so narrator.py needs no codex names.
+//   - Init. app-server's init and the one runOnce reports at spawn list only
+//     CODEX_BUILTINS (codex reports no tool list): its always-on shell and apply_patch.
 //   - No cost. Turns carry token counts (exec: turn.completed usage; session: the
-//     delta of thread/tokenUsage/updated totals) but no costUsd. runOnce emits no init.
+//     delta of thread/tokenUsage/updated totals) but no costUsd.
 //   - Error kinds. app-server errors carry codexErrorInfo (mapped by INFO_KIND);
 //     exec's turn.failed carries only a message, so a failure whose text names no
 //     status or known phrase (e.g. "high demand" overload) is unknown_error there.
@@ -50,6 +54,8 @@ export const name = 'codex'
 const UNSUPPORTED = ['tokenFd', 'configDir', 'scrubSubprocessEnv']
 // Features that reach past the eval's MCP servers: ChatGPT connectors, plugins, the user's browser and desktop.
 const DISABLED_FEATURES = ['apps', 'plugins', 'browser_use', 'computer_use']
+// codex's always-on built-ins as the normalized stream names them (its shell is `Bash`).
+export const CODEX_BUILTINS = ['Bash', 'apply_patch']
 
 export const sessionArgs = () => ['app-server']
 
@@ -83,12 +89,12 @@ export function codexConfig(mcpConfig) {
 function spawnCodex(args, o) {
   const bad = UNSUPPORTED.filter((k) => o[k] != null)
   if (bad.length) throw new Error(`codex adapter: unsupported option(s) ${bad.join(', ')} (see harness/codex.mjs)`)
-  const env = { ...process.env, ...o.env }
+  const env = { ...process.env, ...o.env, ...o.sandbox?.env }
   let home = null
   if (o.mcpConfig) {
     const config = codexConfig(o.mcpConfig)
     const auth = join(env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
-    home = mkdtempSync(join(tmpdir(), 'codex-home-'))
+    home = mkdtempSync(join(o.sandbox?.root ?? tmpdir(), 'codex-home-'))
     writeFileSync(join(home, 'config.toml'), config)
     if (existsSync(auth)) copyFileSync(auth, join(home, 'auth.json'))
     env.CODEX_HOME = home
@@ -96,7 +102,9 @@ function spawnCodex(args, o) {
   const cleanup = () => home && rmSync(home, { recursive: true, force: true })
   let child
   try {
-    child = spawn(o.bin || process.env.CODEX_BIN || 'codex', args, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const bin = o.bin || process.env.CODEX_BIN || 'codex'
+    const [cmd, argv] = o.sandbox ? o.sandbox.wrap(bin, args) : [bin, args]
+    child = spawn(cmd, argv, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
   } catch (err) {
     cleanup()
     throw err
@@ -272,7 +280,7 @@ export function startSession(o) {
         approvalPolicy: 'never',
       }).then((r) => {
         threadId = r.thread.id
-        emit({ type: 'init', harness: name, version, model: r.model ?? null, tools: [] })
+        emit({ type: 'init', harness: name, version, model: r.model ?? null, tools: CODEX_BUILTINS })
         return threadId
       })
     })
@@ -377,6 +385,7 @@ export function runOnce(o) {
   })
   events.on('stderr', (s) => (stderr += s))
   norm.start()
+  setImmediate(() => events.emit('event', { type: 'init', harness: name, version: null, model: o.model ?? null, tools: CODEX_BUILTINS }))
   pipe(child, events, (j) => norm.normalize(j).forEach((ev) => events.emit('event', ev)))
   const done = new Promise((resolve) => child.on('close', (code) => resolve({ code, outcome, events: all, stderr })))
   child.stdin.end(o.prompt ?? '')
