@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { Config } from './config.ts'
+import { type SlackFile, saveSlackFile } from './files.ts'
 import { log } from './log.ts'
 
 const RETRY_DELAYS_MS = [1000, 3000, 9000]
@@ -17,6 +18,7 @@ export type SlackMessageEvent = {
 	hidden?: boolean
 	client_msg_id?: string
 	ts?: string
+	files?: SlackFile[]
 }
 
 export type Inbound = {
@@ -45,6 +47,27 @@ function pokeDaemon(config: Config): void {
 function isIm(event: SlackMessageEvent): boolean {
 	if (event.channel_type === 'im') return true
 	return typeof event.channel === 'string' && event.channel.startsWith('D')
+}
+
+// Plain user messages and file uploads (subtype file_share) are forwarded.
+// Every other subtype (message_changed, message_deleted, bot_message,
+// channel_join, ...) and anything from a bot is ignored.
+export function isForwardable(event: SlackMessageEvent): boolean {
+	if (event.type !== 'message' || event.bot_id || event.hidden) return false
+	if (event.subtype && event.subtype !== 'file_share') return false
+	return Boolean(event.text) || (event.files?.length ?? 0) > 0
+}
+
+// The caption (if any) followed by one line per uploaded file, saved under
+// <DAEMON_HOME>/media like wa-bridge's inbound media.
+export async function inboundText(config: Config, event: SlackMessageEvent): Promise<string> {
+	const lines = event.text ? [event.text] : []
+	for (const file of event.files ?? []) {
+		const saved = await saveSlackFile(file, config.SLACK_BOT_TOKEN, join(config.DAEMON_HOME, 'media'))
+		log(saved.path ? `saved slack file -> ${saved.path}` : `slack file not saved: ${saved.error}`)
+		lines.push(saved.line)
+	}
+	return lines.join('\n')
 }
 
 // The Worker dedupes on message_id, so a retried POST of the same Slack message

@@ -1,7 +1,7 @@
 import { SocketModeClient } from '@slack/socket-mode'
 import { WebClient } from '@slack/web-api'
 import { type Config, loadConfig } from './config.ts'
-import { buildInbound, forwardToWorker, type SlackMessageEvent } from './inbound.ts'
+import { buildInbound, forwardToWorker, inboundText, isForwardable, type SlackMessageEvent } from './inbound.ts'
 import { log } from './log.ts'
 import { startOutboxLoop } from './outbox.ts'
 
@@ -80,14 +80,13 @@ async function main(): Promise<void> {
 			// Ack first so Slack does not retry while we forward.
 			await ack()
 			const event = body.event
-			if (!event || event.type !== 'message') return
-			if (event.bot_id || event.subtype || event.hidden) return
-			const text = event.text
+			if (!event || !isForwardable(event)) return
 			const authorId = event.user
 			const channelId = event.channel
-			if (!text || !authorId || !channelId) return
+			if (!authorId || !channelId) return
 			if (botUserId && authorId === botUserId) return
 
+			const text = await inboundText(config, event)
 			const displayName = await resolveName(authorId)
 			const teamId = body.team_id ?? event.team ?? null
 			forwardToWorker(

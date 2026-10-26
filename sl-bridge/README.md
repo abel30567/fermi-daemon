@@ -5,6 +5,11 @@ WebSocket and forwards each user message to the Fermi Worker:
 
 - **Inbound** — a Slack message arrives → `POST ${FERMI_URL}/sl/webhook` → the local
   Fermi daemon (`poll.sh`) is poked so it drains the task promptly.
+- **Inbound files** — uploads (`subtype: file_share`) are downloaded with the bot
+  token into `~/fermi-daemon/media/` and forwarded as the caption (if any) plus one
+  `[<image|video|audio|document> attachment saved to <path>; original name: …; type: …]`
+  line per file, the same format as wa-bridge. Files over 64 MB are skipped and
+  noted. Edits, deletes, joins and bot messages are ignored.
 
 This bridge is **receive-only**: it never sends Slack messages. The Worker sends
 all replies itself over `chat.postMessage`, so there is no outbox loop here
@@ -24,7 +29,8 @@ build step. Files are `.ts`, ESM, with `.ts` import specifiers.
 2. **OAuth & Permissions** → Bot Token Scopes: `chat:write`, `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
    `im:write`, `mpim:history`, `mpim:read`, `users:read`, `files:write` (outbound
-   attachments). Install the app to the
+   attachments), `files:read` (inbound file uploads; without it Slack answers
+   with its login page and the file is noted as not downloaded). Install the app to the
    workspace and copy the **Bot User OAuth Token** (`xoxb-`). This is
    `SLACK_BOT_TOKEN` — put it in `~/fermi-daemon/.env` and as a Worker secret.
 3. **Socket Mode** → enable it.
