@@ -75,11 +75,14 @@ async function download(rawUrl: string, token: string, maxBytes: number): Promis
 
 // Download one file and return the line to append to the forwarded text.
 // Failures and oversize files become a note line instead of throwing.
+// `index` is the file's position in its message, so same-named files saved in
+// the same millisecond get distinct paths.
 export async function saveSlackFile(
 	file: SlackFile,
 	token: string,
 	mediaDir: string,
 	maxBytes = SL_MAX_MEDIA_BYTES,
+	index = 0,
 ): Promise<{ line: string; path?: string; error?: string }> {
 	const kind = kindOf(file.mimetype)
 	const name = file.name || file.title
@@ -92,7 +95,7 @@ export async function saveSlackFile(
 		if (!file.url_private_download) throw new Error('no download URL on the file')
 		const buf = await download(file.url_private_download, token, maxBytes)
 		mkdirSync(mediaDir, { recursive: true })
-		const path = join(mediaDir, `${Date.now()}-${sanitizeName(name || `${kind}-${file.id ?? 'file'}`)}`)
+		const path = join(mediaDir, `${Date.now()}-${index}-${sanitizeName(name || `${kind}-${file.id ?? 'file'}`)}`)
 		writeFileSync(path, buf)
 		return { line: `[${kind} attachment saved to ${path}${details}]`, path }
 	} catch (err) {

@@ -150,3 +150,69 @@ test('plain text messages still forward unchanged', async (t) => {
 		['hi'],
 	)
 })
+
+// Answer each URL in `redirects` with a 302 to its target; anything else gets the file.
+function mockRedirects(t: TestContext, redirects: Record<string, string>) {
+	const calls: { url: string; auth: string | null; redirect?: RequestRedirect }[] = []
+	t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+		calls.push({ url, auth: new Headers(init.headers).get('authorization'), redirect: init.redirect })
+		const location = redirects[url]
+		if (location) return new Response(null, { status: 302, headers: { location } })
+		return new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } })
+	})
+	return calls
+}
+
+test('a redirect to another https slack.com host keeps the token and saves the file', async (t) => {
+	const home = mkdtempSync(join(tmpdir(), 'sl-bridge-files-'))
+	const next = 'https://files-edge.slack.com/x'
+	const calls = mockRedirects(t, { [DOWNLOAD_URL]: next })
+	const r = await saveSlackFile(image, TOKEN, join(home, 'media'))
+	assert.ok(r.path, r.line)
+	assert.deepEqual(readFileSync(r.path), PNG)
+	assert.deepEqual(calls, [
+		{ url: DOWNLOAD_URL, auth: `Bearer ${TOKEN}`, redirect: 'manual' },
+		{ url: next, auth: `Bearer ${TOKEN}`, redirect: 'manual' },
+	])
+})
+
+test('a redirect off slack.com or to http is refused and the token is not sent there', async (t) => {
+	const home = mkdtempSync(join(tmpdir(), 'sl-bridge-files-'))
+	for (const target of [
+		'https://evil.example/x',
+		'https://slack.com.evil.example/x',
+		'https://evilslack.com/x',
+		'http://files.slack.com/x',
+	]) {
+		const calls = mockRedirects(t, { [DOWNLOAD_URL]: target })
+		const r = await saveSlackFile(image, TOKEN, join(home, 'media'))
+		assert.match(r.line, /could not be downloaded: download host is not https on slack\.com/, target)
+		assert.ok(!r.line.includes(target))
+		assert.deepEqual(
+			calls.map((c) => c.url),
+			[DOWNLOAD_URL],
+			target,
+		)
+	}
+	assert.ok(!existsSync(join(home, 'media')))
+})
+
+test('a redirect loop stops at the hop limit', async (t) => {
+	const home = mkdtempSync(join(tmpdir(), 'sl-bridge-files-'))
+	const other = 'https://files-edge.slack.com/x'
+	const calls = mockRedirects(t, { [DOWNLOAD_URL]: other, [other]: DOWNLOAD_URL })
+	const r = await saveSlackFile(image, TOKEN, join(home, 'media'))
+	assert.match(r.line, /could not be downloaded: too many redirects/)
+	// The first request plus three followed redirects.
+	assert.equal(calls.length, 4)
+	assert.ok(!existsSync(join(home, 'media')))
+})
+
+test('same-named files in one upload are saved to distinct paths', async (t) => {
+	const { config, webhooks } = setup(t)
+	t.mock.method(Date, 'now', () => 1700000000000)
+	await handle(config, { ...upload, files: [image, image] })
+	const paths = webhooks[0].text.split('\n').map(savedPath)
+	assert.equal(new Set(paths).size, 2)
+	for (const p of paths) assert.deepEqual(readFileSync(p), PNG)
+})

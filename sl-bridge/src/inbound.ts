@@ -62,8 +62,8 @@ export function isForwardable(event: SlackMessageEvent): boolean {
 // <DAEMON_HOME>/media like wa-bridge's inbound media.
 export async function inboundText(config: Config, event: SlackMessageEvent): Promise<string> {
 	const lines = event.text ? [event.text] : []
-	for (const file of event.files ?? []) {
-		const saved = await saveSlackFile(file, config.SLACK_BOT_TOKEN, join(config.DAEMON_HOME, 'media'))
+	for (const [i, file] of (event.files ?? []).entries()) {
+		const saved = await saveSlackFile(file, config.SLACK_BOT_TOKEN, join(config.DAEMON_HOME, 'media'), undefined, i)
 		log(saved.path ? `saved slack file -> ${saved.path}` : `slack file not saved: ${saved.error}`)
 		lines.push(saved.line)
 	}
