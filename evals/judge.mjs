@@ -31,8 +31,12 @@
 // The judge's credential is --judge-auth (createJudgeAuth: default keychain on macOS for a
 // Claude judge model, else required; CI uses fd), never the run's harness auth. --auth is
 // an alias kept for older command lines.
+//
+// The judge's binary is its own too (judgeBin): JUDGE_CLAUDE_BIN, else the stock
+// ~/.local/bin/claude, never the candidate's CLAUDE_BIN (DMN-46: an hbar run's judge
+// ran on hbar, which the API rejects for the judge model).
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadHarness } from '../harness/index.mjs'
@@ -91,6 +95,11 @@ export async function modelJudge(input, opts) {
 // The semantic judge's ask (lib/semantic.mjs createSemanticJudge): the same sandboxed turn.
 export const semanticAsk = (opts) => ({ question, text }) => judgeTurn(semanticPrompt(question, text), opts)
 
+// The binary the judge's harness runs: its own override, never the candidate harness's
+// env (CLAUDE_BIN points the claude-code adapter at the build under test). undefined: the adapter's default.
+export const judgeBin = (harnessName, env = process.env) =>
+  harnessName === 'claude-code' ? env.JUDGE_CLAUDE_BIN || join(env.HOME || homedir(), '.local/bin/claude') : undefined
+
 // One prompt to the judge model → its reply text.
 export async function judgeTurn(prompt, { config = CONFIG, harness, auth } = {}) {
   harness ??= await loadHarness(config.harness)
@@ -104,6 +113,7 @@ export async function judgeTurn(prompt, { config = CONFIG, harness, auth } = {})
     const sandbox = createSandbox({ root: join(cwd, 'home'), localPorts, egressProxy: egress.url })
     const run = harness.runOnce({
       prompt,
+      bin: judgeBin(config.harness),
       model: config.model,
       cwd,
       mcpConfig,
@@ -220,7 +230,8 @@ async function regrade(runDir, { patterns, fake, mode }) {
   }
   writeFileSync(join(runDir, 'regraded.json'), JSON.stringify(out, null, 2) + '\n')
   const flipped = out.map((r, i) => [before[i], r]).filter(([b, r]) => b.pass !== r.pass)
-  for (const [b, r] of flipped) console.log(`CHANGED ${r.scenario} #${r.attempt}: ${b.pass ? 'PASS' : 'FAIL'} → ${r.pass ? 'PASS' : 'FAIL'} ${r.failed.map((f) => f.message).join(' | ')}`.trimEnd())
+  const tag = (x) => (x.pass == null ? 'INVALID' : x.pass ? 'PASS' : 'FAIL')
+  for (const [b, r] of flipped) console.log(`CHANGED ${r.scenario} #${r.attempt}: ${tag(b)} → ${tag(r)} ${r.failed.map((f) => f.message).join(' | ')}`.trimEnd())
   console.log(`regraded ${out.length} attempt(s), ${flipped.length} changed, ${!semantic ? 'no semantic assertions' : judge ? 'semantic judge enabled' : 'semantic judge disabled'} → ${join(runDir, 'regraded.json')}`)
   return 0
 }
