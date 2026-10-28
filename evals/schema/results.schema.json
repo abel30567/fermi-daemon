@@ -14,7 +14,7 @@
       "attempt": { "type": "integer", "minimum": 1 },
       "authMode": { "enum": ["none", "fd", "keychain", "proxy"] },
       "pass": { "type": ["boolean", "null"], "description": "null when status is invalid or setup_error: the attempt was never graded" },
-      "status": { "enum": ["valid", "invalid", "setup_error"], "description": "invalid: still rate/spend-limited or 5xx after every infra retry; setup_error: a seeded fixture section did not land on the eval target" },
+      "status": { "enum": ["valid", "invalid", "setup_error"], "description": "invalid: still rate/spend-limited or 5xx after every infra retry, or failed only by semantic judge errors (errorKinds judge_error); setup_error: a seeded fixture section did not land on the eval target" },
       "invalidReason": { "type": "string" },
       "infraRetries": { "type": "integer", "minimum": 0, "description": "times the attempt was re-run after an infrastructure outcome" },
       "expectedOutcome": { "enum": ["pass", "fail"] },
