@@ -386,6 +386,19 @@ export function semanticOutcome(spec, ctx) {
   }
 }
 
+// The reason an attempt is invalid rather than failed, or null: every failure is a semantic
+// assertion whose judge errored and whose regex did not fail, so only the judge stands
+// between it and a grade (DMN-46). Any other failure grades it FAIL, judge or not.
+export function judgeUnavailable(failed, ctx) {
+  const judgeOnly = (f) => {
+    const spec = f.assertion?.semantic
+    if (!spec) return false
+    const o = semanticOutcome(spec, ctx)
+    return o.judge === 'error' && o.regex !== 'fail'
+  }
+  return failed.length && failed.every(judgeOnly) ? `semantic judge unavailable: ${failed[0].message}`.slice(0, 600) : null
+}
+
 // → [{ assertion, message }] for every failed assertion (empty = pass).
 // `semantic`: the judge's answers for the semantic assertions (lib/semantic.mjs judgeSemantic).
 export function evaluate(expect, { trace, state, scenario, latencyMs, taskLatencies, canaries, semantic }) {

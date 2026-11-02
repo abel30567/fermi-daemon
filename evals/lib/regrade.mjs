@@ -4,13 +4,15 @@
 // Every results.json entry is graded again from <run>/<scenario>/<attempt>/trace.jsonl
 // and state.json with its scenario's current `expect`. The runner's own failures
 // (timeout, error turns, isolation breach: `assertion: null`) are kept as recorded.
-// Kept as recorded too: an invalid or setup_error attempt (never graded), one whose runner errored
+// An attempt only a semantic judge error failed is invalid (errorKinds "judge_error",
+// assertions.mjs judgeUnavailable): it is graded again, and stays invalid if the judge still errors.
+// Kept as recorded too: any other invalid or a setup_error attempt (never graded), one whose runner errored
 // (it may have no state), and the assertions whose input is never written to the
 // attempt dir (NOT_REPLAYABLE: the canary, per-task latencies).
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { evaluate, semanticOutcome } from './assertions.mjs'
+import { evaluate, judgeUnavailable, semanticOutcome } from './assertions.mjs'
 import { judgeSemantic } from './semantic.mjs'
 
 export const NOT_REPLAYABLE = ['noCanaryLeak', 'latencyDrift']
@@ -35,7 +37,8 @@ export async function regradeRun(runDir, scenarios, { judge = null, now = new Da
   for (const r of results) {
     const s = scenarios[r.scenario]
     const stamp = { regradedAt, assertionsVersion: assertionsVersion(s.expect) }
-    if (r.status === 'invalid' || r.status === 'setup_error' || r.errorKinds?.includes('runner_error')) {
+    const judgeInvalid = r.status === 'invalid' && r.errorKinds?.includes('judge_error')
+    if ((r.status === 'invalid' && !judgeInvalid) || r.status === 'setup_error' || r.errorKinds?.includes('runner_error')) {
       out.push({ ...r, ...stamp })
       continue
     }
@@ -48,10 +51,12 @@ export async function regradeRun(runDir, scenarios, { judge = null, now = new Da
       if (NOT_REPLAYABLE.includes(Object.keys(a)[0])) failed.push(...r.failed.filter((f) => f.assertion && same(f.assertion, a)))
       else failed.push(...evaluate([a], ctx))
     failed.push(...r.failed.filter((f) => f.assertion === null))
-    const { semantic: _, ...rest } = r
+    const { semantic: _, invalidReason: __, ...rest } = r
+    const errorKinds = (r.errorKinds ?? []).filter((k) => k !== 'judge_error')
+    const judgeError = judgeUnavailable(failed, ctx)
     out.push({
       ...rest,
-      pass: failed.length === 0,
+      ...(judgeError ? { pass: null, status: 'invalid', invalidReason: judgeError, errorKinds: [...errorKinds, 'judge_error'] } : { pass: failed.length === 0, status: 'valid', errorKinds }),
       failed: failed.map((f) => ({ assertion: f.assertion, message: f.message })),
       ...(ctx.semantic.size && { semantic: [...ctx.semantic.keys()].map((spec) => semanticOutcome(spec, ctx)) }),
       ...stamp,
