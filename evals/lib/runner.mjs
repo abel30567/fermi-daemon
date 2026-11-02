@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { createSandbox } from '../../harness/sandbox.mjs'
 import { loadPrompt } from '../../lib/prompt.mjs'
 import { ALLOWED_TOOLS } from '../../lib/run-policy.mjs'
-import { effectiveCalls, evaluate, semanticOutcome } from './assertions.mjs'
+import { effectiveCalls, evaluate, judgeUnavailable, semanticOutcome } from './assertions.mjs'
 import { startEgressProxy } from './egress-proxy.mjs'
 import { EVAL_SERVER, INTERNAL_TOOLS, PRODUCTION_BUILTINS, allowedBuiltins, builtinsOf, checkMcpConfig, isolationBreach, plantSandboxCanary, surfaceDelta } from './isolation.mjs'
 import { mcpConnect, resultText } from './mcp-client.mjs'
@@ -148,6 +148,9 @@ export const INFRA_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
 // <n>.infra-<i>. Still limited after that → status "invalid", pass null: never graded.
 // A reset further away than backoff.maxMs (e.g. "resets 2am") is not waited for: the
 // attempt is invalid at once, the reset time in its reason, no retries spent.
+// An attempt only a semantic judge error fails (assertions.mjs judgeUnavailable) → status
+// "invalid", pass null, errorKinds "judge_error": a judge failure, not the candidate's;
+// judge.mjs --regrade grades it once the judge works.
 // `pace(fn)`: runs each try (evals/lib/pacing.mjs, the backend lock and --min-gap-ms).
 // `sandboxReadable`: extra paths the sandboxed harness may read (tests: their fake binaries).
 // `auth`: evals/lib/auth.mjs createAuth(), asked for this attempt's credential (default: none).
@@ -158,7 +161,8 @@ export const INFRA_BACKOFF = { baseMs: 30_000, maxMs: 10 * 60_000 }
 export async function runAttempt({ infraRetries = 0, backoff = INFRA_BACKOFF, pace = (fn) => fn(), onInfraRetry, ...args }) {
   const dir = join(args.outDir, args.scenario.name, String(args.attempt))
   for (let n = 0; ; n++) {
-    const { result, infra } = await pace(() => attemptOnce(args))
+    const { result, infra, judgeError } = await pace(() => attemptOnce(args))
+    if (!infra && judgeError) return { ...result, pass: null, status: 'invalid', invalidReason: judgeError, errorKinds: [...result.errorKinds, 'judge_error'], infraRetries: n }
     if (!infra) return { ...result, status: result.errorKinds.includes('setup_error') ? 'setup_error' : 'valid', infraRetries: n }
     if (infra.retryAfterMs > backoff.maxMs) {
       const at = new Date(Date.now() + infra.retryAfterMs).toISOString()
@@ -181,6 +185,7 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
   const errorKinds = new Set()
   let failed = []
   let semantic
+  let ctx // the grading context, once the attempt ran
   let latencyMs = 0
   let taskLatencies
   const retried = new Set() // error turn_ends the session re-drained after
@@ -331,7 +336,7 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
 
     const state = { ...(await target.dump()), fakes: fakes.record() }
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state, null, 2))
-    const ctx = { trace, state, scenario, latencyMs, taskLatencies, canaries, semantic: await judgeSemantic(scenario.expect, trace, semanticJudge) }
+    ctx = { trace, state, scenario, latencyMs, taskLatencies, canaries, semantic: await judgeSemantic(scenario.expect, trace, semanticJudge) }
     failed = evaluate(scenario.expect, ctx)
     if (ctx.semantic.size) semantic = [...ctx.semantic.keys()].map((spec) => semanticOutcome(spec, ctx))
   } catch (err) {
@@ -383,7 +388,7 @@ async function attemptOnce({ scenario, attempt, harness, model, worker, timeoutM
     surfaceDelta: builtinTools && surfaceDelta(builtinTools),
     ...(semantic && { semantic }), // both halves of every semantic assertion
   }
-  return { result, infra }
+  return { result, infra, judgeError: ctx ? judgeUnavailable(failed, ctx) : null }
 }
 
 // Drain-session mode: `session: { tasks?: n, redrain?: k }`. One warm session (the

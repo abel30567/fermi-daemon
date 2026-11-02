@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ROOT } from './run-worker.mjs'
 import { compare, diffInterval, GATE, passK, percentile, renderMarkdown, wilson } from '../evals/compare.mjs'
-import { CONFIG, fakeJudge, judgeInput, judgePrompt, judgeRun, modelJudge, parseVerdict } from '../evals/judge.mjs'
+import { CONFIG, fakeJudge, judgeBin, judgeInput, judgePrompt, judgeRun, modelJudge, parseVerdict } from '../evals/judge.mjs'
 import { loadScenario } from '../evals/lib/scenario.mjs'
 import { validate } from '../evals/lib/json-schema.mjs'
 
@@ -265,8 +265,9 @@ describe('judge', () => {
     assert.equal(seen.sandbox.env.HOME, seen.sandbox.root)
     assert.match(seen.sandbox.env.HTTPS_PROXY, /^http:\/\/127\.0\.0\.1:\d+$/)
     assert.equal(seen.env.CLAUDE_CONFIG_DIR, join(seen.sandbox.root, '.claude'))
-    // no credential options of its own: the adapter reads the same env as an eval attempt
-    for (const k of ['bin', 'configDir', 'tokenFd']) assert.equal(seen[k], undefined, k)
+    // its own binary (never the candidate's CLAUDE_BIN, DMN-46); no credential options of its own
+    assert.equal(seen.bin, judgeBin(CONFIG.harness))
+    for (const k of ['configDir', 'tokenFd']) assert.equal(seen[k], undefined, k)
   })
 
   test('a failed judge turn is an error, not a score', async () => {

@@ -36,7 +36,7 @@ else 30 s, doubling, capped at 10 min. A reset further away than 10 min (for exa
 in its `invalidReason`, and no further retries. Earlier tries keep their files in
 `<scenario>/<n>.infra-<i>/`. Every `results.json` entry has `infraRetries` and
 `status`: `valid`, or `invalid` when the attempt was still limited after the last
-retry. An invalid attempt has `pass: null` and an `invalidReason`. It is never graded
+retry (or only a semantic judge error failed it, see Semantic assertions). An invalid attempt has `pass: null` and an `invalidReason`. It is never graded
 either way: `summary.json` lists it under `invalid`, not as a failure, and a run with
 any invalid attempt exits 1.
 
@@ -339,6 +339,16 @@ regex and the judge. `results.json` records both halves per attempt in `semantic
   `runs/semantic-cache/<harness>-<model>.json` for the real judge. A malformed
   answer (anything but a bare yes/no) is retried once, then it is a judge error,
   which fails the assertion.
+- A judge error is not the candidate's failure. An attempt whose only failures are
+  semantic assertions with a judge error (and no regex failure) is `invalid`
+  (`pass: null`, `errorKinds` holds `judge_error`, `invalidReason` starts with
+  `semantic judge unavailable:`), so `compare.mjs` counts it toward the invalid share,
+  not the pass rate. Any other failure still grades it FAIL. `--regrade` grades
+  such an attempt again with the current judge.
+- The judge runs its own Claude Code binary: `JUDGE_CLAUDE_BIN`, else the stock
+  `~/.local/bin/claude`, never the candidate's `CLAUDE_BIN`. An hbar run (`CLAUDE_BIN`
+  pointing at a 2.1.87 build) would otherwise judge on hbar, which the API rejects for
+  the judge model (DMN-46).
 - The judge harness (Claude Code CLI) has no sampling-temperature setting, so
   temperature 0 cannot be set. The cache is what makes a repeated text get the same answer.
 - Calibration set: `test/fixtures/semantic/*.json` (`{ question, cases: [{ text, answer }] }`).
@@ -378,9 +388,10 @@ grades a finished run again from each attempt's recorded `trace.jsonl` and
 (calibrated first), without re-running the harness (`lib/regrade.mjs`). It writes
 `<run dir>/regraded.json`: `results.json`'s schema, each entry plus `regradedAt`
 and `assertionsVersion` (a hash of the grading code and that scenario's `expect`),
-and prints every attempt whose pass/fail changed. Kept as recorded: the runner's
-own failures (timeout, error turns, isolation breach), invalid and runner-error
-attempts, and `noCanaryLeak` and `latencyDrift`, whose inputs (the canary, per-task
+and prints every attempt whose pass/fail changed. A judge-invalid attempt
+(`judge_error`) is graded again, and stays invalid if the judge still errors. Kept
+as recorded: the runner's own failures (timeout, error turns, isolation breach),
+other invalid and runner-error attempts, and `noCanaryLeak` and `latencyDrift`, whose inputs (the canary, per-task
 latencies) are never written to the attempt dir. Scenarios default to every file
 under `evals/scenarios/`; a name in more than one file (or none) is a usage error
 (exit 2). Use `--fake` for a `--harness fake` run, whose judge was the fake one.
