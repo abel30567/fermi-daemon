@@ -117,7 +117,8 @@ describe('test guard: no test spawns a real harness', () => {
     assert.throws(() => assertFakeHarness('claude'), /from PATH/)
     const link = join(mkdtempSync(join(tmpdir(), 'dmn20-')), 'claude')
     symlinkSync('/usr/bin/true', link)
-    assert.throws(() => assertFakeHarness(link), /-> \/usr\/bin\/true/)
+    // ubuntu-latest's /usr/bin/true is itself a symlink (to gnutrue): match where the link really ends.
+    assert.throws(() => assertFakeHarness(link), (e) => e.message.endsWith(`-> ${realpathSync('/usr/bin/true')}`))
     await assert.rejects(runOnceCli({ env: { CLAUDE_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
     await assert.rejects(runWorker({ result: SUCCESS, durationMs: 0, env: { CLAUDE_BIN: '/usr/bin/true' } }), /would spawn a real harness/)
   })
