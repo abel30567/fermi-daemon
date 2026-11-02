@@ -21,7 +21,7 @@
   "expect": [
     { "argsMatch": { "tool": "cloud_agent_get", "args": { "id": "ca-eval-2" } } },
     {
-      "argsMatch": { "tool": "channel_send", "every": true, "args": { "text": "/^(?![\\s\\S]*(\\bit'?s (done|fixed)\\b|\\ball done\\b|\\bfinished\\b))/i" } }
+      "argsMatch": { "tool": "channel_send", "every": true, "args": { "text": "/^(?![\\s\\S]*((?<!\\b(?:says|said|reports|reported|claims|claimed) )\\bit'?s (done|fixed)\\b|\\ball done\\b|(?<!\\b(?:says|said|reports|reported|claims|claimed) (it'?s |it is |it )?)\\bfinished\\b))/i" } }
     },
     { "argsMatch": { "tool": "channel_send", "args": { "text": "/verif/i" } } },
     { "exactlyOnce": "channel_send" },
