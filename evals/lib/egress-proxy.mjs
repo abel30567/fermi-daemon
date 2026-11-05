@@ -21,6 +21,7 @@ export async function startEgressProxy({ hosts = MODEL_HOSTS, local = [], onDeny
     res.writeHead(403).end('egress denied (eval sandbox)\n')
   })
   const tunnels = new Set() // CONNECT sockets leave the server's connection tracking
+  const upstreams = new Set() // an upstream half-closed by a remote that never sends FIN keeps the loop alive
   server.on('connect', (req, client, head) => {
     tunnels.add(client)
     client.on('close', () => tunnels.delete(client))
@@ -41,8 +42,11 @@ export async function startEgressProxy({ hosts = MODEL_HOSTS, local = [], onDeny
     } catch {
       return fail()
     }
+    upstreams.add(up)
+    up.on('close', () => upstreams.delete(up))
     up.on('error', fail)
     client.on('error', () => up.destroy())
+    client.on('close', () => up.destroy())
   })
   await new Promise((resolve, reject) => {
     server.once('error', reject)
@@ -56,6 +60,7 @@ export async function startEgressProxy({ hosts = MODEL_HOSTS, local = [], onDeny
       new Promise((resolve) => {
         server.closeAllConnections?.()
         for (const s of tunnels) s.destroy()
+        for (const s of upstreams) s.destroy()
         server.close(() => resolve())
       }),
   }
