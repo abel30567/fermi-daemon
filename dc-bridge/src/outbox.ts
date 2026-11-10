@@ -1,6 +1,7 @@
 import { AttachmentBuilder, type Client } from 'discord.js'
 import {
 	type OutboxMessage,
+	assertHttpsMediaUrl,
 	captionFor,
 	ensureMediaOutDir,
 	failureNotice,
@@ -29,7 +30,7 @@ export function buildDiscordSend(msg: OutboxMessage, daemonHome: string): Discor
 		source = local.path
 		name = local.fileName
 	} else {
-		source = media.url as string
+		source = assertHttpsMediaUrl(media.url as string)
 		name = media.file_name ?? remoteFileName(source, media.kind)
 	}
 	// discord.js resolves a path or URL string into the multipart upload.

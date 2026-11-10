@@ -24,7 +24,8 @@ mimetype?, caption?, file_name? }`. The bridge sends it through Baileys as a rea
 attachment with `caption` (else `body`). A local `path` is only accepted when its
 real path (symlinks followed) is a regular file inside `~/fermi-daemon/media/out/`
 and under 64 MB; anything else gets a one-line "Couldn't send the attachment"
-reply and is acked so it does not loop. The guardrail and the shared poll loop
+reply and is acked so it does not loop. A `url` must be `https://` without
+credentials; `file://`, `data:`, `http://` and bare paths are rejected the same way. The guardrail and the shared poll loop
 live in `../bridge-lib/outbound-media.ts` (also used by dc-bridge / sl-bridge).
 
 **How a name is resolved** (first hit wins):

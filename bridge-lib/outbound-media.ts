@@ -110,7 +110,24 @@ export function resolveLocalMedia(media: OutboundMedia, daemonHome: string, maxB
 	return { path: real, size: st.size, mimetype: media.mimetype ?? inferMimetype(fileName, media.kind), fileName }
 }
 
-export type RemoteMedia = { buffer: Buffer; mimetype: string; fileName: string }
+/**
+ * A media.url from the cloud payload must be a plain https:// URL. Rejects file://,
+ * data:, http:// (incl. localhost), bare paths and URLs with userinfo. Returns the
+ * normalized href so the transport never sees a string it would treat as a path.
+ */
+export function assertHttpsMediaUrl(raw: string): string {
+	let url: URL
+	try {
+		url = new URL(raw)
+	} catch {
+		throw new MediaRejected(`media url must be https://: ${raw}`)
+	}
+	if (url.protocol !== 'https:') throw new MediaRejected(`media url must be https://: ${url.protocol}`)
+	if (url.username || url.password) throw new MediaRejected('media url must not contain credentials')
+	return url.href
+}
+
+export type RemoteMedia ={ buffer: Buffer; mimetype: string; fileName: string }
 
 // Destinations a remote attachment URL may never reach: loopback, private,
 // link-local (incl. the 169.254.169.254 cloud metadata endpoint), CGNAT,
