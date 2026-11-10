@@ -5,6 +5,7 @@ import pino from 'pino'
 import qrcodeTerminal from 'qrcode-terminal'
 import type { Config } from './config.ts'
 import { log } from './log.ts'
+import { lockDownAuthDir } from './perms.ts'
 import type { MentionDirectory } from './mentions.ts'
 import { quotePrefix } from './quote.ts'
 
@@ -172,13 +173,13 @@ export async function createSocket(
 	directory: MentionDirectory,
 	pairNumber?: string,
 ): Promise<SocketState> {
+	lockDownAuthDir(config.AUTH_DIR, log)
 	if (existsSync(markerPath(config))) {
 		log('refusing to start: LOGGED_OUT marker present.')
 		log(LOGGED_OUT_HELP)
 		process.exit(1)
 	}
 
-	mkdirSync(config.AUTH_DIR, { recursive: true, mode: 0o700 })
 	const logger = pino({ level: 'silent' })
 
 	let sock: WASocket | null = null
@@ -296,7 +297,7 @@ export async function createSocket(
 				if (statusCode === DisconnectReason.loggedOut) {
 					log('logged out by WhatsApp — writing LOGGED_OUT marker and exiting.')
 					try {
-						writeFileSync(markerPath(config), `${LOGGED_OUT_HELP}\n`)
+						writeFileSync(markerPath(config), `${LOGGED_OUT_HELP}\n`, { mode: 0o600 })
 					} catch (err) {
 						log(`failed to write LOGGED_OUT marker: ${String(err)}`)
 					}
