@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, mkdirSync, readdirSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const AUTH_UMASK = 0o077
@@ -11,7 +11,11 @@ type Failure = { path: string; code: string }
 // creates from now on, then repair what is already on disk (dirs 0700, files 0600).
 // Never throws: a failed chmod (read-only FS, foreign owner) is logged loudly and the
 // bridge keeps going. Entries that vanish mid-walk (a second bridge, Baileys rotating
-// keys) are skipped silently. Symlinks are not followed or chmodded.
+// keys) are skipped silently. A symlinked dir itself is resolved and its target locked
+// down (Baileys writes through the link); symlinks inside it are not followed or chmodded.
+// Limits: lstat-then-chmod(path) is not atomic, so a symlink swapped in between would be
+// followed (needs write access to the dir); a hardlink inside dir gets its shared inode
+// tightened. Both only ever remove group/other bits.
 export function lockDownAuthDir(dir: string, log: (msg: string) => void, chmod = chmodSync): Failure[] {
 	process.umask(AUTH_UMASK)
 	const failures: Failure[] = []
@@ -52,7 +56,14 @@ export function lockDownAuthDir(dir: string, log: (msg: string) => void, chmod =
 		}
 		for (const name of names) walk(join(path, name))
 	}
-	walk(dir)
+	let root = dir
+	try {
+		if (lstatSync(dir).isSymbolicLink()) root = realpathSync(dir)
+	} catch (err) {
+		// Even ENOENT is loud here: a dangling symlink would otherwise be skipped silently.
+		failures.push({ path: dir, code: (err as NodeJS.ErrnoException).code ?? String(err) })
+	}
+	walk(root)
 
 	for (const f of failures) {
 		log(`SECURITY WARNING: could not lock down ${f.path} (${f.code}) — WhatsApp credentials may be readable by other users.`)
@@ -60,7 +71,7 @@ export function lockDownAuthDir(dir: string, log: (msg: string) => void, chmod =
 	if (failures.length > 0) {
 		log(
 			`SECURITY WARNING: ${failures.length} path(s) under ${dir} are not owner-only. Fix by hand: ` +
-				`find '${dir}' -type d -exec chmod 700 {} + && find '${dir}' -type f -exec chmod 600 {} +`,
+				`find -H '${dir}' -type d -exec chmod 700 {} + && find -H '${dir}' -type f -exec chmod 600 {} +`,
 		)
 	}
 	return failures

@@ -138,7 +138,7 @@ agent broad control of your Mac:
   is group/other accessible. Installs from before this change get repaired on the
   next bridge start; to repair by hand once:
   ```
-  find ~/fermi-daemon/wa-auth -type d -exec chmod 700 {} + && find ~/fermi-daemon/wa-auth -type f -exec chmod 600 {} +
+  find -H ~/fermi-daemon/wa-auth -type d -exec chmod 700 {} + && find -H ~/fermi-daemon/wa-auth -type f -exec chmod 600 {} +
   ```
 
 This is personal-automation software. Run it only on a machine you own, exposed

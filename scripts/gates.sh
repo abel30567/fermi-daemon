@@ -5,8 +5,9 @@ cd "$(dirname "$0")/.."
 
 node scripts/private-scan.mjs
 # WhatsApp credentials must be owner-only (dirs 0700, files 0600); POSIX -perm so BSD and GNU find agree.
+# -H: follow wa-auth itself if it is a symlink, but not the symlinks inside it.
 if [ -d wa-auth ]; then
-  leaky=$(find wa-auth ! -type l \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \))
+  leaky=$(find -H wa-auth ! -type l \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \))
   if [ -n "$leaky" ]; then
     printf 'wa-auth is readable beyond its owner (see README "Security model"):\n%s\n' "$leaky" >&2
     exit 1

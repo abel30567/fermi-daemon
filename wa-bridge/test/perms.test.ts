@@ -58,6 +58,37 @@ test('pre-existing 0644 dir is repaired: dirs 0700, files 0600, symlink targets 
 	assert.deepEqual(leaky(dir), [])
 })
 
+test('symlinked auth dir: the target is locked down, symlinks inside it still are not followed', () => {
+	const real = join(root, 'symroot-real')
+	mkdirSync(real)
+	writeFileSync(join(real, 'creds.json'), '{}')
+	chmodSync(join(real, 'creds.json'), 0o644)
+	chmodSync(real, 0o755)
+	const outside = join(root, 'symroot-outside')
+	mkdirSync(outside)
+	chmodSync(outside, 0o755)
+	symlinkSync(outside, join(real, 'inner-link'))
+	const dir = join(root, 'symroot')
+	symlinkSync(real, dir)
+
+	const logs: string[] = []
+	assert.deepEqual(lockDownAuthDir(dir, (m) => logs.push(m)), [])
+	assert.deepEqual(logs, [])
+	assert.equal(mode(real), 0o700)
+	assert.equal(mode(join(real, 'creds.json')), 0o600)
+	assert.equal(mode(outside), 0o755)
+	assert.deepEqual(leaky(real), [])
+})
+
+test('dangling symlinked auth dir is a loud failure, not a silent skip', () => {
+	const dir = join(root, 'dangling')
+	symlinkSync(join(root, 'nowhere'), dir)
+	const logs: string[] = []
+	const failures = lockDownAuthDir(dir, (m) => logs.push(m))
+	assert.ok(failures.some((f) => f.path === dir), JSON.stringify(failures))
+	assert.ok(logs.length > 0 && logs.every((l) => l.startsWith('SECURITY WARNING:')), logs.join('\n'))
+})
+
 test('missing auth dir is created 0700 and new Baileys creds/keys files are born 0600', async () => {
 	process.umask(0o022)
 	const dir = join(root, 'fresh', 'wa-auth')
