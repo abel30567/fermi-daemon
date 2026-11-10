@@ -27,7 +27,8 @@ LANE_DIR="$DAEMON_HOME/lanes"
 mkdir -p "$LANE_DIR"
 rm -f "$DAEMON_HOME/run.lock" 2>/dev/null # legacy single-lock cleanup
 
-log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>logs/poll.log }
+# Logs are owner-only (0600): files created here get umask 077.
+log() { (umask 077; echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>logs/poll.log) }
 
 now=$(date +%s)
 
@@ -107,6 +108,7 @@ spawn_run() {
 	lane=$(acquire_lane) || { log "all $MAX_CONCURRENT lanes busy — deferring $prompt_file"; return 1; }
 	local ts
 	ts="$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
+	(umask 077; : >>"runs/$ts.log")
 	# Drain runs get a narrator that tails their stream-json and posts per-step
 	# progress to the task's channel (best-effort; never affects the executor).
 	if [[ "$prompt_file" == drain.md ]]; then

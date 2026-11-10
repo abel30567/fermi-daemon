@@ -97,7 +97,9 @@ Full restore-from-scratch and health-verification steps are in
 
 ## CI
 
-`scripts/gates.sh` is the single gate command: the private scan, bridge tests
+`scripts/gates.sh` is the single gate command: the private scan, a secret scan
+of the committed fixtures (`test/fixtures`, `evals/fixtures`; fake keys there
+must not be secret-shaped), bridge tests
 and typechecks, syntax checks, and the root `npm test`. The private scan
 (`scripts/private-scan.mjs`) fails on any git-tracked E.164 number, WhatsApp
 JID or LID, or phone-looking `chat_id`/`sender` that is not a placeholder
@@ -129,8 +131,16 @@ agent broad control of your Mac:
   claude.ai connector that provides the Fermi tools.
 - **`runs/`, `logs/`, and `media/` accumulate real message content, transcripts,
   attachments, and other PII** as the daemon operates. They are gitignored and
-  must **never** be committed or shared. Prune them periodically. `wa-auth/`
-  holds your WhatsApp session and is likewise never committed.
+  must **never** be committed or shared. `wa-auth/` holds your WhatsApp session
+  and is likewise never committed.
+- Run logs and transcripts (`runs/*.log`, `runs/*.events.jsonl`) pass every line
+  through `lib/redact.mjs` before it is written: API keys (`sk-`, `AIza`, `ghp_`,
+  `xox…`, AWS), bearer/basic auth, `x-api-key`, JWTs, `*TOKEN=`/`*KEY=`
+  assignments, PEM private keys and base64 blobs that decode to any of these
+  become `[REDACTED]`. Log files are created `0600`, and the warm worker chmods
+  any group/world-readable file in `runs/` and `logs/` to `0600` on start. It
+  also deletes `runs/` files older than `RUNS_RETENTION_DAYS` (default 14; `0`
+  keeps them) on start and daily. Prune `logs/` and `media/` yourself.
 
 This is personal-automation software. Run it only on a machine you own, exposed
 only to accounts and channels you control.

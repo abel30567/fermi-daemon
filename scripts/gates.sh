@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 node scripts/private-scan.mjs
+# Committed fixtures hold fake keys only: nothing secret-shaped (scripts/scan-secrets.mjs patterns).
+git ls-files -z test/fixtures evals/fixtures | xargs -0 node scripts/scan-secrets.mjs
 for d in wa-bridge dc-bridge sl-bridge; do
   (cd "$d" && npm ci --no-audit --no-fund && npm test && npm run typecheck)
 done
