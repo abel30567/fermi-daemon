@@ -131,6 +131,15 @@ agent broad control of your Mac:
   attachments, and other PII** as the daemon operates. They are gitignored and
   must **never** be committed or shared. Prune them periodically. `wa-auth/`
   holds your WhatsApp session and is likewise never committed.
+- **`wa-auth/` is owner-only.** Anyone who can read it can take over the linked
+  WhatsApp device. `wa-bridge` runs with umask 077 and on every start repairs
+  `wa-auth/` to dirs 0700 / files 0600, logging a `SECURITY WARNING` line if it
+  cannot (e.g. read-only filesystem); `scripts/gates.sh` fails if anything in it
+  is group/other accessible. Installs from before this change get repaired on the
+  next bridge start; to repair by hand once:
+  ```
+  find -H ~/fermi-daemon/wa-auth -type d -exec chmod 700 {} + && find -H ~/fermi-daemon/wa-auth -type f -exec chmod 600 {} +
+  ```
 
 This is personal-automation software. Run it only on a machine you own, exposed
 only to accounts and channels you control.
