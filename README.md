@@ -141,6 +141,15 @@ agent broad control of your Mac:
   any group/world-readable file in `runs/` and `logs/` to `0600` on start. It
   also deletes `runs/` files older than `RUNS_RETENTION_DAYS` (default 14; `0`
   keeps them) on start and daily. Prune `logs/` and `media/` yourself.
+- **`wa-auth/` is owner-only.** Anyone who can read it can take over the linked
+  WhatsApp device. `wa-bridge` runs with umask 077 and on every start repairs
+  `wa-auth/` to dirs 0700 / files 0600, logging a `SECURITY WARNING` line if it
+  cannot (e.g. read-only filesystem); `scripts/gates.sh` fails if anything in it
+  is group/other accessible. Installs from before this change get repaired on the
+  next bridge start; to repair by hand once:
+  ```
+  find -H ~/fermi-daemon/wa-auth -type d -exec chmod 700 {} + && find -H ~/fermi-daemon/wa-auth -type f -exec chmod 600 {} +
+  ```
 
 This is personal-automation software. Run it only on a machine you own, exposed
 only to accounts and channels you control.
