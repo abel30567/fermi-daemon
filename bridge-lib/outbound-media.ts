@@ -2,7 +2,9 @@
 // local-path guardrail for outbound attachments, and a generic poll loop.
 // Imported by relative path (`../../bridge-lib/outbound-media.ts`); Node strips
 // the types at load time, so there is no build step.
+import { lookup as dnsLookup } from 'node:dns/promises'
 import { mkdirSync, realpathSync, statSync } from 'node:fs'
+import { BlockList, isIP } from 'node:net'
 import { basename, extname, join, sep } from 'node:path'
 
 export type MediaKind = 'image' | 'document' | 'audio' | 'video'
@@ -127,21 +129,157 @@ export function assertHttpsMediaUrl(raw: string): string {
 
 export type RemoteMedia ={ buffer: Buffer; mimetype: string; fileName: string }
 
-/** Download a remote attachment into memory, capped at maxBytes. */
-export async function fetchRemoteMedia(media: OutboundMedia, maxBytes: number): Promise<RemoteMedia> {
+// Destinations a remote attachment URL may never reach: loopback, private,
+// link-local (incl. the 169.254.169.254 cloud metadata endpoint), CGNAT,
+// unspecified, multicast and reserved, for v4 and v6. BlockList also matches
+// IPv4-mapped v6 (::ffff:127.0.0.1) against the v4 rules.
+const BLOCKED = new BlockList()
+for (const [net, prefix] of [
+	['0.0.0.0', 8],
+	['10.0.0.0', 8],
+	['100.64.0.0', 10],
+	['127.0.0.0', 8],
+	['169.254.0.0', 16],
+	['172.16.0.0', 12],
+	['192.0.0.0', 24],
+	['192.168.0.0', 16],
+	['198.18.0.0', 15],
+	['224.0.0.0', 4],
+	['240.0.0.0', 4],
+] as const) {
+	BLOCKED.addSubnet(net, prefix, 'ipv4')
+}
+for (const [net, prefix] of [
+	['::', 128],
+	['::1', 128],
+	['fc00::', 7],
+	['fe80::', 10],
+	['ff00::', 8],
+] as const) {
+	BLOCKED.addSubnet(net, prefix, 'ipv6')
+}
+
+/** True for an IP literal that outbound media must not be fetched from. */
+export function isBlockedAddress(address: string): boolean {
+	const family = isIP(address)
+	if (family === 0) return true
+	return BLOCKED.check(address, family === 6 ? 'ipv6' : 'ipv4')
+}
+
+export type LookupAll = (hostname: string) => Promise<string[]>
+
+const systemLookup: LookupAll = async (hostname) =>
+	(await dnsLookup(hostname, { all: true, verbatim: true })).map((a) => a.address)
+
+export type RemoteFetchOptions = {
+	/** Resolve a hostname to all of its addresses (default: the system resolver). */
+	lookup?: LookupAll
+	fetch?: typeof fetch
+	/** Whole download, redirects included. */
+	timeoutMs?: number
+	maxRedirects?: number
+}
+
+export const REMOTE_MEDIA_TIMEOUT_MS = 60_000
+export const REMOTE_MEDIA_MAX_REDIRECTS = 3
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+
+/**
+ * Reject a URL unless it is http(s) and every address its host resolves to is
+ * public. This is a precheck: fetch() resolves the name again when it
+ * connects, so a DNS-rebinding server with a near-zero TTL can still swap in a
+ * private address between the two lookups. Rejecting when ANY record is
+ * private and re-checking every redirect hop narrows that window; closing it
+ * needs connection-level pinning, which global fetch does not expose.
+ */
+async function assertPublicUrl(raw: string, lookup: LookupAll): Promise<URL> {
+	let url: URL
+	try {
+		url = new URL(raw)
+	} catch {
+		throw new MediaRejected(`invalid url: ${raw}`)
+	}
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+		throw new MediaRejected(`unsupported url scheme ${url.protocol} ${raw}`)
+	}
+	const host = url.hostname.replace(/^\[(.*)\]$/, '$1')
+	let addresses: string[]
+	if (isIP(host)) {
+		addresses = [host]
+	} else {
+		try {
+			addresses = await lookup(host)
+		} catch {
+			throw new MediaRejected(`cannot resolve host ${host}`)
+		}
+	}
+	if (addresses.length === 0) throw new MediaRejected(`cannot resolve host ${host}`)
+	const blocked = addresses.find(isBlockedAddress)
+	if (blocked) throw new MediaRejected(`url resolves to a private address (${blocked}): ${raw}`)
+	return url
+}
+
+function tooLarge(bytes: number): MediaRejected {
+	return new MediaRejected(`remote file is too large (${Math.round(bytes / 1_048_576)} MB)`)
+}
+
+/**
+ * Download a remote attachment into memory. Every hop (max 3 redirects) must
+ * resolve to a public address; the body is streamed and aborted as soon as it
+ * passes maxBytes; the whole download is bounded by timeoutMs.
+ */
+export async function fetchRemoteMedia(media: OutboundMedia, maxBytes: number, opts: RemoteFetchOptions = {}): Promise<RemoteMedia> {
 	const url = media.url
 	if (!url) throw new MediaRejected('no url')
-	const res = await fetch(url)
-	if (!res.ok) throw new MediaRejected(`download failed (${res.status}): ${url}`)
-	const declared = Number(res.headers.get('content-length') ?? '0')
-	if (declared > maxBytes) throw new MediaRejected(`remote file is too large (${Math.round(declared / 1_048_576)} MB)`)
-	const buffer = Buffer.from(await res.arrayBuffer())
-	if (buffer.length > maxBytes) throw new MediaRejected(`remote file is too large (${Math.round(buffer.length / 1_048_576)} MB)`)
-	if (buffer.length === 0) throw new MediaRejected(`remote file is empty: ${url}`)
-	const fileName = media.file_name ?? remoteFileName(url, media.kind)
-	const header = res.headers.get('content-type')?.split(';')[0].trim()
-	const mimetype = media.mimetype ?? (header && header !== 'application/octet-stream' ? header : inferMimetype(fileName, media.kind))
-	return { buffer, mimetype, fileName }
+	const lookup = opts.lookup ?? systemLookup
+	const doFetch = opts.fetch ?? fetch
+	const maxRedirects = opts.maxRedirects ?? REMOTE_MEDIA_MAX_REDIRECTS
+	const timeoutMs = opts.timeoutMs ?? REMOTE_MEDIA_TIMEOUT_MS
+	const signal = AbortSignal.timeout(timeoutMs)
+	try {
+		let current = await assertPublicUrl(url, lookup)
+		let res: Response
+		for (let hop = 0; ; hop++) {
+			res = await doFetch(current, { redirect: 'manual', signal })
+			if (!REDIRECT_STATUSES.has(res.status)) break
+			await res.body?.cancel()
+			const location = res.headers.get('location')
+			if (!location) throw new MediaRejected(`download failed (${res.status} without location): ${url}`)
+			if (hop >= maxRedirects) throw new MediaRejected(`too many redirects (> ${maxRedirects}): ${url}`)
+			current = await assertPublicUrl(new URL(location, current).href, lookup)
+		}
+		if (!res.ok) throw new MediaRejected(`download failed (${res.status}): ${url}`)
+		const declared = Number(res.headers.get('content-length') ?? '0')
+		if (declared > maxBytes) {
+			await res.body?.cancel()
+			throw tooLarge(declared)
+		}
+		const chunks: Uint8Array[] = []
+		let total = 0
+		if (res.body) {
+			const reader = res.body.getReader()
+			while (true) {
+				const { done, value } = await reader.read()
+				if (done) break
+				total += value.byteLength
+				if (total > maxBytes) {
+					await reader.cancel()
+					throw tooLarge(total)
+				}
+				chunks.push(value)
+			}
+		}
+		const buffer = Buffer.concat(chunks, total)
+		if (buffer.length === 0) throw new MediaRejected(`remote file is empty: ${url}`)
+		const fileName = media.file_name ?? remoteFileName(url, media.kind)
+		const header = res.headers.get('content-type')?.split(';')[0].trim()
+		const mimetype = media.mimetype ?? (header && header !== 'application/octet-stream' ? header : inferMimetype(fileName, media.kind))
+		return { buffer, mimetype, fileName }
+	} catch (err) {
+		// A timeout is transient like any network error: retried, not rejected.
+		if (signal.aborted && !(err instanceof MediaRejected)) throw new Error(`download timed out after ${timeoutMs} ms: ${url}`)
+		throw err
+	}
 }
 
 export function remoteFileName(url: string, kind: MediaKind): string {
