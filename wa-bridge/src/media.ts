@@ -2,6 +2,7 @@ import type { AnyMessageContent } from 'baileys'
 import {
 	type OutboundMedia,
 	type OutboxMessage,
+	assertHttpsMediaUrl,
 	captionFor,
 	inferMimetype,
 	remoteFileName,
@@ -13,7 +14,7 @@ export const WA_MAX_MEDIA_BYTES = 64 * 1024 * 1024
 
 /**
  * Build the Baileys content for an outbox attachment. Local paths are
- * allowlist-checked (media/out only); URLs are handed to Baileys to fetch.
+ * allowlist-checked (media/out only); https:// URLs are handed to Baileys to fetch.
  * Audio has no caption on WhatsApp — the caller sends it as a follow-up text.
  */
 export function buildWaMediaContent(
@@ -31,7 +32,7 @@ export function buildWaMediaContent(
 		mimetype = local.mimetype
 		fileName = local.fileName
 	} else {
-		const url = media.url as string
+		const url = assertHttpsMediaUrl(media.url as string)
 		source = { url }
 		fileName = media.file_name ?? remoteFileName(url, media.kind)
 		mimetype = media.mimetype ?? inferMimetype(fileName, media.kind)
