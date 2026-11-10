@@ -3,8 +3,9 @@
 // committed file holds a secret-shaped string (scripts/gates.sh scans the fixtures).
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REDACTED, redact, redactLine, createLineRedactor } from '../lib/redact.mjs'
@@ -67,6 +68,93 @@ describe('redact()', () => {
       `commit ${randomBytes(20).toString('hex')} at /tmp/fermi-daemon/runs/warm-1.log`,
     ].join('\n')
     assert.equal(redact(text), text)
+  })
+})
+
+describe('JSON lines: a value under a secret-named key', () => {
+  test('nested keys, {name, value} pairs and auth headers are redacted; the rest of the line is kept', () => {
+    const v = alnum(32)
+    const cases = [
+      [{ input: { headers: { 'x-api-key': v } } }, { input: { headers: { 'x-api-key': REDACTED } } }],
+      [{ env: { API_TOKEN: v, PATH: '/usr/bin' } }, { env: { API_TOKEN: REDACTED, PATH: '/usr/bin' } }],
+      [{ input: { password: 'hunter2hunter2' } }, { input: { password: REDACTED } }],
+      [{ input: { api_key: v, client_secret: v, refresh_token: v } }, { input: { api_key: REDACTED, client_secret: REDACTED, refresh_token: REDACTED } }],
+      [{ headers: { Authorization: v, 'Proxy-Authorization': v } }, { headers: { Authorization: REDACTED, 'Proxy-Authorization': REDACTED } }],
+      [{ headers: [{ name: 'x-api-key', value: v }, { name: 'accept', value: 'json' }] }, { headers: [{ name: 'x-api-key', value: REDACTED }, { name: 'accept', value: 'json' }] }],
+      [[{ type: 'tool_use', input: { secret: v } }], [{ type: 'tool_use', input: { secret: REDACTED } }]],
+    ]
+    for (const [ev, want] of cases) {
+      const out = redactLine(JSON.stringify(ev))
+      assert.deepEqual(JSON.parse(out), want, out)
+      assert.ok(!out.includes(v) && !out.includes('hunter2'), out)
+    }
+    const ws = createLineRedactor().write(JSON.stringify({ input: { 'x-api-key': v } }) + '\n')
+    assert.ok(!ws.includes(v), 'the stream redactor too')
+  })
+
+  test('non-secret keys, empty and non-string values are left alone', () => {
+    const lines = [
+      { usage: { input_tokens: 1200, output_tokens: 34, max_tokens: 'auto' } },
+      { name: 'Bash', input: { command: 'ls', description: 'list' } },
+      { name: 'accept', value: 'application/json' },
+      { password: '', token: null, api_key: 3 },
+    ].map((o) => JSON.stringify(o))
+    for (const l of lines) assert.equal(redactLine(l), l)
+  })
+})
+
+describe('process stdout/stderr (redactStdio)', () => {
+  test('console output, partial writes, warnings and uncaught exception traces are redacted', () => {
+    for (const fail of ['throw new Error(`boom ${k}`)', 'Promise.reject(new Error(`rej ${k}`))']) {
+      const key = FAKE.openai
+      const script = `import { redactStdio } from ${JSON.stringify(join(ROOT, 'lib/logs.mjs'))}
+redactStdio()
+const k = ${JSON.stringify(key)}
+console.log('out', k)
+console.error('err', k)
+process.emitWarning('warn ' + k)
+process.stdout.write('partial ' + k)
+setTimeout(() => { ${fail} }, 10)`
+      // npm test runs under NODE_NO_WARNINGS=1 (scripts/sentinel-home.mjs); this child needs its warning.
+      const env = { ...process.env, NODE_NO_WARNINGS: '' }
+      const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env })
+      const all = r.stdout + r.stderr
+      assert.equal(r.status, 1, all)
+      assert.deepEqual(leaks(all, [key]), [], all)
+      for (const re of [/out \[REDACTED\]/, /err \[REDACTED\]/, /Warning: warn \[REDACTED\]/, /partial \[REDACTED\]/, /(boom|rej) \[REDACTED\]\n\s+at /]) assert.match(all, re)
+    }
+  })
+
+  test("run-once's own crash output (poll.sh appends it to the run log) is redacted", () => {
+    // An unknown option makes parseArgs throw before anything else runs: an uncaught exception.
+    const r = spawnSync(process.execPath, [join(ROOT, 'bin/run-once.mjs'), `--${FAKE.openai}`], { cwd: tmp(), encoding: 'utf8' })
+    assert.equal(r.status, 1, r.stderr)
+    assert.match(r.stderr, /Unknown option '--\[REDACTED\]'/)
+    assert.deepEqual(leaks(r.stdout + r.stderr, [FAKE.openai]), [])
+  })
+})
+
+describe('gates.sh fixture secret scan', () => {
+  const line = /^git ls-files .*scan-secrets\.mjs$/m.exec(readFileSync(join(ROOT, 'scripts/gates.sh'), 'utf8'))?.[0]
+  const run = (cwd) => spawnSync('bash', ['-euo', 'pipefail', '-c', line], { cwd, encoding: 'utf8' })
+
+  test('passes on the committed fixtures', () => {
+    assert.ok(line, 'gates.sh runs scan-secrets over the fixtures')
+    const r = run(ROOT)
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+  })
+
+  test('fails on a tracked fixture holding a fake key, naming the file but not the value', () => {
+    const dir = tmp()
+    mkdirSync(join(dir, 'scripts'))
+    copyFileSync(join(ROOT, 'scripts/scan-secrets.mjs'), join(dir, 'scripts/scan-secrets.mjs'))
+    mkdirSync(join(dir, 'evals/fixtures'), { recursive: true })
+    writeFileSync(join(dir, 'evals/fixtures/run.jsonl'), JSON.stringify({ text: `key ${FAKE.openai}` }) + '\n')
+    for (const args of [['init', '-q'], ['add', '.']]) assert.equal(spawnSync('git', args, { cwd: dir }).status, 0)
+    const r = run(dir)
+    assert.equal(r.status, 1, r.stdout + r.stderr)
+    assert.match(r.stdout + r.stderr, /evals\/fixtures\/run\.jsonl/)
+    assert.ok(!(r.stdout + r.stderr).includes(FAKE.openai))
   })
 })
 
@@ -281,6 +369,57 @@ describe('log files: 0600, chmod on start, runs/ rotation', () => {
 })
 
 describe('warm worker', () => {
+  test("its own output is redacted: keys in harness stderr and a Teams message, cut by the log slices, show [REDACTED]", async () => {
+    // Each key starts just before its slice limit (200 for stderr, 80 for Teams text), so slicing
+    // before redacting would leave a 12-char stub that no pattern matches. The Teams sender is
+    // not redacted at its call site: only the stdout redactor (redactStdio) covers it.
+    const [key, sender, text] = [FAKE.openai, FAKE.github, FAKE.anthropic]
+    const secret = 'test-teams-secret'
+    const { log } = await runWorker({
+      result: { type: 'result', subtype: 'success', is_error: false, num_turns: 1, result: 'done', terminal_reason: 'completed' },
+      pending: 0,
+      durationMs: 0,
+      dotenv: `TEAMS_WEBHOOK_SECRET=${secret}\n`,
+      env: { FAKE_STDERR: `error: ${'x'.repeat(180)} ${key} denied\n` },
+      act: async ({ log }) => {
+        await until(() => /control endpoint on 127\.0\.0\.1:\d+/.test(log()))
+        const port = /control endpoint on 127\.0\.0\.1:(\d+)/.exec(log())[1]
+        const res = await fetch(`http://127.0.0.1:${port}/teams/webhook`, {
+          method: 'POST',
+          headers: { 'x-teams-bridge-secret': secret },
+          body: JSON.stringify({ senderDisplayName: `bot ${sender}`, messageBody: `<p>${'y'.repeat(67)} ${text} end</p>` }),
+        })
+        assert.equal(res.status, 200)
+        await until(() => /claude stderr:/.test(log()) && /teams inbound/.test(log()))
+      },
+    })
+    assert.match(log, /claude stderr: error: x+ \[REDACTED\]/)
+    assert.match(log, /teams inbound from bot \[REDACTED\]: y+ \[REDACTED\]/)
+    assert.deepEqual(leaks(log, [key, sender, text].map((k) => k.slice(0, 12))), [], log)
+  })
+
+  test('a file in logs/ it cannot chmod is a warning, not a startup failure', async () => {
+    const locked = []
+    const { log } = await runWorker({
+      result: { type: 'result', subtype: 'success', is_error: false, num_turns: 1, result: 'done', terminal_reason: 'completed' },
+      durationMs: 0,
+      // An unreadable logs/ makes secureLogs throw EACCES, like a root-owned file would EPERM.
+      setup: (daemon) => {
+        mkdirSync(join(daemon, 'logs'), { mode: 0o000 })
+        locked.push(join(daemon, 'logs'))
+      },
+      act: async ({ log }) => {
+        try {
+          await until(() => /starting warm claude/.test(log()))
+        } finally {
+          for (const d of locked) chmodSync(d, 0o700)
+        }
+      },
+    })
+    assert.match(log, /warning: could not make runs\/ and logs\/ owner-only: EACCES/)
+    assert.match(log, /starting warm claude/)
+  })
+
   test('a stream with fake keys: runs/ log and events show [REDACTED], files are 0600; old logs chmodded and expired on start', async () => {
     const dir = tmp()
     const key = pem()

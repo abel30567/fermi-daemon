@@ -19,7 +19,10 @@ import { parseArgs } from 'node:util'
 import { loadHarness } from '../harness/index.mjs'
 import { ALLOWED_TOOLS, SETTING_SOURCES } from '../lib/run-policy.mjs'
 import { loadPrompt } from '../lib/prompt.mjs'
-import { openLog } from '../lib/logs.mjs'
+import { openLog, redactStdio } from '../lib/logs.mjs'
+
+// poll.sh appends this process's own stdout/stderr to the run log: redact it, crash traces too.
+redactStdio()
 
 const KILL_GRACE_MS = 2000
 
