@@ -123,3 +123,39 @@ test('buildWaMediaContent: image with caption from body, document with fileName,
 		MediaRejected,
 	)
 })
+
+// DMN-52: media.url is https-only; local files only via the media/out-guarded path field.
+const waBase = { id: 'a', chat_id: '1', created_at: 0, body: '' }
+const waUrl = (url: string) => () => buildWaMediaContent({ ...waBase, media: { kind: 'document', url } }, fixtureHome().home)
+
+test('DMN-52 wa: url /etc/passwd is rejected', () => {
+	assert.throws(waUrl('/etc/passwd'), MediaRejected)
+})
+
+test('DMN-52 wa: file://, relative path, data: urls are rejected', () => {
+	for (const url of ['file:///etc/passwd', 'media/out/chart.png', '../secret.txt', 'data:text/plain;base64,aGk=']) {
+		assert.throws(waUrl(url), MediaRejected, url)
+	}
+})
+
+test('DMN-52 wa edge: url with credentials userinfo is rejected', () => {
+	assert.throws(waUrl('https://user:pass@x.test/r.pdf'), /credentials/)
+	assert.throws(waUrl('https://user@x.test/r.pdf'), /credentials/)
+})
+
+test('DMN-52 wa edge: localhost http is rejected', () => {
+	for (const url of ['http://localhost/r.pdf', 'http://127.0.0.1:8080/r.pdf', 'http://[::1]/r.pdf']) {
+		assert.throws(waUrl(url), MediaRejected, url)
+	}
+})
+
+test('DMN-52 wa: https url is allowed', () => {
+	const { content } = waUrl('https://x.test/r.pdf')()
+	assert.deepEqual((content as { document: { url: string } }).document, { url: 'https://x.test/r.pdf' })
+})
+
+test('DMN-52 wa: media/out path still works', () => {
+	const { home, png } = fixtureHome()
+	const { content } = buildWaMediaContent({ ...waBase, media: { kind: 'image', path: png } }, home)
+	assert.deepEqual((content as { image: { url: string } }).image, { url: png })
+})
