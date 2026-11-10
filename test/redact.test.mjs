@@ -135,7 +135,7 @@ setTimeout(() => { ${fail} }, 10)`
 })
 
 describe('gates.sh fixture secret scan', () => {
-  const line = /^git ls-files .*scan-secrets\.mjs$/m.exec(readFileSync(join(ROOT, 'scripts/gates.sh'), 'utf8'))?.[0]
+  const line = /^fixtures=\(\)\n[\s\S]*?scan-secrets\.mjs .*$/m.exec(readFileSync(join(ROOT, 'scripts/gates.sh'), 'utf8'))?.[0]
   const run = (cwd) => spawnSync('bash', ['-euo', 'pipefail', '-c', line], { cwd, encoding: 'utf8' })
 
   test('passes on the committed fixtures', () => {
@@ -155,6 +155,14 @@ describe('gates.sh fixture secret scan', () => {
     assert.equal(r.status, 1, r.stdout + r.stderr)
     assert.match(r.stdout + r.stderr, /evals\/fixtures\/run\.jsonl/)
     assert.ok(!(r.stdout + r.stderr).includes(FAKE.openai))
+  })
+
+  test('passes without running the scanner when no fixtures are tracked', () => {
+    const dir = tmp()
+    assert.equal(spawnSync('git', ['init', '-q'], { cwd: dir }).status, 0)
+    const r = run(dir)
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    assert.equal(r.stdout + r.stderr, '')
   })
 })
 

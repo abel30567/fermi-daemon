@@ -5,7 +5,10 @@ cd "$(dirname "$0")/.."
 
 node scripts/private-scan.mjs
 # Committed fixtures hold fake keys only: nothing secret-shaped (scripts/scan-secrets.mjs patterns).
-git ls-files -z test/fixtures evals/fixtures | xargs -0 node scripts/scan-secrets.mjs
+# No xargs: GNU xargs turns the scanner's exit 1 into 123, BSD keeps 1. Plain loop, not mapfile (bash 3.2 on macOS).
+fixtures=()
+while IFS= read -r -d '' f; do fixtures+=("$f"); done < <(git ls-files -z test/fixtures evals/fixtures)
+if [ ${#fixtures[@]} -gt 0 ]; then node scripts/scan-secrets.mjs "${fixtures[@]}"; fi
 # WhatsApp credentials must be owner-only (dirs 0700, files 0600); POSIX -perm so BSD and GNU find agree.
 # -H: follow wa-auth itself if it is a symlink, but not the symlinks inside it.
 if [ -d wa-auth ]; then
