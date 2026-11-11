@@ -302,7 +302,8 @@ describe('edge cases', () => {
       durationMs: 1500,
       setup: async (daemon) => {
         mkdirSync(join(daemon, 'run'), { mode: 0o700 })
-        other = net.createServer((c) => c.end('other'))
+        // The worker's liveness probe hangs up at once, so writing back can hit EPIPE.
+        other = net.createServer((c) => c.on('error', () => {}).end('other'))
         await new Promise((r) => other.listen(join(daemon, 'run/control.sock'), r))
       },
       act: async ({ home }) => {
