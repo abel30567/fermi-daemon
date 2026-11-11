@@ -12,6 +12,7 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
+import { assertNav, confineContext, guardPage } from './broker-origin.mjs'
 
 function loadEnv() {
 	const out = { ...process.env }
@@ -56,7 +57,7 @@ const PROFILE_DIRS = {
 	chatgpt: `${env.HOME}/.macos-mcp/browser-profiles/chatgpt-capture`,
 }
 
-async function contextFor(session) {
+async function contextFor(session, site) {
 	if (contexts.has(session)) return contexts.get(session)
 	const headless = process.env.BROKER_HEADLESS === '1'
 	const profileDir = PROFILE_DIRS[session]
@@ -67,7 +68,8 @@ async function contextFor(session) {
 			headless,
 			viewport: { width: 1280, height: 900 },
 		})
-		const entry = { browser: context.browser(), context, persistent: true }
+		await confineContext(context, site)
+		const entry = { browser: context.browser(), context, persistent: true, site }
 		contexts.set(session, entry)
 		return entry
 	}
@@ -76,7 +78,8 @@ async function contextFor(session) {
 	const { storage_state } = await res.json()
 	const browser = await chromium.launch({ headless })
 	const context = await browser.newContext({ storageState: JSON.parse(storage_state) })
-	const entry = { browser, context, persistent: false }
+	await confineContext(context, site)
+	const entry = { browser, context, persistent: false, site }
 	contexts.set(session, entry)
 	return entry
 }
@@ -91,14 +94,19 @@ async function pageFor(p) {
 	const key = `${p.session}:${p.agent_id ?? 'shared'}`
 	let page = pages.get(key)
 	if (page && !page.isClosed()) return page
-	const { context } = await contextFor(p.session)
+	const { context, site } = await contextFor(p.session, p.site)
 	page = await context.newPage()
+	await guardPage(context, page, site)
 	pages.set(key, page)
 	return page
 }
 
 async function runOp(op) {
 	const p = JSON.parse(op.payload)
+	// Origin confinement (DMN-55): p.site is the lease record's site. Checked
+	// here before any browser work, and again by the context's route + CDP guard
+	// on every navigation the page then makes (redirects, clicks, downloads).
+	if (p.args.url) assertNav(p.args.url, p.site)
 	const page = await pageFor(p)
 	// Foreground the tab before every op: ChatGPT's SPA (and other React apps)
 	// throttle/defer rendering in a backgrounded Playwright tab, so a non-active
