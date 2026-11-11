@@ -229,14 +229,14 @@ describe('driver: faults, fakes and state', () => {
 
   test('the fake Mac bridge answers the model-switch curl and canned commands, and records them', async () => {
     const out = tmp()
-    const curl = `curl -s -X POST http://127.0.0.1:8791/model -H 'content-type: application/json' -d '{"model":"opus"}'`
+    const curl = `curl -s --unix-socket ~/fermi-daemon/run/control.sock -X POST http://localhost/model -H 'content-type: application/json' -d '{"model":"opus"}'`
     const s = scenario({
       fixtures: { bindings: [{ channel: 'sl', sender_id: 'U0EVALOWNER' }], mac: [{ match: 'uptime', result: 'up 3 days' }] },
       fake: {
         script: [
           ...REPLY().slice(0, 4),
           { tool: 'mac_shell', args: { command: curl } },
-          { tool: 'mac_shell', args: { command: 'curl -s http://127.0.0.1:8791/model' } },
+          { tool: 'mac_shell', args: { command: 'curl -s --unix-socket ~/fermi-daemon/run/control.sock http://localhost/model' } },
           { tool: 'mac_shell', args: { command: 'uptime' } },
         ],
       },

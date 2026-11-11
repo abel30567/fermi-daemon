@@ -8,7 +8,7 @@ equivalent and flags the Mac-only pieces.
 
 | Service (launchd label) | What it is | Portable? |
 |---|---|---|
-| `com.fermi.warm-worker` | `warm-worker.mjs` — persistent `claude -p` stream (hot MCP + Fermi connector). Drains the queue in ~11s/reply. Control endpoint on `127.0.0.1:8791` (`POST /abort` emergency stop, `GET/POST /model` model switch). | ✅ pure Node |
+| `com.fermi.warm-worker` | `warm-worker.mjs` — persistent `claude -p` stream (hot MCP + Fermi connector). Drains the queue in ~11s/reply. Control endpoint on the unix socket `~/fermi-daemon/run/control.sock`, owner-only (`POST /abort` emergency stop, `GET/POST /model` model switch); Teams inbound webhook on `127.0.0.1:$WARM_TEAMS_PORT`. | ✅ pure Node |
 | `com.fermi.heartbeat` | `poll.sh` every 60s — proactive check-ins + cold-spawn fallback when the warm worker is down. | ⚠️ zsh + BSD `stat` (see below) |
 | `com.fermi.wa-bridge` | `wa-bridge/` — WhatsApp via baileys. Inbound text + media download (`media/`), outbox, emergency-stop detection (`isStopCommand` → warm-worker `/abort`). | ✅ pure Node/TS |
 | `com.fermi.dc-bridge` | `dc-bridge/` — Discord bridge. | ✅ pure Node/TS |
@@ -95,7 +95,8 @@ WantedBy=default.target
 ## Smoke test on a fresh box (in order)
 
 1. `node warm-worker.mjs` by hand → log shows `starting warm claude` +
-   `control endpoint on 127.0.0.1:8791`; `curl 127.0.0.1:8791/model` answers.
+   `control endpoint on unix:…/run/control.sock`;
+   `curl --unix-socket ~/fermi-daemon/run/control.sock http://localhost/model` answers.
 2. `curl -X POST $FERMI_URL/wa/webhook …` a text task → reply lands, ~11s.
 3. `tools/transcribe.sh <sample.m4a>` → transcript on stdout.
 4. Send "stop" mid-task → `ABORT requested` in log, task failed "stopped by user".

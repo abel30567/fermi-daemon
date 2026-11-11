@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process'
+import http from 'node:http'
 import { join } from 'node:path'
 import type { Config } from './config.ts'
 import { log } from './log.ts'
 
 const RETRY_DELAYS_MS = [1000, 3000, 9000]
-const WARM_CONTROL_PORT = Number(process.env.WARM_CONTROL_PORT ?? 8791)
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms))
@@ -26,20 +26,23 @@ export function isStopCommand(text: string): boolean {
 	)
 }
 
-// Tell the warm worker to interrupt the running turn immediately. Returns true
-// if the worker acknowledged (so we can skip enqueueing a redundant stop task).
-async function signalAbort(chatId: string): Promise<boolean> {
-	try {
-		const res = await fetch(`http://127.0.0.1:${WARM_CONTROL_PORT}/abort`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ channel: 'wa', chat_id: chatId }),
-			signal: AbortSignal.timeout(3000),
-		})
-		return res.ok
-	} catch {
-		return false
-	}
+// Tell the warm worker to interrupt the running turn immediately, over its
+// owner-only control socket. Returns true if the worker acknowledged (so we can
+// skip enqueueing a redundant stop task); false when it is down or refuses (a
+// 400: this chat is not the one its current turn claimed).
+export function signalAbort(socketPath: string, chatId: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		const req = http.request(
+			{ socketPath, path: '/abort', method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(3000) },
+			(res) => {
+				res.resume()
+				const status = res.statusCode ?? 0
+				resolve(status >= 200 && status < 300)
+			},
+		)
+		req.on('error', () => resolve(false))
+		req.end(JSON.stringify({ channel: 'wa', chat_id: chatId }))
+	})
 }
 
 // Kick the Fermi daemon so it drains the freshly-queued inbound message
@@ -62,7 +65,7 @@ export function makeInboundHandler(config: Config): InboundHandler {
 		// letting the stop wait in the queue behind the task it's meant to stop.
 		if (isStopCommand(text)) {
 			log(`stop command from ${sender} (chat ${chatId}): "${text}" — signaling abort`)
-			if (await signalAbort(chatId)) return
+			if (await signalAbort(join(config.DAEMON_HOME, 'run/control.sock'), chatId)) return
 			log('abort signal failed (warm worker down?) — enqueueing normally')
 		}
 		const body = JSON.stringify({ sender, chat_id: chatId, text })

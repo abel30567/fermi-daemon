@@ -25,8 +25,8 @@ async function teamsTurn(overlay) {
     overlay,
     dotenv: `TEAMS_WEBHOOK_SECRET=${SECRET}\n`,
     act: async ({ log, home }) => {
-      await until(() => /control endpoint on 127\.0\.0\.1:\d+/.test(log()))
-      const port = /control endpoint on 127\.0\.0\.1:(\d+)/.exec(log())[1]
+      await until(() => /teams webhook on 127\.0\.0\.1:\d+/.test(log()))
+      const port = /teams webhook on 127\.0\.0\.1:(\d+)/.exec(log())[1]
       const res = await fetch(`http://127.0.0.1:${port}/teams/webhook`, {
         method: 'POST',
         headers: { 'x-teams-bridge-secret': SECRET },

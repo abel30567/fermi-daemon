@@ -6,7 +6,7 @@
   },
   "inbound": {"channel": "sl", "sender": "U0EVALOWNER", "chat": "D0EVAL", "text": "Switch to opus"},
   "expect": [
-    {"order": ["task_claim", "channel_send", "task_complete", {"tool": "mac_shell", "args": {"command": "/-X POST http:\\/\\/127\\.0\\.0\\.1:8791\\/model/"}}]},
+    {"order": ["task_claim", "channel_send", "task_complete", {"tool": "mac_shell", "args": {"command": "/--unix-socket \\S*control\\.sock -X POST http:\\/\\/localhost\\/model/"}}]},
     {"argsMatch": {"tool": "mac_shell", "args": {"command": "/\"model\"\\s*:\\s*\"opus\"/"}}},
     {"exactlyOnce": "channel_send"},
     {"task.status": "done"}
@@ -17,7 +17,7 @@
       {"tool": "context_bootstrap", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}"}},
       {"tool": "channel_send", "args": {"channel": "${task.channel}", "chat_id": "${task.chat_id}", "text": "Switching to opus now; the next message runs on it."}},
       {"tool": "task_complete", "args": {"id": "${task.id}", "status": "done", "result": "switched model to opus"}},
-      {"tool": "mac_shell", "args": {"command": "curl -s -X POST http://127.0.0.1:8791/model -H 'content-type: application/json' -d '{\"model\":\"opus\"}'"}},
+      {"tool": "mac_shell", "args": {"command": "curl -s --unix-socket ~/fermi-daemon/run/control.sock -X POST http://localhost/model -H 'content-type: application/json' -d '{\"model\":\"opus\"}'"}},
       {"tool": "task_claim", "args": {"limit": 1, "stale_minutes": 25}}
     ]
   }
