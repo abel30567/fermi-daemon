@@ -38,12 +38,12 @@ export async function startApiFake(service, phase = () => 'drain') {
 }
 
 // mac_shell commands the drain prompt sends to the warm worker's control endpoint.
-const MODEL_CURL = /curl\b.*127\.0\.0\.1:8791\/model/
+const MODEL_CURL = /curl\b.*--unix-socket\s+\S*\/run\/control\.sock\b.*http:\/\/localhost\/model/
 
 // Fake MacOSMCP: an MCP JSON-RPC server at /mcp. `canned` is a list of
 // { tool?, match?, result } (match is a regex source tested against the
 // arguments' JSON); the first hit's `result` text is returned. The model-switch
-// curl is answered from a recorded "current model" without touching :8791.
+// curl is answered from a recorded "current model" without touching the control socket.
 export async function startFakeMac({ canned = [], model = 'sonnet' } = {}) {
   const calls = []
   const state = { model, switches: [] }

@@ -8,7 +8,7 @@ import { once } from 'node:events'
 import http from 'node:http'
 import { loadHarness, bareToolName } from '../harness/index.mjs'
 import * as claudeCode from '../harness/claude-code.mjs'
-import { ROOT, runWorker, sim, guardHarness } from './run-worker.mjs'
+import { ROOT, runWorker, sim, guardHarness, control } from './run-worker.mjs'
 
 const { normalizeEvent, startSession, runOnce } = guardHarness(claudeCode)
 
@@ -248,15 +248,16 @@ describe('AC3: interrupt sends today\'s control_request and the session survives
     const { events, log } = await runWorker({
       result: SUCCESS,
       durationMs: 0,
+      claim: true,
       env: { FAKE_DELAY_MS: '1000' },
       act: async ({ log, home }) => {
-        await until(() => /control endpoint on 127\.0\.0\.1:\d+/.test(log()))
-        const port = /control endpoint on 127\.0\.0\.1:(\d+)/.exec(log())[1]
+        await until(() => /control endpoint on unix:/.test(log()))
         await until(() => existsSync(join(home, 'turns.log')) && records(home).some((r) => r.drain), 5000)
-        abort = await fetch(`http://127.0.0.1:${port}/abort`, {
-          method: 'POST',
-          body: JSON.stringify({ channel: 'wa', chat_id: '+15555550100' }),
-        }).then((r) => r.json())
+        // The claim's tool_result streams right after the drain turn starts; retry until the worker has read it.
+        for (let i = 0; i < 50 && !abort?.ok; i++) {
+          if (i) await new Promise((r) => setTimeout(r, 20))
+          abort = (await control(home, 'POST', '/abort', { channel: 'wa', chat_id: '+15555550100' })).body
+        }
         // Wait for the cleanup turn that follows the interrupt.
         await until(() => {
           const recs = records(home)
