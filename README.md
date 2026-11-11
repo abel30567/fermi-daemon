@@ -26,8 +26,9 @@ cloudflared tunnel.
   (`com.fermi.warm-worker`) that keeps its MCP + Fermi connector warm so replies
   land in seconds instead of paying the cold-start cost on every message. When
   it is running, `poll.sh` defers to it and only cold-spawns as a fallback.
-  Exposes a localhost control endpoint (`:8791`) for model switching and
-  emergency-stop. It drives the harness through `harness/` (env `HARNESS`,
+  Exposes an owner-only control socket (`run/control.sock`) for model switching
+  and emergency-stop, and the Teams inbound webhook on `127.0.0.1:$WARM_TEAMS_PORT`.
+  It drives the harness through `harness/` (env `HARNESS`,
   default `claude-code`; `CLAUDE_BIN` overrides the `claude` binary) and writes
   each drain turn to `runs/warm-*.log` (raw stream-json) and
   `runs/warm-*.events.jsonl` (normalized events).
@@ -141,6 +142,19 @@ agent broad control of your Mac:
   any group/world-readable file in `runs/` and `logs/` to `0600` on start. It
   also deletes `runs/` files older than `RUNS_RETENTION_DAYS` (default 14; `0`
   keeps them) on start and daily. Prune `logs/` and `media/` yourself.
+- **The warm worker's control endpoint is a unix socket, not a TCP port.**
+  `POST /abort` and `GET/POST /model` listen on `run/control.sock` (`run/` is
+  `0700`, the socket `0600`), so only your user can reach them:
+  `curl --unix-socket ~/fermi-daemon/run/control.sock http://localhost/model`.
+  A stale socket is removed on start; if a live listener still answers there the
+  worker refuses to start. `/abort` acts only for the chat whose task the current
+  drain turn claimed (anything else is a `400` and interrupts nothing), rejects
+  unknown fields, and caps `channel`/`chat_id` at 128 chars. `POST /teams/webhook`
+  (authenticated by `x-teams-bridge-secret`) has its own listener on
+  `127.0.0.1:$WARM_TEAMS_PORT` (`.env` or the environment); with
+  `TEAMS_WEBHOOK_SECRET` set and no `WARM_TEAMS_PORT` the worker refuses to start,
+  and without either there is no TCP listener. **Deploy step:** point the
+  cloudflared tunnel's `/teams/*` ingress at `WARM_TEAMS_PORT` (it used to be 8791).
 - **`wa-auth/` is owner-only.** Anyone who can read it can take over the linked
   WhatsApp device. `wa-bridge` runs with umask 077 and on every start repairs
   `wa-auth/` to dirs 0700 / files 0600, logging a `SECURITY WARNING` line if it

@@ -11,9 +11,11 @@
 
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, lstatSync, unlinkSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { once } from 'node:events'
 import http from 'node:http'
+import net from 'node:net'
 import { Backoff, chatFromEvent } from './lib/turn-outcome.mjs'
 import { loadHarness } from './harness/index.mjs'
 import { ALLOWED_TOOLS } from './lib/run-policy.mjs'
@@ -75,7 +77,8 @@ function currentModel() {
 const POLL_MS = Number(process.env.WARM_POLL_MS || 1000)
 const TURN_TIMEOUT_MS = Number(process.env.WARM_TURN_TIMEOUT_MS || 900000) // kill+respawn a hung turn (15min — long transcriptions/PoC work are legitimate turns)
 const KEEPALIVE_MS = Number(process.env.WARM_KEEPALIVE_MS || 240000) // no-op turn to keep connector hot
-const CONTROL_PORT = Number(process.env.WARM_CONTROL_PORT || 8791) // localhost emergency-stop endpoint
+const CONTROL_SOCKET = join(DAEMON, 'run/control.sock') // owner-only (0600) emergency-stop + model-switch endpoint
+const MAX_CONTROL_FIELD = 128 // longest channel / chat_id /abort accepts, so the stop instruction stays bounded
 const STALENESS_MS = Number(process.env.WARM_STALENESS_MS || 300000) // idle re-check of prompt/server staleness
 const PROMPT_PATH = join(DAEMON, 'prompts/drain.md')
 // Refuse to start on a prompt that cannot render (missing prompts/local.json or key).
@@ -102,6 +105,14 @@ const pendingStops = []
 // like queue work; replies go out via tools/teams-send.sh.
 const pendingTeams = []
 const TEAMS_SECRET = env.TEAMS_WEBHOOK_SECRET || ''
+// POST /teams/webhook has its own localhost TCP listener (the tunnel's target), apart from the control socket.
+const TEAMS_PORT = process.env.WARM_TEAMS_PORT || env.WARM_TEAMS_PORT || ''
+function refuse(why) {
+  console.error(new Date().toISOString(), `refusing to start: ${why}`)
+  process.exit(1)
+}
+if (TEAMS_SECRET && !TEAMS_PORT) refuse('TEAMS_WEBHOOK_SECRET is set but WARM_TEAMS_PORT is not (the Teams webhook port)')
+if (TEAMS_PORT && !(/^\d+$/.test(TEAMS_PORT) && Number(TEAMS_PORT) <= 65535)) refuse(`WARM_TEAMS_PORT is not a port: ${TEAMS_PORT}`)
 
 // Teams sends HTML bodies — flatten to plain text for the agent.
 function htmlToText(html) {
@@ -335,109 +346,171 @@ async function pendingCount() {
 // The channel bridges (wa-bridge etc.) POST here the instant they see a stop
 // command in an inbound message, so we can interrupt a running turn immediately
 // instead of the stop waiting in the queue behind the very task it's stopping.
-function startControlServer() {
-  const server = http.createServer((req, res) => {
-    // GET /model — current model + accepted aliases.
-    if (req.method === 'GET' && req.url === '/model') {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      return res.end(JSON.stringify({ model: currentModel(), aliases: MODEL_ALIASES }))
+// It listens on a unix socket (run/ is 0700, the socket 0600), never on TCP.
+const reply = (res, status, body) => {
+  res.writeHead(status, { 'content-type': 'application/json' })
+  res.end(JSON.stringify(body))
+}
+
+// Reads a JSON object body of at most `limit` bytes whose keys are all in `fields`; 400 otherwise.
+function readBody(req, res, limit, fields, cb) {
+  let body = ''
+  req.on('data', (c) => {
+    body += c
+    if (body.length > limit) req.destroy()
+  })
+  req.on('end', () => {
+    let p
+    try {
+      p = JSON.parse(body || '{}')
+    } catch {
+      return reply(res, 400, { ok: false, error: 'invalid JSON' })
     }
-    // POST /model {"model": "opus"|"sonnet"|"haiku"|"opus-1m"|"claude-…"} —
-    // persist the choice and respawn the claude child on it. Waits for any
-    // in-flight turn to finish first (the loop is between turns when !busy).
-    if (req.method === 'POST' && req.url === '/model') {
-      let body = ''
-      req.on('data', (c) => {
-        body += c
-        if (body.length > 4096) req.destroy()
-      })
-      req.on('end', () => {
-        let p = {}
-        try {
-          p = JSON.parse(body || '{}')
-        } catch {}
-        const resolved = resolveModel(p.model)
-        if (!resolved) {
-          res.writeHead(400, { 'content-type': 'application/json' })
-          return res.end(
-            JSON.stringify({ ok: false, error: 'unknown model', aliases: Object.keys(MODEL_ALIASES) }),
-          )
-        }
-        const prev = currentModel()
-        try {
-          writeFileSync(MODEL_FILE, resolved + '\n')
-        } catch (e) {
-          res.writeHead(500)
-          return res.end(JSON.stringify({ ok: false, error: String(e) }))
-        }
-        log(`model switch: ${prev} -> ${resolved} (respawning claude)`)
-        // Respawn: exit handler restarts claude, which reads the new model.
-        // If a turn is mid-flight this kills it — model switches are explicit
-        // user requests, so that is the expected behavior.
-        if (session) session.close()
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, model: resolved, previous: prev }))
-      })
-      return
-    }
-    // POST /teams/webhook — inbound Teams message from the Power Automate flow
-    // (reaches us through the cloudflared tunnel; path-scoped so only /teams/*
-    // is public). Auth: x-teams-bridge-secret header.
-    if (req.method === 'POST' && req.url === '/teams/webhook') {
-      if (!TEAMS_SECRET || req.headers['x-teams-bridge-secret'] !== TEAMS_SECRET) {
-        res.writeHead(401)
-        return res.end('unauthorized')
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return reply(res, 400, { ok: false, error: 'body must be a JSON object' })
+    const unknown = Object.keys(p).filter((k) => !fields.includes(k))
+    if (unknown.length) return reply(res, 400, { ok: false, error: 'unknown field(s)', fields: unknown })
+    cb(p)
+  })
+}
+
+function controlHandler(req, res) {
+  // GET /model — current model + accepted aliases.
+  if (req.method === 'GET' && req.url === '/model') {
+    return reply(res, 200, { model: currentModel(), aliases: MODEL_ALIASES })
+  }
+  // POST /model {"model": "opus"|"sonnet"|"haiku"|"opus-1m"|"claude-…"} —
+  // persist the choice and respawn the claude child on it. Waits for any
+  // in-flight turn to finish first (the loop is between turns when !busy).
+  if (req.method === 'POST' && req.url === '/model') {
+    return readBody(req, res, 4096, ['model'], (p) => {
+      const resolved = resolveModel(p.model)
+      if (!resolved) {
+        return reply(res, 400, { ok: false, error: 'unknown model', aliases: Object.keys(MODEL_ALIASES) })
       }
-      let body = ''
-      req.on('data', (c) => {
-        body += c
-        if (body.length > 262144) req.destroy()
-      })
-      req.on('end', () => {
-        let p = {}
-        try {
-          p = JSON.parse(body || '{}')
-        } catch {}
-        const sender = String(p.senderDisplayName || 'Teams user')
-        const text = htmlToText(p.messageBody || '')
-        if (!text) {
-          res.writeHead(200, { 'content-type': 'application/json' })
-          return res.end(JSON.stringify({ ok: true, skipped: 'empty' }))
-        }
-        log(`teams inbound from ${sender}: ${redact(text).slice(0, 80)}`)
-        pendingTeams.push({ sender, text, link: p.linkToMessage || '' })
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: true }))
-      })
-      return
+      const prev = currentModel()
+      try {
+        writeFileSync(MODEL_FILE, resolved + '\n')
+      } catch (e) {
+        res.writeHead(500)
+        return res.end(JSON.stringify({ ok: false, error: String(e) }))
+      }
+      log(`model switch: ${prev} -> ${resolved} (respawning claude)`)
+      // Respawn: exit handler restarts claude, which reads the new model.
+      // If a turn is mid-flight this kills it — model switches are explicit
+      // user requests, so that is the expected behavior.
+      if (session) session.close()
+      reply(res, 200, { ok: true, model: resolved, previous: prev })
+    })
+  }
+  if (req.method !== 'POST' || req.url !== '/abort') {
+    res.writeHead(404)
+    return res.end('not found')
+  }
+  // POST /abort {"channel"?: "wa", "chat_id": "…"} — accepted only for the chat whose task the
+  // current drain turn claimed (turnChat); anything else is a 400 and interrupts nothing.
+  readBody(req, res, 4096, ['channel', 'chat_id'], (p) => {
+    const { channel = 'wa', chat_id } = p
+    if ([channel, chat_id].some((v) => typeof v !== 'string' || !v || v.length > MAX_CONTROL_FIELD)) {
+      return reply(res, 400, { ok: false, error: `channel and chat_id must be non-empty strings of at most ${MAX_CONTROL_FIELD} chars` })
     }
-    if (req.method !== 'POST' || req.url !== '/abort') {
+    if (!turnChat || channel !== turnChat.channel || chat_id !== turnChat.chat_id) {
+      log(`ABORT rejected: not the active chat (busy=${busy})`)
+      return reply(res, 400, { ok: false, error: 'not the active chat' })
+    }
+    log(`ABORT requested for ${channel}/${chat_id} (busy=${busy})`)
+    // Concurrent stops for the same chat share one interrupt and one cleanup turn.
+    if (!pendingStops.some((s) => s.channel === channel && s.chat_id === chat_id)) {
+      pendingStops.push({ channel, chat_id })
+      // If a turn is in flight, interrupt it now; the loop then runs cleanup.
+      if (busy) sendInterrupt()
+    }
+    reply(res, 200, { ok: true, interrupted: busy })
+  })
+}
+
+// True when something accepts connections on the unix socket at `path`.
+const answers = (path) =>
+  new Promise((resolve) => {
+    const s = net.connect(path)
+    s.once('connect', () => {
+      s.destroy()
+      resolve(true)
+    })
+    s.once('error', () => resolve(false))
+  })
+
+let controlListening = false
+async function startControlServer() {
+  mkdirSync(dirname(CONTROL_SOCKET), { recursive: true, mode: 0o700 })
+  chmodSync(dirname(CONTROL_SOCKET), 0o700)
+  let st = null
+  try {
+    st = lstatSync(CONTROL_SOCKET)
+  } catch {}
+  if (st) {
+    if (!st.isSocket()) refuse(`${CONTROL_SOCKET} exists and is not a socket`)
+    if (await answers(CONTROL_SOCKET)) refuse(`a live listener already answers on ${CONTROL_SOCKET} (another warm worker?)`)
+    unlinkSync(CONTROL_SOCKET)
+    log(`removed stale control socket ${CONTROL_SOCKET}`)
+  }
+  const server = http.createServer(controlHandler)
+  // The socket is created owner-only, then chmod'ed in case the umask was ignored.
+  const umask = process.umask(0o177)
+  try {
+    server.listen(CONTROL_SOCKET)
+  } finally {
+    process.umask(umask)
+  }
+  try {
+    await once(server, 'listening')
+  } catch (e) {
+    refuse(`control socket ${CONTROL_SOCKET}: ${e.message}`)
+  }
+  controlListening = true
+  chmodSync(CONTROL_SOCKET, 0o600)
+  server.on('error', (e) => log('control server error:', String(e)))
+  log(`control endpoint on unix:${CONTROL_SOCKET}`)
+}
+
+// POST /teams/webhook — inbound Teams message from the Power Automate flow
+// (reaches us through the cloudflared tunnel, which targets only this port).
+// Auth: x-teams-bridge-secret header. Without WARM_TEAMS_PORT there is no listener.
+function startTeamsServer() {
+  if (!TEAMS_PORT) return log('teams webhook disabled (WARM_TEAMS_PORT unset)')
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/teams/webhook') {
       res.writeHead(404)
       return res.end('not found')
+    }
+    if (!TEAMS_SECRET || req.headers['x-teams-bridge-secret'] !== TEAMS_SECRET) {
+      res.writeHead(401)
+      return res.end('unauthorized')
     }
     let body = ''
     req.on('data', (c) => {
       body += c
-      if (body.length > 4096) req.destroy()
+      if (body.length > 262144) req.destroy()
     })
     req.on('end', () => {
       let p = {}
       try {
         p = JSON.parse(body || '{}')
       } catch {}
-      const channel = p.channel || 'wa'
-      const chat_id = String(p.chat_id || '')
-      log(`ABORT requested for ${channel}/${chat_id} (busy=${busy})`)
-      pendingStops.push({ channel, chat_id })
-      // If a turn is in flight, interrupt it now; the loop then runs cleanup.
-      if (busy) sendInterrupt()
+      const sender = String(p.senderDisplayName || 'Teams user')
+      const text = htmlToText(p.messageBody || '')
+      if (!text) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ ok: true, skipped: 'empty' }))
+      }
+      log(`teams inbound from ${sender}: ${redact(text).slice(0, 80)}`)
+      pendingTeams.push({ sender, text, link: p.linkToMessage || '' })
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, interrupted: busy }))
+      res.end(JSON.stringify({ ok: true }))
     })
   })
-  server.on('error', (e) => log('control server error:', String(e)))
-  server.listen(CONTROL_PORT, '127.0.0.1', () =>
-    log(`control endpoint on 127.0.0.1:${server.address().port}/abort`),
+  server.on('error', (e) => log('teams webhook server error:', String(e)))
+  server.listen(Number(TEAMS_PORT), '127.0.0.1', () =>
+    log(`teams webhook on 127.0.0.1:${server.address().port}/teams/webhook`),
   )
 }
 
@@ -578,12 +651,18 @@ async function loop() {
 
 process.on('SIGTERM', () => {
   if (session) session.close()
+  if (controlListening) {
+    try {
+      unlinkSync(CONTROL_SOCKET)
+    } catch {}
+  }
   process.exit(0)
 })
 
 pruneRunsDir()
 setInterval(pruneRunsDir, 86_400_000)
+await startControlServer()
+startTeamsServer()
 startClaude()
-startControlServer()
 setInterval(stalenessCheck, STALENESS_MS)
 loop()

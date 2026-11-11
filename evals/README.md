@@ -102,8 +102,8 @@ mid-turn API errors can only be injected there, since the model API is not proxi
 1. Starts fresh fakes on `127.0.0.1`. Each one records every request:
    - Slack, Telegram, Discord, Twilio and Anthropic APIs, and the Teams outbound webhook;
    - the Mac bridge, a MacOSMCP-shaped JSON-RPC server. It answers the drain
-     prompt's model-switch curl (`127.0.0.1:8791/model`) itself and never
-     reaches the real port. It also answers `fixtures.mac` canned results.
+     prompt's model-switch curl (`--unix-socket …/run/control.sock`) itself and
+     never reaches the real socket. It also answers `fixtures.mac` canned results.
 2. Starts the eval target with the fakes as its `*_API_BASE` / `MACOS_MCP_URL`:
    - with `--worker <path>`: fermi-mcp's `packages/worker/wrangler.eval.jsonc`
      (MCP-11) under `wrangler dev --local`. It gets a free port and its own

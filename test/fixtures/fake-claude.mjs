@@ -3,7 +3,8 @@
 // tasks" prompt) get FAKE_RESULT (a result-event JSON file) until FAKE_ERRORS
 // drain turns have errored, then a success result; with FAKE_STREAM (a
 // stream-json file) a drain turn replays that file instead. An interrupt
-// control_request ends the in-flight turn at once, like claude does. Every
+// control_request ends the in-flight turn at once, like claude does. With
+// FAKE_CLAIM a drain turn first streams a task_claim result for chat wa/FAKE_CLAIM_CHAT. Every
 // spawn (with argv, cwd and harness env), turn and control_request is appended
 // to $FAKE_DIR/turns.log as JSON lines. With FAKE_STDERR, that text is written to stderr at spawn.
 import { appendFileSync, readFileSync } from 'node:fs'
@@ -52,6 +53,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const drain = text.includes('pending tasks')
   const errored = drain ? drainsSoFar() < maxErrors : true
   record({ kind: 'turn', drain, text })
+  // The claim's tool_result streams at once, so the worker knows the turn's chat while it runs.
+  if (drain && process.env.FAKE_CLAIM) {
+    const tasks = [{ id: 't1', channel: 'wa', chat_id: process.env.FAKE_CLAIM_CHAT || '+15555550100' }]
+    out({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: [{ type: 'text', text: JSON.stringify({ tasks }) }] }] },
+    })
+  }
   pending = setTimeout(() => {
     pending = null
     if (drain && process.env.FAKE_STREAM) {
@@ -59,13 +68,6 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return
     }
     out({ type: 'system', subtype: 'init', session_id: 'fake' })
-    if (drain && process.env.FAKE_CLAIM) {
-      const tasks = [{ id: 't1', channel: 'wa', chat_id: '+15555550100' }]
-      out({
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'tool_result', content: [{ type: 'text', text: JSON.stringify({ tasks }) }] }] },
-      })
-    }
     out(
       errored
         ? errorResult

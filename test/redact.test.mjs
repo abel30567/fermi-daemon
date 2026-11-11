@@ -432,8 +432,8 @@ describe('warm worker', () => {
       dotenv: `TEAMS_WEBHOOK_SECRET=${secret}\n`,
       env: { FAKE_STDERR: `error: ${'x'.repeat(180)} ${key} denied\n` },
       act: async ({ log }) => {
-        await until(() => /control endpoint on 127\.0\.0\.1:\d+/.test(log()))
-        const port = /control endpoint on 127\.0\.0\.1:(\d+)/.exec(log())[1]
+        await until(() => /teams webhook on 127\.0\.0\.1:\d+/.test(log()))
+        const port = /teams webhook on 127\.0\.0\.1:(\d+)/.exec(log())[1]
         const res = await fetch(`http://127.0.0.1:${port}/teams/webhook`, {
           method: 'POST',
           headers: { 'x-teams-bridge-secret': secret },

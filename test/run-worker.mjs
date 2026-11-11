@@ -57,7 +57,7 @@ export const guardHarness = (adapter) => ({
   startSession: (o = {}) => (assertFakeHarness(o.bin || DEFAULT_BIN[adapter.name](process.env)), adapter.startSession(o)),
 })
 
-// `env` adds/overrides worker env vars; `dotenv` is extra ~/fermi-daemon/.env lines; `prompt` is prompts/drain.md, `overlay` (if set) prompts/local.json; `setup(daemon)` runs before the worker starts; `act({ log, home, narrations })` runs
+// `env` adds/overrides worker env vars; `dotenv` is extra ~/fermi-daemon/.env lines; `prompt` is prompts/drain.md, `overlay` (if set) prompts/local.json; `setup(daemon)` runs (awaited) before the worker starts; `act({ log, home, narrations, pid })` runs
 // alongside the worker (log() is its output so far). Returns the fake harness's records and
 // the worker's runs/ files.
 export async function runWorker({ result, errors, claim, durationMs, pending = 1, env = {}, dotenv = '', act, prompt = 'test prompt\n', overlay, setup, worker = join(ROOT, 'warm-worker.mjs') }) {
@@ -78,7 +78,7 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
     PATH: process.env.PATH,
     HOME: home,
     WARM_POLL_MS: String(sim(1000)),
-    WARM_CONTROL_PORT: '0',
+    WARM_TEAMS_PORT: '0',
     WARM_BACKOFF_BASE_MS: String(sim(30_000)),
     WARM_BACKOFF_MAX_MS: String(sim(1_800_000)),
     FAKE_DIR: home,
@@ -107,13 +107,13 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   writeFileSync(join(daemon, '.env'), `FERMI_URL=http://127.0.0.1:${server.address().port}\nFERMI_BEARER_TOKEN=test\n${dotenv}`)
 
-  setup?.(daemon)
+  await setup?.(daemon)
   const child = spawn(process.execPath, [worker], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
   const exited = new Promise((r) => child.on('exit', r)) // the worker may exit on its own (refusing to start)
   let log = ''
   child.stdout.on('data', (d) => (log += d))
   child.stderr.on('data', (d) => (log += d))
-  await Promise.all([new Promise((r) => setTimeout(r, durationMs)), act?.({ log: () => log, home, narrations })])
+  await Promise.all([new Promise((r) => setTimeout(r, durationMs)), act?.({ log: () => log, home, narrations, pid: child.pid })])
   child.kill('SIGTERM')
   await exited
   server.close()
@@ -125,3 +125,22 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
   rmSync(home, { recursive: true, force: true })
   return { events, drains: events.filter((e) => e.drain), narrations, log, runs }
 }
+
+// The warm worker's control socket in `home`, and one request to it: resolves { status, body } (body parsed when JSON).
+export const controlSocket = (home) => join(home, 'fermi-daemon/run/control.sock')
+export const control = (home, method, path, body) =>
+  new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: controlSocket(home), method, path, headers: { 'content-type': 'application/json' } }, (res) => {
+      let data = ''
+      res.on('data', (c) => (data += c))
+      res.on('end', () => {
+        let parsed = data
+        try {
+          parsed = JSON.parse(data)
+        } catch {}
+        resolve({ status: res.statusCode, body: parsed })
+      })
+    })
+    req.on('error', reject)
+    req.end(body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body))
+  })

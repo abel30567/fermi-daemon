@@ -194,9 +194,9 @@ describe('session mode (evals/lib/session.mjs)', () => {
 
 describe('order assertion with argument matchers', () => {
   const trace = [
-    { type: 'tool_call', name: 'mac_shell', input: { command: 'curl -s http://127.0.0.1:8791/model' } },
+    { type: 'tool_call', name: 'mac_shell', input: { command: 'curl -s --unix-socket ~/fermi-daemon/run/control.sock http://localhost/model' } },
     { type: 'tool_call', name: 'channel_send', input: { text: 'ok' } },
-    { type: 'tool_call', name: 'mac_shell', input: { command: 'curl -s -X POST http://127.0.0.1:8791/model' } },
+    { type: 'tool_call', name: 'mac_shell', input: { command: 'curl -s --unix-socket ~/fermi-daemon/run/control.sock -X POST http://localhost/model' } },
   ]
   const run = (order) => evaluate([{ order }], { trace, state: {}, scenario: {}, latencyMs: 0 })
   test('a { tool, args } entry matches only a call with those args', () => {
