@@ -166,6 +166,34 @@ agent broad control of your Mac:
   find -H ~/fermi-daemon/wa-auth -type d -exec chmod 700 {} + && find -H ~/fermi-daemon/wa-auth -type f -exec chmod 600 {} +
   ```
 
+- **The cloud-box runner (`box-runner.mjs`) checks each task's signature and
+  runs the agent in an OS sandbox.** Before it runs the harness, it checks the
+  task's envelope (`lib/task-envelope.mjs`): an HMAC-SHA256 over the task id, a
+  single-use nonce and the payload hash, keyed by `FERMI_ENVELOPE_KEY` (the
+  previous key is also accepted as `FERMI_ENVELOPE_KEY_PREV`). The nonce must be
+  at most `FERMI_ENVELOPE_TTL_MS` old (default 5 min, ±30 s skew). A forged,
+  tampered, expired or replayed envelope is refused: the task fails with
+  `refused: task envelope: <reason>` and the harness never starts. By default
+  the runner is in **grace mode**: it accepts an unsigned task, logs and reports
+  `UNSIGNED TASK ACCEPTED`, and starts the harness. Set
+  `FERMI_ENVELOPE_ENFORCE=1` in `/etc/fermi/box.env` to refuse unsigned tasks
+  once the fermi-mcp gateway signs them.
+  The harness can write only to `WORKDIR` and its `HOME` (`lib/run-policy.mjs`).
+  Which sandbox it uses depends on the OS:
+  - On macOS: `sandbox-exec` with a deny-by-default profile. Network is allowed
+    only to `127.0.0.1:8317`, the local inference proxy.
+  - On Linux: `bwrap` (the `harness/sandbox.mjs` backend). `/` is read-only and
+    the harness gets its own pid and ipc namespaces. The network is not
+    restricted. The box image needs `bubblewrap` and unprivileged user
+    namespaces.
+  - With no sandbox available, the runner refuses every task. For development
+    only, `FERMI_ALLOW_UNSANDBOXED=1` overrides this; each task then logs and
+    reports a `WARNING: RUNNING THE AGENT UNSANDBOXED` banner.
+
+  The warm worker and the cold `poll.sh` lanes do not go through either check.
+  Their agent claims tasks itself through the Fermi connector, and it runs
+  unsandboxed.
+
 This is personal-automation software. Run it only on a machine you own, exposed
 only to accounts and channels you control.
 

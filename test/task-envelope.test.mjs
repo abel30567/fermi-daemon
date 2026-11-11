@@ -9,6 +9,7 @@ import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { createVerifier, envelopeConfig, sign, DEFAULT_TTL_MS, DEFAULT_SKEW_MS } from '../lib/task-envelope.mjs'
 import { runPolicy, SANDBOX_EXEC, UNSANDBOXED_BANNER } from '../lib/run-policy.mjs'
+import { sandboxBackend } from '../harness/sandbox.mjs'
 
 const KEY = randomBytes(32).toString('hex')
 const PREV = randomBytes(32).toString('hex')
@@ -135,12 +136,37 @@ describe('run policy sandbox', () => {
 
   test('no sandbox available: refuses, unless FERMI_ALLOW_UNSANDBOXED=1, which returns the warning banner', () => {
     const workdir = tmpdir()
-    for (const o of [{ platform: 'linux' }, { platform: 'darwin', sandboxExec: '/nonexistent/sandbox-exec' }]) {
+    for (const o of [{ platform: 'linux', hasBwrap: () => false }, { platform: 'darwin', sandboxExec: '/nonexistent/sandbox-exec' }]) {
       assert.throws(() => runPolicy({ workdir, env: {}, ...o }), /refusing to run the agent unsandboxed/)
       const p = runPolicy({ workdir, env: { FERMI_ALLOW_UNSANDBOXED: '1' }, ...o })
       assert.equal(p.sandboxed, false)
       assert.equal(p.banner, UNSANDBOXED_BANNER)
       assert.deepEqual(p.wrap('/bin/echo', ['x']), ['/bin/echo', ['x']])
+    }
+  })
+
+  test('Linux: bwrap lets the process write its workdir and HOME, nothing else', { skip: (process.platform !== 'linux' || sandboxBackend() !== 'bwrap') && 'no bwrap' }, () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'dmn50-'))
+    const home = mkdtempSync(join(tmpdir(), 'dmn50-home-'))
+    const outside = mkdtempSync(join(tmpdir(), 'dmn50-out-'))
+    try {
+      const p = runPolicy({ workdir, writable: [home], env: {} })
+      assert.equal(p.backend, 'bwrap')
+      const run = (path) => {
+        const [cmd, argv] = p.wrap('/bin/sh', ['-c', 'echo probe > "$1"', 'sh', path])
+        return spawnSync(cmd, argv, { encoding: 'utf8' })
+      }
+      const out = run(join(outside, 'x'))
+      assert.notEqual(out.status, 0, 'write outside the sandbox must fail')
+      assert.match(out.stderr, /Read-only file system/)
+      assert.equal(existsSync(join(outside, 'x')), false)
+      for (const d of [workdir, home]) {
+        const ok = run(join(d, 'ok.txt'))
+        assert.equal(ok.status, 0, ok.stderr)
+        assert.equal(readFileSync(join(d, 'ok.txt'), 'utf8'), 'probe\n')
+      }
+    } finally {
+      for (const d of [workdir, home, outside]) rmSync(d, { recursive: true, force: true })
     }
   })
 })

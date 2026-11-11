@@ -3,19 +3,20 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import http from 'node:http'
 import { ROOT, assertFakeHarness } from './run-worker.mjs'
 import { classifyResult } from '../lib/turn-outcome.mjs'
+import { sandboxBackend } from '../harness/sandbox.mjs'
 
 const FAKE = join(ROOT, 'test/fixtures/fake-claude-once.mjs')
 
 // Runs box-runner for one task; resolves with the gateway calls, the fake
 // harness's spawn records and the runner's output once the runner exits.
 // A `slow` harness stalls until the gateway gets a stuck note.
-async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-runner.mjs'), payload = { prompt: 'do it', proof_contract: 'free text' }, setup } = {}) {
+async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-runner.mjs'), payload = { prompt: 'do it', proof_contract: 'free text' }, envelope, setup } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'dmn8-')))
   const work = join(home, 'work')
   mkdirSync(work)
@@ -36,7 +37,7 @@ async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-run
       const reply = (o) => res.end(JSON.stringify(o))
       if (req.url === '/box/inference-auth') return reply({ ok: true, secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'tok', CPA_API_KEY: 'cpa' } })
       if (req.url === '/box/poll')
-        return reply(polls++ ? {} : { task: { id: 't1', payload: JSON.stringify(payload) } })
+        return reply(polls++ ? {} : { task: { id: 't1', payload: JSON.stringify(payload), ...(envelope && { envelope }) } })
       reply({ ok: true })
     })
   })
@@ -136,12 +137,13 @@ describe('AC1: exit reasons and results from the fake harness', () => {
     assert.equal(r.completes[0].result, 'harness exited 3: boom: harness crashed\n')
   })
 
-  test('missing harness binary → `harness exited 127`, not a runner crash', async () => {
+  // The sandbox wrapper (sandbox-exec 71, bwrap 1) reports the failed exec instead of spawn's ENOENT.
+  test('missing harness binary → `harness exited <code>` naming it, not a runner crash', async () => {
     const r = await runBox({ env: { CLAUDE_BIN: '/nonexistent/claude' } })
     assert.equal(r.code, 0, r.out)
     assert.equal(r.spawns.length, 0)
     assert.equal(r.completes[0].status, 'failed', r.out)
-    assert.match(r.completes[0].result, /^harness exited 127: Error: spawn \/nonexistent\/claude ENOENT/)
+    assert.match(r.completes[0].result, /^harness exited \d+: [^]*\/nonexistent\/claude/)
   })
 })
 
@@ -310,11 +312,41 @@ describe('DMN-54: ref validation, argv git and proof commands', () => {
     assert.match(r.completes[0].result, /proof contract unsatisfied after corrective rerun: proof command 'false' failed/)
   })
 
-  test('edge: workdir missing after the run → runner still completes instead of crashing', async () => {
+  // bwrap bind-mounts WORKDIR, so the sandboxed agent cannot remove it (rmdir of a mount point is EBUSY).
+  test('edge: workdir missing after the run → runner still completes instead of crashing', { skip: process.platform === 'linux' && sandboxBackend() === 'bwrap' && 'bwrap: WORKDIR is a mount point' }, async () => {
     const r = await runBox({ env: { FAKE_RM_CWD: '1' }, payload: { prompt: 'do it', proof_contract: 'free text', repo: 'o/r', branch: 'main' } })
     assert.equal(existsSync(r.work), false)
     assert.equal(r.code, 0, r.out)
     assert.deepEqual(r.completes, [{ task_id: 't1', status: 'done', result: 'shipped the fix', inference_cost_usd: 0.4321 }])
+  })
+})
+
+describe('DMN-50: the runner verifies the task envelope before the harness runs', () => {
+  const KEY = 'ab'.repeat(32)
+  test('a forged envelope is refused without spawning; an unsigned task runs with a grace warning', async () => {
+    const forged = await runBox({ env: { FERMI_ENVELOPE_KEY: KEY }, envelope: { v: 1, nonce: `${Math.floor(Date.now() / 1000)}.${'0'.repeat(32)}`, sig: 'AAAA' } })
+    assert.equal(forged.code, 0, forged.out)
+    assert.equal(forged.spawns.length, 0)
+    assert.deepEqual(forged.completes, [{ task_id: 't1', status: 'failed', result: 'refused: task envelope: bad signature', inference_cost_usd: 0 }])
+    const unsigned = await runBox({ env: { FERMI_ENVELOPE_KEY: KEY } })
+    assert.equal(unsigned.spawns.length, 1, unsigned.out)
+    assert.ok(unsigned.notes.some((n) => /t1: UNSIGNED TASK ACCEPTED \(grace mode/.test(n)), unsigned.notes.join('\n'))
+    assert.equal(unsigned.completes[0].status, 'done')
+  })
+
+  // The spawn record itself is written to HOME, so a recorded spawn proves HOME stays writable.
+  test('the harness runs in the OS sandbox: it cannot write outside WORKDIR and HOME', { skip: !sandboxBackend() && 'no OS sandbox' }, async () => {
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'dmn50-out-')))
+    try {
+      const r = await runBox({ env: { FAKE_PROBE_WRITE: join(outside, 'x') } })
+      assert.equal(r.spawns.length, 1, r.out)
+      assert.equal(r.spawns[0].probe, process.platform === 'darwin' ? 'EPERM' : 'EROFS')
+      assert.equal(existsSync(join(outside, 'x')), false)
+      assert.equal(r.completes[0].status, 'done', r.out)
+      assert.ok(!r.notes.some((n) => /UNSANDBOXED/i.test(n)), r.notes.join('\n'))
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })
 

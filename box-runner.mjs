@@ -6,11 +6,15 @@
 // Configuration comes from /etc/fermi/box.env (written by the provisioner's
 // user-data) or the process environment. Required: FERMI_URL, FERMI_BOX_TOKEN.
 // Optional: ROUTE (claude|codex|grok), CPA_URL + CPA_TOKEN for proxy routes,
-// CODEX_MODEL / GROK_MODEL overrides, WORKDIR, RUNNER_SELF_SHUTDOWN=1.
+// CODEX_MODEL / GROK_MODEL overrides, WORKDIR, RUNNER_SELF_SHUTDOWN=1,
+// FERMI_ENVELOPE_* (task signatures, lib/task-envelope.mjs) and
+// FERMI_ALLOW_UNSANDBOXED (lib/run-policy.mjs).
 
 import { spawn, execSync, execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { createVerifier, envelopeConfig } from './lib/task-envelope.mjs'
+import { runPolicy } from './lib/run-policy.mjs'
 
 function loadEnvFile(path) {
 	if (!existsSync(path)) return {}
@@ -36,6 +40,14 @@ if (!FERMI_URL || !TOKEN) {
 }
 
 const log = (...args) => console.log(new Date().toISOString(), ...args)
+
+let verifyTask
+try {
+	verifyTask = createVerifier(envelopeConfig(cfg))
+} catch (e) {
+	console.error(`box-runner: ${e.message}`)
+	process.exit(1)
+}
 
 async function api(path, body = {}) {
 	const res = await fetch(`${FERMI_URL}${path}`, {
@@ -230,6 +242,7 @@ function harnessEnv() {
 let child = null
 let stopping = false
 let missionModel = null // per-mission model override from the task payload
+let policy = null // the OS sandbox the harness runs in (runPolicy), set per task
 
 // The harness reaches Fermi MCP tools through the box-token-authenticated
 // /box/mcp endpoint — no interactive OAuth, which a headless box cannot do.
@@ -269,9 +282,13 @@ function runHarness(prompt) {
 			join(WORKDIR, '.mcp.json'),
 			'--strict-mcp-config',
 		]
-		child = spawn(cfg.CLAUDE_BIN ?? 'claude', args, {
+		const env = harnessEnv()
+		// The default TMPDIR is outside the sandbox's write dirs.
+		if (policy.sandboxed) mkdirSync((env.TMPDIR = join(env.HOME, '.tmp')), { recursive: true })
+		const [cmd, argv] = policy.wrap(cfg.CLAUDE_BIN ?? 'claude', args)
+		child = spawn(cmd, argv, {
 			cwd: WORKDIR,
-			env: harnessEnv(),
+			env,
 			stdio: ['pipe', 'pipe', 'pipe'],
 		})
 		let err = ''
@@ -601,6 +618,7 @@ async function main() {
 	// it for a fresh boot that abandoned work (fermi#42).
 	let announced = false
 	let ranTask = false // an interrupt rerun re-polls its own task: that is not a restart
+	let verified = null // the task this process already verified: its re-poll reuses the nonce
 
 	for (;;) {
 		let poll
@@ -639,6 +657,31 @@ async function main() {
 
 		if (poll.task) {
 			idlePolls = 0
+			const refuse = async (why) => {
+				log(`task ${poll.task.id} refused: ${why}`)
+				await api('/box/complete', { task_id: poll.task.id, status: 'failed', result: `refused: ${why}`.slice(0, 500), inference_cost_usd: 0 }).catch((e) =>
+					log('complete failed:', String(e)),
+				)
+				powerOff()
+			}
+			if (verified?.id !== poll.task.id || verified.payload !== poll.task.payload) {
+				const v = verifyTask(poll.task)
+				if (!v.ok) await refuse(`task envelope: ${v.reason}`)
+				if (v.warning) {
+					log(`task ${poll.task.id}: ${v.warning}`)
+					await api('/box/report', { note: `${poll.task.id}: ${v.warning}` }).catch(() => {})
+				}
+				verified = poll.task
+			}
+			try {
+				policy = runPolicy({ workdir: WORKDIR, writable: [harnessEnv().HOME], allowPorts: [8317], env: cfg })
+			} catch (e) {
+				await refuse(e.message)
+			}
+			if (policy.banner) {
+				log(policy.banner)
+				await api('/box/report', { note: policy.banner }).catch(() => {})
+			}
 			const payload = JSON.parse(poll.task.payload)
 			missionModel = payload.model || null
 			const followups = pendingFollowups.splice(0)
