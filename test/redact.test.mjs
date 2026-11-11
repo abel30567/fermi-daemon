@@ -101,6 +101,29 @@ describe('JSON lines: a value under a secret-named key', () => {
     ].map((o) => JSON.stringify(o))
     for (const l of lines) assert.equal(redactLine(l), l)
   })
+
+  test('camelCase and compound credential names are redacted', () => {
+    const v = alnum(28)
+    const names = ['accessToken', 'refreshToken', 'clientSecret', 'authToken', 'idToken', 'sessionToken', 'bearerToken', 'passphrase', 'secretKey', 'secret_key', 'Set-Cookie', 'cookie']
+    for (const k of names) {
+      const out = redactLine(JSON.stringify({ [k]: v, n: 1 }))
+      assert.deepEqual(JSON.parse(out), { [k]: REDACTED, n: 1 }, k)
+    }
+    assert.equal(redact(`clientSecret: ${v}`), `clientSecret: ${REDACTED}`)
+  })
+
+  test('no false positives: token counters and tool names stay byte-identical, known secret names stay redacted', () => {
+    const v = alnum(28)
+    const safe = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'max_tokens', 'token_count', 'tokenizer', 'tokens', 'tool_use_id', 'monkey']
+    for (const k of safe) {
+      const l = JSON.stringify({ [k]: v })
+      assert.equal(redactLine(l), l, k)
+      assert.equal(redact(`${k}: ${v}`), `${k}: ${v}`, k)
+    }
+    for (const l of [JSON.stringify({ name: 'mcp__fermi__task_claim', input: { id: v } }), JSON.stringify({ type: 'tool_use', name: 'mcp__fermi__task_claim' })]) assert.equal(redactLine(l), l)
+    const secret = ['api_key', 'apiKey', 'api-key', 'access_token', 'privateKey', 'X-Auth-Token', 'OPENAI_API_KEY', 'credentials', 'password', 'client_secret', 'x-api-key', 'authorization']
+    for (const k of secret) assert.deepEqual(JSON.parse(redactLine(JSON.stringify({ [k]: v }))), { [k]: REDACTED }, k)
+  })
 })
 
 describe('process stdout/stderr (redactStdio)', () => {
@@ -135,8 +158,21 @@ setTimeout(() => { ${fail} }, 10)`
 })
 
 describe('gates.sh fixture secret scan', () => {
-  const line = /^fixtures=\(\)\n[\s\S]*?scan-secrets\.mjs .*$/m.exec(readFileSync(join(ROOT, 'scripts/gates.sh'), 'utf8'))?.[0]
-  const run = (cwd) => spawnSync('bash', ['-euo', 'pipefail', '-c', line], { cwd, encoding: 'utf8' })
+  const line = /^list=\$\(mktemp\)\n[\s\S]*?^node scripts\/scan-secrets\.mjs .*$/m.exec(readFileSync(join(ROOT, 'scripts/gates.sh'), 'utf8'))?.[0]
+  const run = (cwd, env = process.env) => spawnSync('bash', ['-euo', 'pipefail', '-c', line], { cwd, encoding: 'utf8', env })
+  // A temp repo with the scanner and the given files, all tracked.
+  const repo = (files) => {
+    const dir = tmp()
+    mkdirSync(join(dir, 'scripts'))
+    copyFileSync(join(ROOT, 'scripts/scan-secrets.mjs'), join(dir, 'scripts/scan-secrets.mjs'))
+    for (const [f, text] of Object.entries(files)) {
+      mkdirSync(join(dir, f, '..'), { recursive: true })
+      writeFileSync(join(dir, f), text)
+    }
+    for (const args of [['init', '-q'], ['add', '.']]) assert.equal(spawnSync('git', args, { cwd: dir }).status, 0)
+    return dir
+  }
+  const clean = { 'test/fixtures/a.json': '{}\n', 'evals/fixtures/b.json': '{}\n' }
 
   test('passes on the committed fixtures', () => {
     assert.ok(line, 'gates.sh runs scan-secrets over the fixtures')
@@ -145,24 +181,30 @@ describe('gates.sh fixture secret scan', () => {
   })
 
   test('fails on a tracked fixture holding a fake key, naming the file but not the value', () => {
-    const dir = tmp()
-    mkdirSync(join(dir, 'scripts'))
-    copyFileSync(join(ROOT, 'scripts/scan-secrets.mjs'), join(dir, 'scripts/scan-secrets.mjs'))
-    mkdirSync(join(dir, 'evals/fixtures'), { recursive: true })
-    writeFileSync(join(dir, 'evals/fixtures/run.jsonl'), JSON.stringify({ text: `key ${FAKE.openai}` }) + '\n')
-    for (const args of [['init', '-q'], ['add', '.']]) assert.equal(spawnSync('git', args, { cwd: dir }).status, 0)
+    const dir = repo({ ...clean, 'evals/fixtures/run.jsonl': JSON.stringify({ text: `key ${FAKE.openai}` }) + '\n' })
     const r = run(dir)
     assert.equal(r.status, 1, r.stdout + r.stderr)
     assert.match(r.stdout + r.stderr, /evals\/fixtures\/run\.jsonl/)
     assert.ok(!(r.stdout + r.stderr).includes(FAKE.openai))
   })
 
-  test('passes without running the scanner when no fixtures are tracked', () => {
-    const dir = tmp()
-    assert.equal(spawnSync('git', ['init', '-q'], { cwd: dir }).status, 0)
-    const r = run(dir)
-    assert.equal(r.status, 0, r.stdout + r.stderr)
-    assert.equal(r.stdout + r.stderr, '')
+  test('fails, and does not skip the scan, when git ls-files fails', () => {
+    const dir = repo({ ...clean, 'test/fixtures/leak.txt': `key ${FAKE.openai}\n` })
+    const shim = tmp()
+    const git = spawnSync('command', ['-v', 'git'], { shell: '/bin/sh', encoding: 'utf8' }).stdout.trim()
+    writeFileSync(join(shim, 'git'), `#!/bin/sh\ncase "$*" in *fixtures*) echo 'fatal: simulated' >&2; exit 128;; esac\nexec ${JSON.stringify(git)} "$@"\n`)
+    chmodSync(join(shim, 'git'), 0o755)
+    const r = run(dir, { ...process.env, PATH: `${shim}:${process.env.PATH}` })
+    assert.notEqual(r.status, 0, r.stdout + r.stderr)
+    assert.match(r.stderr, /scan-secrets: git ls-files test\/fixtures failed/)
+  })
+
+  test('fails loudly when a fixture dir has no tracked files (renamed or untracked)', () => {
+    for (const [files, gone] of [[{}, 'test/fixtures'], [{ 'evals/fixtures/b.json': '{}\n', 'test/fixtures-old/a.json': '{}\n' }, 'test/fixtures'], [{ 'test/fixtures/a.json': '{}\n' }, 'evals/fixtures']]) {
+      const r = run(repo(files))
+      assert.equal(r.status, 1, r.stdout + r.stderr)
+      assert.match(r.stderr, new RegExp(`scan-secrets: no tracked files under ${gone}`))
+    }
   })
 })
 
