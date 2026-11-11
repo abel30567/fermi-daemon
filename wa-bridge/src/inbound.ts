@@ -63,7 +63,11 @@ export function makeInboundHandler(config: Config): InboundHandler {
 	return async (sender, chatId, text) => {
 		// Emergency stop: interrupt the running turn immediately rather than
 		// letting the stop wait in the queue behind the task it's meant to stop.
-		if (isStopCommand(text)) {
+		// Only an owner (WA_OWNER_NUMBERS; empty = nobody) may interrupt, and the
+		// warm worker only honours it for the chat its running turn claimed.
+		if (isStopCommand(text) && !config.OWNER_NUMBERS.has(sender)) {
+			log(`stop command from non-owner ${sender} (chat ${chatId}) ignored — not signaling abort`)
+		} else if (isStopCommand(text)) {
 			log(`stop command from ${sender} (chat ${chatId}): "${text}" — signaling abort`)
 			if (await signalAbort(join(config.DAEMON_HOME, 'run/control.sock'), chatId)) return
 			log('abort signal failed (warm worker down?) — enqueueing normally')
