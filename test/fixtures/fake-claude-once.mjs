@@ -8,8 +8,9 @@
 //   crash    stderr only, no result, exit 3
 //   slow     like success, but stalls FAKE_STALL_MS before the result (with
 //            FAKE_STALL_FILE: until that file exists)
+// FAKE_PROBE_WRITE=<path> tries to write that file first and records `probe`: 'ok' or the error code.
 // FAKE_RM_CWD=1 deletes the cwd (the runner's WORKDIR) before the result.
-import { appendFileSync, existsSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ENV_KEYS = ['IS_SANDBOX', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL']
@@ -19,6 +20,15 @@ const out = (o) => process.stdout.write(JSON.stringify(o) + '\n')
 let prompt = ''
 process.stdin.on('data', (d) => (prompt += d))
 process.stdin.on('end', async () => {
+  let probe
+  if (process.env.FAKE_PROBE_WRITE) {
+    try {
+      writeFileSync(process.env.FAKE_PROBE_WRITE, 'probe')
+      probe = 'ok'
+    } catch (e) {
+      probe = e.code
+    }
+  }
   appendFileSync(
     join(process.env.FAKE_DIR, 'once.log'),
     JSON.stringify({
@@ -26,6 +36,7 @@ process.stdin.on('end', async () => {
       cwd: process.cwd(),
       prompt,
       env: Object.fromEntries(ENV_KEYS.filter((k) => k in process.env).map((k) => [k, process.env[k]])),
+      ...(probe && { probe }),
     }) + '\n',
   )
   if (mode === 'crash') {
