@@ -53,7 +53,7 @@ export function assertOp(p) {
 
 // The session's cached context, confined to `site` (the CURRENT op's lease
 // record). A cached context confined to another site is closed with its pages
-// and rebuilt by create(), so the guards never judge an op by a stale site.
+// (and, when not persistent, its browser) and rebuilt by create(), so the guards never judge an op by a stale site.
 // A missing site throws before anything is created or cached.
 export async function sessionContext(contexts, pages, session, site, create) {
 	assertSite(site)
@@ -62,7 +62,9 @@ export async function sessionContext(contexts, pages, session, site, create) {
 	if (cached) {
 		contexts.delete(session)
 		for (const [key, page] of pages) if (page.context() === cached.context) pages.delete(key)
-		await cached.context.close().catch(() => {})
+		// A chromium.launch() browser outlives its context; close it too.
+		if (cached.persistent) await cached.context.close().catch(() => {})
+		else await cached.browser.close().catch(() => {})
 	}
 	const entry = await create()
 	await confineContext(entry.context, site)

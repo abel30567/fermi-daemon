@@ -186,17 +186,35 @@ describe('per-op site check (verifier F1, F2)', () => {
 	test('a second op with a different site is judged by its own lease record', async () => {
 		const contexts = new Map()
 		const pages = new Map()
-		const first = await sessionContext(contexts, pages, 's1', 'https://a.example', async () => ({ context: fakeContext() }))
+		const fakeBrowser = (context) => ({
+			closed: false,
+			async close() {
+				this.closed = true
+				context.closed = true
+			},
+		})
+		const launch = async () => {
+			const context = fakeContext()
+			return { browser: fakeBrowser(context), context, persistent: false }
+		}
+		const first = await sessionContext(contexts, pages, 's1', 'https://a.example', launch)
 		pages.set('s1:agent', first.context.newPage())
-		const second = await sessionContext(contexts, pages, 's1', SITE, async () => ({ context: fakeContext() }))
+		const second = await sessionContext(contexts, pages, 's1', SITE, launch)
 		assert.notEqual(second.context, first.context)
+		assert.equal(first.browser.closed, true, 'launched browser closed, not orphaned')
 		assert.equal(first.context.closed, true)
+		assert.equal(second.browser.closed, false)
 		assert.equal(pages.has('s1:agent'), false, 'stale page dropped')
 		assert.equal(second.site, SITE)
 		assert.equal(guardOutcome(second.context, 'https://chatgpt.com/'), 'fallback')
 		assert.equal(guardOutcome(second.context, 'https://a.example/'), 'abort')
 		// Same site again: the cached context is reused.
 		assert.equal(await sessionContext(contexts, pages, 's1', SITE, async () => assert.fail('rebuilt')), second)
+		// A persistent profile has no separate browser to close: its context is closed.
+		const persisted = fakeContext()
+		contexts.set('s3', { browser: null, context: persisted, persistent: true, site: SITE })
+		await sessionContext(contexts, pages, 's3', 'https://a.example', launch)
+		assert.equal(persisted.closed, true)
 	})
 
 	test('a site-less op does not brick the session', async () => {
