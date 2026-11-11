@@ -15,10 +15,11 @@ const FAKE = join(ROOT, 'test/fixtures/fake-claude-once.mjs')
 // Runs box-runner for one task; resolves with the gateway calls, the fake
 // harness's spawn records and the runner's output once the runner exits.
 // A `slow` harness stalls until the gateway gets a stuck note.
-async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-runner.mjs') } = {}) {
+async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-runner.mjs'), payload = { prompt: 'do it', proof_contract: 'free text' }, setup } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'dmn8-')))
   const work = join(home, 'work')
   mkdirSync(work)
+  setup?.(work)
   const bin = join(home, 'claude')
   writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`)
   chmodSync(bin, 0o755)
@@ -35,7 +36,7 @@ async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-run
       const reply = (o) => res.end(JSON.stringify(o))
       if (req.url === '/box/inference-auth') return reply({ ok: true, secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'tok', CPA_API_KEY: 'cpa' } })
       if (req.url === '/box/poll')
-        return reply(polls++ ? {} : { task: { id: 't1', payload: JSON.stringify({ prompt: 'do it', proof_contract: 'free text' }) } })
+        return reply(polls++ ? {} : { task: { id: 't1', payload: JSON.stringify(payload) } })
       reply({ ok: true })
     })
   })
@@ -65,7 +66,7 @@ async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-run
   const spawns = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []
   const completes = calls.filter((c) => c.path === '/box/complete').map((c) => c.body)
   const notes = calls.filter((c) => c.path === '/box/report').map((c) => c.body.note)
-  return { code, out, work, bin, spawns, completes, notes }
+  return { code, out, home, work, bin, calls, spawns, completes, notes }
 }
 
 describe('AC1: exit reasons and results from the fake harness', () => {
@@ -225,4 +226,152 @@ test("box-runner's inline classifyResult agrees with lib/turn-outcome.mjs on eve
     const { retryAfterMs, ...lib } = classifyResult(ev)
     assert.deepEqual(inline(ev), lib, JSON.stringify(ev).slice(0, 300))
   }
+})
+
+// DMN-54: remote strings (branch, proof command) never reach a shell.
+const inlineFn = (name) => {
+  const src = readFileSync(join(ROOT, 'box-runner.mjs'), 'utf8').match(new RegExp(`^function ${name}\\(\\w+\\) \\{\\n[\\s\\S]*?\\n\\}$`, 'm'))
+  assert.ok(src, `box-runner.mjs defines function ${name}`)
+  return new Function(`${src[0]}\nreturn ${name}`)()
+}
+
+describe('DMN-54: ref validation, argv git and proof commands', () => {
+  test('validRef: ref regex edges', () => {
+    const validRef = inlineFn('validRef')
+    for (const ok of ['main', 'feature/dmn-54', 'release/v1.2.3', 'user/a_b/c', 'HEAD', 'v1.0'])
+      assert.equal(validRef(ok), true, ok)
+    for (const bad of ['', '-x', '--upload-pack=touch /tmp/p', 'a..b', '..', 'main~1', 'main^', 'main@{1}', 'main; rm -rf /', 'a b', '$(id)', '`id`', 'a\nb', 'a|b', 'a&b', 'mäin', undefined, null, 1, ['main']])
+      assert.equal(validRef(bad), false, JSON.stringify(bad))
+  })
+
+  test('proofArgv: plain words split to argv; empty or shell syntax → null', () => {
+    const proofArgv = inlineFn('proofArgv')
+    assert.deepEqual(proofArgv('npm test -- date.test.ts'), ['npm', 'test', '--', 'date.test.ts'])
+    assert.deepEqual(proofArgv('npm run lint:readme'), ['npm', 'run', 'lint:readme'])
+    for (const bad of ['', '   ', 'true; touch p', 'a && b', 'a | b', 'echo $HOME', 'echo `id`', 'a > f', "echo 'x'", 'a\nb', 'ls *.ts', undefined, ['npm', 'test']])
+      assert.equal(proofArgv(bad), null, JSON.stringify(bad))
+  })
+
+  test("branch `main; rm -rf /` is rejected before any exec: no harness spawn, task failed", async () => {
+    const r = await runBox({ payload: { prompt: 'do it', proof_contract: 'free text', repo: 'o/r', branch: 'main; rm -rf /' } })
+    assert.equal(r.code, 0, r.out)
+    assert.equal(r.spawns.length, 0)
+    assert.equal(r.completes.length, 1, r.out)
+    assert.equal(r.completes[0].status, 'failed')
+    assert.match(r.completes[0].result, /^invalid branch "main; rm -rf \/"/)
+  })
+
+  test('edge: legit ref with slashes → out.diff generated against origin/<ref>', async () => {
+    const branch = 'feature/dmn-54.v2'
+    const r = await runBox({
+      payload: { prompt: 'do it', proof_contract: 'free text', repo: 'o/r', branch },
+      setup: (work) => {
+        const repo = join(work, 'repo')
+        mkdirSync(repo)
+        const git = (...a) => {
+          const g = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: repo })
+          assert.equal(g.status, 0, String(g.stderr))
+        }
+        git('init', '-q')
+        writeFileSync(join(repo, 'a.txt'), 'a\n')
+        git('add', '.')
+        git('commit', '-qm', 'a')
+        git('update-ref', `refs/remotes/origin/${branch}`, 'HEAD')
+        writeFileSync(join(repo, 'b.txt'), 'dmn54 change\n')
+        git('add', '.')
+        git('commit', '-qm', 'b')
+      },
+    })
+    assert.equal(r.completes[0].status, 'done', r.out)
+    const diff = readFileSync(join(r.work, 'artifacts', 'out.diff'), 'utf8')
+    assert.match(diff, /^diff --git a\/b\.txt b\/b\.txt/)
+    assert.match(diff, /\+dmn54 change/)
+    assert.doesNotMatch(diff, /a\.txt/)
+  })
+
+  test('edge: empty proof command → not executed, no corrective rerun, task done', async () => {
+    const r = await runBox({ payload: { prompt: 'do it', proof_contract: JSON.stringify({ kind: 'test', cmd: '' }) } })
+    assert.equal(r.completes[0].status, 'done', r.out)
+    assert.equal(r.spawns.length, 1)
+    assert.match(r.out, /proof command "" is empty or not a plain argv/)
+  })
+
+  test('proof command with shell syntax never reaches a shell', async () => {
+    const r = await runBox({ payload: { prompt: 'do it', proof_contract: JSON.stringify({ kind: 'test', cmd: 'true; touch pwned' }) } })
+    assert.equal(r.completes[0].status, 'done', r.out)
+    assert.equal(r.spawns.length, 1)
+    assert.equal(existsSync(join(r.work, 'pwned')), false)
+  })
+
+  test('plain proof command runs via argv: `false` fails → one corrective rerun → failed', async () => {
+    const r = await runBox({ payload: { prompt: 'do it', proof_contract: JSON.stringify({ kind: 'test', cmd: 'false' }) } })
+    assert.equal(r.spawns.length, 2, r.out)
+    assert.equal(r.completes[0].status, 'failed')
+    assert.match(r.completes[0].result, /proof contract unsatisfied after corrective rerun: proof command 'false' failed/)
+  })
+
+  test('edge: workdir missing after the run → runner still completes instead of crashing', async () => {
+    const r = await runBox({ env: { FAKE_RM_CWD: '1' }, payload: { prompt: 'do it', proof_contract: 'free text', repo: 'o/r', branch: 'main' } })
+    assert.equal(existsSync(r.work), false)
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(r.completes, [{ task_id: 't1', status: 'done', result: 'shipped the fix', inference_cost_usd: 0.4321 }])
+  })
+})
+
+describe('DMN-54: fermi-runner.service.template is unprivileged and sandboxed', () => {
+  const unit = join(ROOT, 'systemd/fermi-runner.service.template')
+  const service = () => {
+    const text = readFileSync(unit, 'utf8')
+    const body = text.split(/^\[Service\]$/m)[1].split(/^\[/m)[0]
+    const kv = {}
+    for (const line of body.split('\n')) {
+      const m = line.match(/^([A-Za-z]+)=(.*)$/)
+      if (m) (kv[m[1]] ??= []).push(m[2])
+    }
+    return kv
+  }
+
+  test('User=fermi, NoNewPrivileges, PrivateTmp, ProtectSystem=strict, one writable tree holding WORKDIR', () => {
+    const s = service()
+    assert.deepEqual(s.User, ['fermi'])
+    assert.deepEqual(s.NoNewPrivileges, ['yes'])
+    assert.deepEqual(s.PrivateTmp, ['yes'])
+    assert.deepEqual(s.ProtectSystem, ['strict'])
+    assert.deepEqual(s.ReadWritePaths, ['/var/fermi'])
+    const env = Object.fromEntries(s.Environment.map((e) => e.split('=')))
+    for (const k of ['WORKDIR', 'HOME', 'CPA_DIR']) assert.ok(env[k].startsWith('/var/fermi/'), `${k}=${env[k]}`)
+    // Only the explicitly "+"-privileged helpers (mkdir, power-off) run as root.
+    assert.ok(!s.ExecStart[0].startsWith('+'))
+    assert.match(s.ExecStartPre[0], /^\+\/usr\/bin\/install -d -o fermi -g fermi .*\/var\/fermi\/work/)
+    assert.match(s.ExecStopPost[0], /^\+\/bin\/sh -c /)
+  })
+
+  test('ExecStopPost: power off on exit 0, delayed power off on failure, nothing on SIGTERM stop', () => {
+    const script = service().ExecStopPost[0].match(/^\+\/bin\/sh -c '(.*)'$/)[1]
+    const dir = mkdtempSync(join(tmpdir(), 'dmn54-'))
+    writeFileSync(join(dir, 'shutdown'), `#!/bin/sh\necho "$@" >> "${join(dir, 'calls')}"\n`)
+    chmodSync(join(dir, 'shutdown'), 0o755)
+    const run = (env) => {
+      spawnSync('/bin/sh', ['-c', script], { env: { PATH: `${dir}:/usr/bin:/bin`, ...env } })
+      const calls = join(dir, 'calls')
+      const out = existsSync(calls) ? readFileSync(calls, 'utf8').trim() : ''
+      writeFileSync(calls, '')
+      return out
+    }
+    assert.equal(run({ SERVICE_RESULT: 'success', EXIT_CODE: 'exited', EXIT_STATUS: '0' }), '-h now')
+    assert.equal(run({ SERVICE_RESULT: 'exit-code', EXIT_CODE: 'exited', EXIT_STATUS: '1' }), '-h +2')
+    assert.equal(run({ SERVICE_RESULT: 'success', EXIT_CODE: 'killed', EXIT_STATUS: 'TERM' }), '')
+  })
+
+  test('systemd-analyze verify (when available)', (t) => {
+    const probe = spawnSync('systemd-analyze', ['--version'])
+    if (probe.error) return t.skip('systemd-analyze not installed')
+    const dir = mkdtempSync(join(tmpdir(), 'dmn54-unit-'))
+    const file = join(dir, 'fermi-runner.service')
+    writeFileSync(file, readFileSync(unit))
+    const r = spawnSync('systemd-analyze', ['verify', file], { encoding: 'utf8' })
+    // Only syntax errors in our file count; missing binaries/users on a CI host do not.
+    const ours = r.stderr.split('\n').filter((l) => l.includes(file) && !/not executable|No such file|Failed to resolve|Unknown user|Command .* is not/.test(l))
+    assert.deepEqual(ours, [], r.stderr)
+  })
 })

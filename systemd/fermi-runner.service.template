@@ -12,13 +12,33 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+# Unprivileged and sandboxed: the runner (and the agent it spawns) runs as the
+# `fermi` system user, sees the filesystem read-only except its own tree under
+# /var/fermi, gets a private /tmp, and can never gain privileges (no sudo/setuid).
+User=fermi
+Group=fermi
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/fermi
 EnvironmentFile=/etc/fermi/box.env
-Environment=RUNNER_SELF_SHUTDOWN=1
+# Everything the runner writes lives under /var/fermi: the agent's workdir, its
+# HOME (git/claude config) and the inference-proxy auth dir. Keep WORKDIR,
+# HOME and CPA_DIR out of box.env, or extend ReadWritePaths to match.
+Environment=WORKDIR=/var/fermi/work
+Environment=HOME=/var/fermi/home
+Environment=CPA_DIR=/var/fermi/cli-proxy-api
+# "+": runs as root outside the sandbox, so a missing workdir is created
+# fermi-owned before the sandboxed runner starts.
+ExecStartPre=+/usr/bin/install -d -o fermi -g fermi -m 0700 /var/fermi /var/fermi/work /var/fermi/home
 ExecStart=/usr/bin/node /opt/fermi/box-runner.mjs
 Restart=on-failure
 RestartSec=15
-# If the runner dies for good, take the machine down with it.
-ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || shutdown -h +2'
+# Power-off needs root, which the runner no longer has ("+" runs this as root).
+# A clean exit 0 is the runner asking to power off (task done, idle, stop or
+# revoked); a failure means the runner died for good, so take the machine down
+# with it. A plain `systemctl stop` (SIGTERM) leaves the box up.
+ExecStopPost=+/bin/sh -c 'if [ "$EXIT_CODE" = exited ] && [ "$EXIT_STATUS" = 0 ]; then shutdown -h now; elif [ "$SERVICE_RESULT" != success ]; then shutdown -h +2; fi'
 
 [Install]
 WantedBy=multi-user.target
