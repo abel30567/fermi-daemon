@@ -14,6 +14,21 @@ export type Config = {
 	// mode ('auto', default), or force '@lid' / '@s.whatsapp.net'.
 	MENTION_JID_MODE: 'auto' | 'lid' | 'pn'
 	DEBUG: boolean
+	// Senders (bare E.164 digits) whose "stop" may interrupt the running turn.
+	// Empty fails closed: nobody's stop interrupts anything.
+	OWNER_NUMBERS: ReadonlySet<string>
+}
+
+// WA_OWNER_NUMBERS: comma-separated E.164 numbers; '+', spaces and dashes are ignored.
+export function parseOwnerNumbers(raw: string | undefined): ReadonlySet<string> {
+	const out = new Set<string>()
+	for (const part of (raw ?? '').split(',')) {
+		const digits = part.replace(/[\s+\-]/g, '')
+		if (digits === '') continue
+		if (!/^\d{6,15}$/.test(digits)) throw new Error(`invalid WA_OWNER_NUMBERS entry: ${part.trim()}`)
+		out.add(digits)
+	}
+	return out
 }
 
 // Parse KEY=VALUE lines from ~/fermi-daemon/.env, ignoring comments and blanks.
@@ -91,5 +106,6 @@ export function loadConfig(): Config {
 		STATE_DIR: join(DAEMON_HOME, 'wa-bridge', 'state'),
 		MENTION_JID_MODE: modeRaw,
 		DEBUG: get('WA_BRIDGE_DEBUG') === '1',
+		OWNER_NUMBERS: parseOwnerNumbers(get('WA_OWNER_NUMBERS')),
 	}
 }

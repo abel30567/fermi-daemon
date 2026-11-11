@@ -11,6 +11,15 @@ npm test                        # unit tests (node:test, no extra deps)
 npm run typecheck
 ```
 
+## Emergency stop
+
+A message that reads as "stop" (`isStopCommand`) interrupts the running task via
+the warm worker's `/abort`, but only when the sender is listed in
+`WA_OWNER_NUMBERS` (comma-separated E.164 digits in `~/fermi-daemon/.env`) and
+the chat is the one the running task belongs to. An empty or missing
+`WA_OWNER_NUMBERS` means nobody can interrupt; other senders' stops are logged
+and delivered as ordinary messages.
+
 ## Menciones
 
 Outbound group messages containing `@Nombre` are turned into real WhatsApp
