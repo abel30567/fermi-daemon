@@ -5,7 +5,7 @@
 // stream-json file) a drain turn replays that file instead. An interrupt
 // control_request ends the in-flight turn at once, like claude does. Every
 // spawn (with argv, cwd and harness env), turn and control_request is appended
-// to $FAKE_DIR/turns.log as JSON lines.
+// to $FAKE_DIR/turns.log as JSON lines. With FAKE_STDERR, that text is written to stderr at spawn.
 import { appendFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -28,6 +28,7 @@ record({
   cwd: process.cwd(),
   env: Object.fromEntries(HARNESS_ENV.filter((k) => k in process.env).map((k) => [k, process.env[k]])),
 })
+if (process.env.FAKE_STDERR) process.stderr.write(process.env.FAKE_STDERR)
 let pending = null // the in-flight turn's timer
 createInterface({ input: process.stdin }).on('line', (line) => {
   let msg

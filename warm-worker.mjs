@@ -11,13 +11,18 @@
 
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, createWriteStream, openSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import http from 'node:http'
 import { Backoff, chatFromEvent } from './lib/turn-outcome.mjs'
 import { loadHarness } from './harness/index.mjs'
 import { ALLOWED_TOOLS } from './lib/run-policy.mjs'
 import { loadPrompt, ownerNote } from './lib/prompt.mjs'
+import { redact } from './lib/redact.mjs'
+import { openLog, secureLogs, pruneRuns, redactStdio } from './lib/logs.mjs'
+
+// Everything this process prints (logs/warm-worker.log under launchd) is redacted, crash traces too.
+redactStdio()
 
 const HOME = process.env.HOME
 const DAEMON = join(HOME, 'fermi-daemon')
@@ -116,6 +121,23 @@ function htmlToText(html) {
 const log = (...a) =>
   console.log(new Date().toISOString(), ...a)
 
+// runs/ and logs/ are owner-only; runs/ files expire after RUNS_RETENTION_DAYS (0 keeps them).
+const RUNS_RETENTION_DAYS = Number(process.env.RUNS_RETENTION_DAYS ?? 14)
+// A file it cannot chmod or remove (owned by root, say) is warned about, not fatal.
+try {
+  secureLogs([join(DAEMON, 'runs'), join(DAEMON, 'logs')])
+} catch (e) {
+  log(`warning: could not make runs/ and logs/ owner-only: ${e.message}`)
+}
+function pruneRunsDir() {
+  try {
+    const n = pruneRuns(join(DAEMON, 'runs'), RUNS_RETENTION_DAYS)
+    if (n) log(`runs/: removed ${n} file(s) older than ${RUNS_RETENTION_DAYS} days`)
+  } catch (e) {
+    log(`warning: could not prune runs/: ${e.message}`)
+  }
+}
+
 // ---- persistent claude process ---------------------------------------------
 let session = null // harness session (harness/index.mjs contract)
 let busy = false
@@ -178,7 +200,7 @@ function startClaude() {
     handleEvent(ev)
   })
   session.events.on('stderr', (s) => {
-    if (/error|block|denied/i.test(s)) log('claude stderr:', s.slice(0, 200))
+    if (/error|block|denied/i.test(s)) log('claude stderr:', redact(s).slice(0, 200))
   })
   session.events.on('exit', (code) => {
     log(`claude exited (${code}) — respawning in 2s`)
@@ -382,7 +404,7 @@ function startControlServer() {
           res.writeHead(200, { 'content-type': 'application/json' })
           return res.end(JSON.stringify({ ok: true, skipped: 'empty' }))
         }
-        log(`teams inbound from ${sender}: ${text.slice(0, 80)}`)
+        log(`teams inbound from ${sender}: ${redact(text).slice(0, 80)}`)
         pendingTeams.push({ sender, text, link: p.linkToMessage || '' })
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
@@ -520,8 +542,8 @@ async function loop() {
     let narrator = null
     try {
       // Opened synchronously so it exists before the narrator looks for it.
-      eventsLog = createWriteStream(null, { fd: openSync(join(DAEMON, `runs/warm-${t0}.events.jsonl`), 'w') })
-      turnLog = createWriteStream(logPath)
+      eventsLog = openLog(join(DAEMON, `runs/warm-${t0}.events.jsonl`), 'w')
+      turnLog = openLog(logPath, 'w')
       narrator = spawn('python3', [join(DAEMON, 'narrator.py'), logPath], {
         cwd: DAEMON,
         stdio: 'ignore',
@@ -559,6 +581,8 @@ process.on('SIGTERM', () => {
   process.exit(0)
 })
 
+pruneRunsDir()
+setInterval(pruneRunsDir, 86_400_000)
 startClaude()
 startControlServer()
 setInterval(stalenessCheck, STALENESS_MS)

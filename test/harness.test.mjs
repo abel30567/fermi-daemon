@@ -140,9 +140,13 @@ describe('AC2: recorded Claude stream → normalized events (golden)', () => {
     assert.equal(bareToolName('Bash'), 'Bash')
   })
 
-  test('the warm worker writes the raw log and the normalized log for a drain turn', async () => {
+  test('the warm worker writes the raw log and the normalized log for a drain turn, redacted (DMN-51)', async () => {
     // Stop the worker once the first drain turn's logs are complete, not after a fixed time.
-    const stream = readFileSync(STREAM, 'utf8')
+    // The fixture's one secret (API_TOKEN=abc123secret) is redacted in both logs; nothing else changes.
+    const unredacted = 'API_TOKEN=abc123secret'
+    const stream = readFileSync(STREAM, 'utf8').replace(unredacted, 'API_TOKEN=[REDACTED]')
+    const golden = JSON.parse(JSON.stringify(GOLDEN).replace(unredacted, 'API_TOKEN=[REDACTED]'))
+    assert.notDeepEqual(golden, GOLDEN)
     const act = ({ home }) => {
       const dir = join(home, 'fermi-daemon/runs')
       const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : '')
@@ -154,9 +158,9 @@ describe('AC2: recorded Claude stream → normalized events (golden)', () => {
     const { runs, log } = await runWorker({ result: SUCCESS, durationMs: 0, env: { FAKE_STREAM: STREAM }, act })
     const first = Object.keys(runs).filter((f) => /^warm-\d+\.log$/.test(f)).sort()[0]
     assert.ok(first, log)
-    assert.equal(runs[first], readFileSync(STREAM, 'utf8'))
+    assert.equal(runs[first], stream)
     const normalized = runs[first.replace(/\.log$/, '.events.jsonl')]
-    assert.deepEqual(normalized.trim().split('\n').map((l) => JSON.parse(l)), GOLDEN)
+    assert.deepEqual(normalized.trim().split('\n').map((l) => JSON.parse(l)), golden)
   })
 
   test('runOnce: box-runner argv, prompt on stdin, events plus outcome', async () => {

@@ -1,7 +1,8 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync, symlinkSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync, symlinkSync, utimesSync, statSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ROOT, runWorker, assertFakeHarness, harnessBin, guardHarness } from './run-worker.mjs'
@@ -20,8 +21,8 @@ const alive = (pid) => {
 
 // Runs bin/run-once.mjs as poll.sh does (cwd = daemon home, a claimed lane)
 // against fake-claude-once.mjs. `act(child, dir)` runs while it is up. `prompt` is
-// prompts/drain.md, `overlay` (if set) prompts/local.json.
-async function runOnceCli({ args = [], env = {}, act, prompt = 'drain the queue\n', overlay } = {}) {
+// prompts/drain.md, `overlay` (if set) prompts/local.json; `setup(dir)` runs before the spawn.
+async function runOnceCli({ args = [], env = {}, act, setup, prompt = 'drain the queue\n', overlay } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'dmn7-'))
   mkdirSync(join(dir, 'prompts'))
   mkdirSync(join(dir, 'runs'))
@@ -33,6 +34,7 @@ async function runOnceCli({ args = [], env = {}, act, prompt = 'drain the queue\
   chmodSync(bin, 0o755)
   const childEnv = { PATH: process.env.PATH, HOME: dir, CLAUDE_BIN: bin, FAKE_DIR: dir, ...env }
   assertFakeHarness(harnessBin(childEnv))
+  setup?.(dir)
   const child = spawn(
     process.execPath,
     [RUN_ONCE, '--prompt', 'prompts/drain.md', '--log', 'runs/r.log', '--lane', join(dir, 'lanes/1'), ...args],
@@ -94,6 +96,29 @@ describe('AC1: cold argv has the warm worker\'s settings surface', () => {
     assert.match(r.log, /^run-once: exit 0$/m)
     assert.ok(r.laneGone)
     assert.ok(!existsSync(join(r.dir, 'session.id')))
+  })
+
+  test('DMN-51: a fake key in the harness output shows as [REDACTED]; the log is 0600, also when poll.sh created it 0644', async () => {
+    const key = `sk-proj-${randomBytes(30).toString('hex')}`
+    const result = { type: 'result', subtype: 'success', is_error: true, num_turns: 1, result: `echo OPENAI_API_KEY=${key}` }
+    const r = await runOnceCli({
+      env: { FAKE_ONCE: 'result', FAKE_ONCE_RESULT: JSON.stringify(result) },
+      setup: (dir) => {
+        writeFileSync(join(dir, 'runs/r.log'), 'poll.sh was here\n')
+        chmodSync(join(dir, 'runs/r.log'), 0o644)
+      },
+    })
+    assert.equal(r.code, 1)
+    assert.ok(!r.log.includes(key), 'the key reached the log')
+    assert.match(r.log, /^poll\.sh was here\n/)
+    assert.equal(JSON.parse(r.log.split('\n').find((l) => l.includes('"result"'))).result, 'echo OPENAI_API_KEY=[REDACTED]')
+    assert.equal(statSync(join(r.dir, 'runs/r.log')).mode & 0o777, 0o600)
+  })
+
+  test('DMN-51: a new log is created 0600', async () => {
+    const r = await runOnceCli()
+    assert.equal(r.code, 0)
+    assert.equal(statSync(join(r.dir, 'runs/r.log')).mode & 0o777, 0o600)
   })
 
   test('harness failure: its exit code and stderr pass through, lane removed', async () => {
@@ -292,6 +317,9 @@ describe('poll.sh node resolution for the cold path', () => {
     assert.deepEqual(r.lanes, ['1'])
     const log = argv[argv.indexOf('--log') + 1]
     assert.match(await waitFor(join(r.daemon, log), /node22 stderr/), /node22 stderr/)
+    // DMN-51: the run log and poll.log poll.sh creates are owner-only.
+    assert.equal(statSync(join(r.daemon, log)).mode & 0o777, 0o600)
+    assert.equal(statSync(join(r.daemon, 'logs/poll.log')).mode & 0o777, 0o600)
   })
 })
 

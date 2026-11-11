@@ -6,7 +6,7 @@
 //   node bin/run-once.mjs --prompt prompts/drain.md --log runs/<ts>.log \
 //     [--lane lanes/<n>] [--session session.id] [--model M] [--max-turns N] [--timeout-s S]
 //
-// --log      raw harness output (stream-json) plus stderr, appended
+// --log      raw harness output (stream-json) plus stderr, appended, redacted (lib/redact.mjs), mode 0600
 // --lane     lane dir from poll.sh's acquire_lane; removed when this process exits
 // --session  resume the session id in this file (if any), then store the run's id there
 // --timeout-s watchdog: SIGTERM the harness after S seconds, SIGKILL 2s later (exit 124)
@@ -14,11 +14,15 @@
 // Runs in the current directory (poll.sh cds to the daemon home first). The prompt is
 // rendered with the local.json overlay next to it (lib/prompt.mjs).
 
-import { readFileSync, writeFileSync, appendFileSync, existsSync, rmSync, createWriteStream } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { loadHarness } from '../harness/index.mjs'
 import { ALLOWED_TOOLS, SETTING_SOURCES } from '../lib/run-policy.mjs'
 import { loadPrompt } from '../lib/prompt.mjs'
+import { openLog, redactStdio } from '../lib/logs.mjs'
+
+// poll.sh appends this process's own stdout/stderr to the run log: redact it, crash traces too.
+redactStdio()
 
 const KILL_GRACE_MS = 2000
 
@@ -46,11 +50,12 @@ let prompt
 try {
   prompt = loadPrompt(o.prompt)
 } catch (e) {
-  appendFileSync(o.log, `run-once: refusing to start: ${e.message}\n`)
+  const log = openLog(o.log)
+  await new Promise((r) => log.end(`run-once: refusing to start: ${e.message}\n`, r))
   process.exit(2)
 }
 
-const out = createWriteStream(o.log, { flags: 'a' })
+const out = openLog(o.log)
 const note = (msg) => out.write(`run-once: ${msg}\n`)
 
 const resume = o.session && existsSync(o.session) ? readFileSync(o.session, 'utf8').trim() : ''
