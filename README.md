@@ -147,7 +147,8 @@ agent broad control of your Mac:
   `0700`, the socket `0600`), so only your user can reach them:
   `curl --unix-socket ~/fermi-daemon/run/control.sock http://localhost/model`.
   A stale socket is removed on start; if a live listener still answers there the
-  worker refuses to start. `/abort` acts only for the chat whose task the current
+  worker refuses to start. Two workers starting at once are serialized by
+  `run/control.sock.lock`, so neither can replace the other's live socket. `/abort` acts only for the chat whose task the current
   drain turn claimed (anything else is a `400` and interrupts nothing), rejects
   unknown fields, and caps `channel`/`chat_id` at 128 chars. `POST /teams/webhook`
   (authenticated by `x-teams-bridge-secret`) has its own listener on

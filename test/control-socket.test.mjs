@@ -165,6 +165,48 @@ describe('POST /abort validation', () => {
     assert.equal(res.status, 400)
   })
 
+  test('after a drain turn ends the worker is idle: the chat it claimed is no longer active, 400 and no cleanup turn', async () => {
+    let res
+    let drains = 0
+    const { events, log } = await runWorker({
+      result: SUCCESS,
+      durationMs: 0,
+      claim: true,
+      pending: () => (drains ? 0 : 1),
+      env: { FAKE_DELAY_MS: '500', FAKE_CLAIM_CHAT: CHAT },
+      act: async ({ log, home }) => {
+        await ready(log)
+        await until(() => /drain turn done/.test(log()))
+        drains++
+        await sleep(1500)
+        res = await control(home, 'POST', '/abort', { channel: 'wa', chat_id: CHAT })
+        await sleep(500)
+      },
+    })
+    assert.equal(res.status, 400, log)
+    assert.equal(res.body.error, 'not the active chat')
+    assert.ok(!events.some((e) => e.kind === 'turn' && e.text.startsWith('EMERGENCY STOP')), 'no cleanup turn')
+  })
+
+  test('a task_claim result in a non-drain turn (warm-up) does not make that chat active', async () => {
+    let res
+    const { events, log } = await runWorker({
+      result: SUCCESS,
+      pending: 0,
+      durationMs: 0,
+      claim: true,
+      env: { FAKE_CLAIM_ANY: '1', FAKE_CLAIM_CHAT: CHAT },
+      act: async ({ log, home }) => {
+        await ready(log)
+        await until(() => records(home).some((r) => r.kind === 'turn' && r.text.startsWith('Warm-up')))
+        await sleep(300)
+        res = await control(home, 'POST', '/abort', { channel: 'wa', chat_id: CHAT })
+      },
+    })
+    assert.equal(res.status, 400, log)
+    assert.ok(!events.some((e) => e.kind === 'turn' && e.text.startsWith('EMERGENCY STOP')), 'no cleanup turn')
+  })
+
   test('unknown fields and non-object bodies: 400 on /abort and /model, nothing done', async () => {
     const res = []
     const { events, log } = await duringDrain({
@@ -276,6 +318,46 @@ describe('edge cases', () => {
     assert.match(log, /refusing to start: a live listener already answers/)
     assert.equal(stillServing, 'other')
     assert.equal(events.length, 0, 'no harness was spawned')
+  })
+
+  test('a start lock held by a live worker: refuses to start and leaves the lock alone', async () => {
+    let lock
+    const { log, events } = await runWorker({
+      result: SUCCESS,
+      durationMs: 1000,
+      setup: (daemon) => {
+        mkdirSync(join(daemon, 'run'), { mode: 0o700 })
+        writeFileSync(join(daemon, 'run/control.sock.lock'), String(process.pid))
+      },
+      act: async ({ home }) => {
+        await sleep(800)
+        lock = readFileSync(controlSocket(home) + '.lock', 'utf8')
+      },
+    })
+    assert.match(log, new RegExp(`refusing to start: another warm worker \\(pid ${process.pid}\\) is starting`))
+    assert.equal(lock, String(process.pid))
+    assert.equal(events.length, 0, 'no harness was spawned')
+  })
+
+  test('a start lock left by a dead worker is taken over, and released once the socket is bound', async () => {
+    let lockAfter
+    const { log } = await runWorker({
+      result: SUCCESS,
+      pending: 0,
+      durationMs: 0,
+      setup: async (daemon) => {
+        mkdirSync(join(daemon, 'run'), { mode: 0o700 })
+        const dead = spawn(process.execPath, ['-e', ''])
+        await new Promise((r) => dead.once('exit', r))
+        writeFileSync(join(daemon, 'run/control.sock.lock'), String(dead.pid))
+      },
+      act: async ({ log, home }) => {
+        await ready(log)
+        assert.equal((await control(home, 'GET', '/model')).status, 200)
+        lockAfter = existsSync(controlSocket(home) + '.lock')
+      },
+    })
+    assert.equal(lockAfter, false, log)
   })
 
   test('a non-socket file at the socket path: refuses to start and does not delete it', async () => {

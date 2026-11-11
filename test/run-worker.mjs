@@ -92,7 +92,7 @@ export async function runWorker({ result, errors, claim, durationMs, pending = 1
 
   const narrations = []
   const server = http.createServer((req, res) => {
-    if (req.url === '/admin/tasks/pending') return res.end(JSON.stringify({ pending }))
+    if (req.url === '/admin/tasks/pending') return res.end(JSON.stringify({ pending: typeof pending === 'function' ? pending() : pending }))
     if (req.url === '/admin/narrate') {
       let body = ''
       req.on('data', (c) => (body += c))

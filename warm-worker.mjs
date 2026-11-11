@@ -95,6 +95,7 @@ const backoff = new Backoff({
 })
 let alerted = false // one owner-visible alert per error episode
 let turnChat = null // {channel, chat_id} of a task claimed during the current drain turn
+let draining = false // a drain turn is in flight (only drain turns may set turnChat)
 
 // Emergency stops requested via the control endpoint, drained by the main loop
 // ahead of any normal queue work. Each is {channel, chat_id}.
@@ -234,7 +235,7 @@ function startClaude() {
 
 function handleEvent(ev) {
   const chat = chatFromEvent(ev)
-  if (chat) turnChat = chat
+  if (chat && draining) turnChat = chat
   if (ev.type === 'turn_end' && turnResolve) {
     const r = turnResolve
     turnResolve = null
@@ -407,19 +408,22 @@ function controlHandler(req, res) {
     return res.end('not found')
   }
   // POST /abort {"channel"?: "wa", "chat_id": "…"} — accepted only for the chat whose task the
-  // current drain turn claimed (turnChat); anything else is a 400 and interrupts nothing.
+  // in-flight drain turn claimed (turnChat), or one already stopped and awaiting cleanup (a
+  // duplicate, which adds nothing); anything else is a 400 and interrupts nothing.
   readBody(req, res, 4096, ['channel', 'chat_id'], (p) => {
     const { channel = 'wa', chat_id } = p
     if ([channel, chat_id].some((v) => typeof v !== 'string' || !v || v.length > MAX_CONTROL_FIELD)) {
       return reply(res, 400, { ok: false, error: `channel and chat_id must be non-empty strings of at most ${MAX_CONTROL_FIELD} chars` })
     }
-    if (!turnChat || channel !== turnChat.channel || chat_id !== turnChat.chat_id) {
+    const same = (c) => c && c.channel === channel && c.chat_id === chat_id
+    // Concurrent stops for the same chat share one interrupt and one cleanup turn.
+    const duplicate = pendingStops.some(same)
+    if (!duplicate && !same(turnChat)) {
       log(`ABORT rejected: not the active chat (busy=${busy})`)
       return reply(res, 400, { ok: false, error: 'not the active chat' })
     }
     log(`ABORT requested for ${channel}/${chat_id} (busy=${busy})`)
-    // Concurrent stops for the same chat share one interrupt and one cleanup turn.
-    if (!pendingStops.some((s) => s.channel === channel && s.chat_id === chat_id)) {
+    if (!duplicate) {
       pendingStops.push({ channel, chat_id })
       // If a turn is in flight, interrupt it now; the loop then runs cleanup.
       if (busy) sendInterrupt()
@@ -439,17 +443,47 @@ const answers = (path) =>
     s.once('error', () => resolve(false))
   })
 
+// Held from the stale check to the bind, so two workers starting at once can't both judge the
+// same socket stale (the second would unlink the first one's fresh live socket). Holds our pid.
+const CONTROL_LOCK = CONTROL_SOCKET + '.lock'
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return e.code === 'EPERM'
+  }
+}
+function lockControl() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return writeFileSync(CONTROL_LOCK, String(process.pid), { flag: 'wx', mode: 0o600 })
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+    }
+    const pid = Number(readFileSync(CONTROL_LOCK, 'utf8'))
+    if (pid > 0 && pidAlive(pid)) refuse(`another warm worker (pid ${pid}) is starting on ${CONTROL_SOCKET}`)
+    unlinkSync(CONTROL_LOCK) // left behind by a worker that died while starting
+  }
+  refuse(`could not take ${CONTROL_LOCK}`)
+}
+
 let controlListening = false
 async function startControlServer() {
   mkdirSync(dirname(CONTROL_SOCKET), { recursive: true, mode: 0o700 })
   chmodSync(dirname(CONTROL_SOCKET), 0o700)
+  lockControl()
+  const fail = (why) => {
+    unlinkSync(CONTROL_LOCK)
+    refuse(why)
+  }
   let st = null
   try {
     st = lstatSync(CONTROL_SOCKET)
   } catch {}
   if (st) {
-    if (!st.isSocket()) refuse(`${CONTROL_SOCKET} exists and is not a socket`)
-    if (await answers(CONTROL_SOCKET)) refuse(`a live listener already answers on ${CONTROL_SOCKET} (another warm worker?)`)
+    if (!st.isSocket()) fail(`${CONTROL_SOCKET} exists and is not a socket`)
+    if (await answers(CONTROL_SOCKET)) fail(`a live listener already answers on ${CONTROL_SOCKET} (another warm worker?)`)
     unlinkSync(CONTROL_SOCKET)
     log(`removed stale control socket ${CONTROL_SOCKET}`)
   }
@@ -464,10 +498,11 @@ async function startControlServer() {
   try {
     await once(server, 'listening')
   } catch (e) {
-    refuse(`control socket ${CONTROL_SOCKET}: ${e.message}`)
+    fail(`control socket ${CONTROL_SOCKET}: ${e.message}`)
   }
   controlListening = true
   chmodSync(CONTROL_SOCKET, 0o600)
+  unlinkSync(CONTROL_LOCK)
   server.on('error', (e) => log('control server error:', String(e)))
   log(`control endpoint on unix:${CONTROL_SOCKET}`)
 }
@@ -627,6 +662,7 @@ async function loop() {
       log('narrator spawn failed (non-fatal):', String(e))
     }
     turnChat = null
+    draining = true
     try {
       const r = await sendTurn(
         'There are pending tasks in the queue. Claim and process every pending task now (claim one at a time, bootstrap, reply, complete), looping until task_claim returns empty. Then stop.',
@@ -643,6 +679,8 @@ async function loop() {
         } catch {}
       }
       turnLog = eventsLog = null
+      draining = false
+      turnChat = null // idle: no chat is active, so /abort answers 400
     }
     lastActivity = Date.now()
     busy = false
