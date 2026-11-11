@@ -8,7 +8,7 @@
 // Optional: ROUTE (claude|codex|grok), CPA_URL + CPA_TOKEN for proxy routes,
 // CODEX_MODEL / GROK_MODEL overrides, WORKDIR, RUNNER_SELF_SHUTDOWN=1.
 
-import { spawn, execSync } from 'node:child_process'
+import { spawn, execSync, execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -86,9 +86,12 @@ async function bootstrapInference() {
 			// config lands in a different .gitconfig than the harness's git reads
 			// and commits fall back to root@hostname. Identity is also enforced via
 			// GIT_* env vars in harnessEnv() as the authoritative override.
-			execSync('git config --global credential.helper store && git config --global user.email "326217896+fermi-neutrino@users.noreply.github.com" && git config --global user.name "fermi-neutrino"', {
-				env: { ...process.env, HOME: home },
-			})
+			for (const [key, value] of [
+				['credential.helper', 'store'],
+				['user.email', '326217896+fermi-neutrino@users.noreply.github.com'],
+				['user.name', 'fermi-neutrino'],
+			])
+				execFileSync('git', ['config', '--global', key, value], { env: { ...process.env, HOME: home } })
 		} catch (e) {
 			log('git config failed:', String(e))
 		}
@@ -176,7 +179,7 @@ function harnessEnv() {
 		if (mb > 0) env.NODE_OPTIONS = `${env.NODE_OPTIONS ?? ''} --max-old-space-size=${mb}`.trim()
 	}
 	// The box is a disposable sandbox; this lets the harness accept
-	// --dangerously-skip-permissions under the root systemd unit.
+	// --dangerously-skip-permissions under the systemd unit.
 	env.IS_SANDBOX = '1'
 	// Headless box: kill telemetry, auto-update, and the session-title sidecar
 	// call (the last one hard-fails on proxy models like gpt-5.6-sol/gpt-6-astra
@@ -424,7 +427,7 @@ function ensureRepoDiffArtifact(payload) {
 	} catch {}
 	// The agent clones wherever it likes: WORKDIR itself or a child directory.
 	let repoDir = existsSync(join(WORKDIR, '.git')) ? WORKDIR : null
-	if (!repoDir) {
+	if (!repoDir && existsSync(WORKDIR)) {
 		for (const d of readdirSync(WORKDIR)) {
 			try {
 				const p = join(WORKDIR, d)
@@ -435,7 +438,7 @@ function ensureRepoDiffArtifact(payload) {
 	if (!repoDir) return
 	const base = payload.branch ?? 'main'
 	try {
-		const diff = execSync(`git diff origin/${base}...HEAD`, {
+		const diff = execFileSync('git', ['diff', `origin/${base}...HEAD`, '--'], {
 			cwd: repoDir,
 			maxBuffer: 32 * 1024 * 1024,
 			env: harnessEnv(),
@@ -448,6 +451,20 @@ function ensureRepoDiffArtifact(payload) {
 	} catch (e) {
 		log('auto out.diff failed:', String(e.message ?? e).slice(0, 120))
 	}
+}
+
+// A branch/ref from the task payload, safe to hand to git as one argv element:
+// no option injection (leading '-'), no range or ancestry syntax ('..', '~').
+function validRef(ref) {
+	return typeof ref === 'string' && /^[A-Za-z0-9._/-]+$/.test(ref) && !ref.startsWith('-') && !ref.includes('..') && !ref.includes('~')
+}
+
+// A `test` proof command runs without a shell: split on whitespace into argv,
+// and only plain words are allowed, so no metacharacter can reach a shell.
+function proofArgv(cmd) {
+	if (typeof cmd !== 'string' || !/^[A-Za-z0-9_./:=@%+, -]*$/.test(cmd)) return null
+	const argv = cmd.trim().split(/ +/).filter(Boolean)
+	return argv.length ? argv : null
 }
 
 function localProofFailure(payload) {
@@ -466,8 +483,13 @@ function localProofFailure(payload) {
 			return `artifact ./artifacts/${contract.name} is ${size} bytes; contract requires >= ${contract.min_bytes}`
 	}
 	if (contract?.kind === 'test') {
+		const argv = proofArgv(contract.cmd)
+		if (!argv) {
+			log(`proof command ${JSON.stringify(contract.cmd)} is empty or not a plain argv; left to the server`)
+			return null
+		}
 		try {
-			execSync(contract.cmd, { cwd: WORKDIR, timeout: 10 * 60_000, stdio: 'pipe' })
+			execFileSync(argv[0], argv.slice(1), { cwd: WORKDIR, timeout: 10 * 60_000, stdio: 'pipe' })
 			if ((contract.expect_exit ?? 0) !== 0) return `'${contract.cmd}' exited 0, contract expects ${contract.expect_exit}`
 		} catch (e) {
 			if ((contract.expect_exit ?? 0) === 0)
@@ -622,6 +644,16 @@ async function main() {
 			const followups = pendingFollowups.splice(0)
 			const resumed = poll.resumed === true && !ranTask
 			ranTask = true
+			if (payload.branch != null && !validRef(payload.branch)) {
+				log(`task ${poll.task.id} rejected: invalid branch`)
+				await api('/box/complete', {
+					task_id: poll.task.id,
+					status: 'failed',
+					result: `invalid branch ${JSON.stringify(String(payload.branch)).slice(0, 200)}: must match ^[A-Za-z0-9._/-]+$, no leading '-', no '..'`,
+					inference_cost_usd: 0,
+				}).catch((e) => log('complete failed:', String(e)))
+				powerOff()
+			}
 			await api('/box/report', { note: `${resumed ? 'resumed' : 'claimed'} ${poll.task.id}; leasing ${(payload.sessions ?? []).length} session(s)` }).catch(() => {})
 			const sessions = await leaseSessions(payload)
 			await api('/box/report', { note: `leased ${sessions.length}: ${sessions.map((s) => s.name).join(',') || 'none'}; helper=${sessions.length ? existsSync(join(WORKDIR, 'fermi-browser')) : 'n/a'}; spawning` }).catch(() => {})

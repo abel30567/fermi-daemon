@@ -124,6 +124,17 @@ Bake into the AMI:
 - this file at `/opt/fermi/box-runner.mjs`
 - `systemd/fermi-runner.service.template` at
   `/etc/systemd/system/fermi-runner.service`, enabled
+- a `fermi` system user (`useradd --system --no-create-home fermi`): the unit
+  runs the runner as `fermi` with `NoNewPrivileges`, `PrivateTmp` and
+  `ProtectSystem=strict`, writable only under `/var/fermi` (`work/` = WORKDIR,
+  `home/` = HOME, `cli-proxy-api/` = CPA_DIR). Install what the agent needs
+  system-wide, not under `/root` (e.g. Playwright browsers via
+  `PLAYWRIGHT_BROWSERS_PATH`); the agent cannot `sudo` or `apt install`.
+
+The runner execs git with argument arrays, refuses a task whose `branch` is not
+`^[A-Za-z0-9._/-]+$` (or starts with `-`, or contains `..`), and runs a `test`
+proof command without a shell: plain words only, split on spaces; anything
+else (or an empty command) is left to the server-side check.
 
 Shutdown is triple-redundant: the runner powers off after its task (or after
 10 idle minutes), user-data schedules a TTL `shutdown -h`, and the worker-side
