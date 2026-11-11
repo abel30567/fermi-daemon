@@ -11,22 +11,64 @@ export const ORIGIN_DENIED = 'origin_not_allowed'
 // the same port. about:blank is the only non-https URL allowed, since every new
 // tab starts there. A missing or unparseable site denies everything.
 export function navAllowed(url, site) {
+	const s = siteURL(site)
+	if (!s) return false
+	if (url === 'about:blank') return true
 	let u
-	let s
 	try {
-		s = new URL(site)
-		if (url === 'about:blank') return true
 		u = new URL(url)
 	} catch {
 		return false
 	}
-	if (s.protocol !== 'https:' || u.protocol !== 'https:') return false
-	if (u.port !== s.port) return false
+	if (u.protocol !== 'https:' || u.port !== s.port || u.username || u.password) return false
 	return u.hostname === s.hostname || u.hostname.endsWith(`.${s.hostname}`)
+}
+
+// The lease record's site as a URL, or null unless it is an https URL string
+// (an array would otherwise be stringified by new URL()).
+function siteURL(site) {
+	if (typeof site !== 'string') return null
+	try {
+		const s = new URL(site)
+		return s.protocol === 'https:' ? s : null
+	} catch {
+		return null
+	}
+}
+
+function assertSite(site) {
+	if (!siteURL(site)) throw new Error(`${ORIGIN_DENIED}: no site for session`)
 }
 
 export function assertNav(url, site) {
 	if (!navAllowed(url, site)) throw new Error(`${ORIGIN_DENIED}: ${String(url).slice(0, 200)}`)
+}
+
+// Check run before every op, whatever its type: an op whose lease record has
+// no usable site is denied even if it carries no url (click, extract, ...).
+export function assertOp(p) {
+	assertSite(p.site)
+	if (p.args.url) assertNav(p.args.url, p.site)
+}
+
+// The session's cached context, confined to `site` (the CURRENT op's lease
+// record). A cached context confined to another site is closed with its pages
+// and rebuilt by create(), so the guards never judge an op by a stale site.
+// A missing site throws before anything is created or cached.
+export async function sessionContext(contexts, pages, session, site, create) {
+	assertSite(site)
+	const cached = contexts.get(session)
+	if (cached?.site === site) return cached
+	if (cached) {
+		contexts.delete(session)
+		for (const [key, page] of pages) if (page.context() === cached.context) pages.delete(key)
+		await cached.context.close().catch(() => {})
+	}
+	const entry = await create()
+	await confineContext(entry.context, site)
+	entry.site = site
+	contexts.set(session, entry)
+	return entry
 }
 
 // Handler for context.route('**/*'). It sees the FIRST request of every

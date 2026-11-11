@@ -3,7 +3,7 @@
 // Playwright and Chromium hand the handlers.
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { assertNav, confineRoute, navAllowed, redirectVerdict } from '../tools/broker-origin.mjs'
+import { assertNav, assertOp, confineRoute, navAllowed, redirectVerdict, sessionContext } from '../tools/broker-origin.mjs'
 
 const SITE = 'https://chatgpt.com'
 
@@ -138,5 +138,89 @@ describe('route scope', () => {
 
 	test("a popup's first navigation is aborted even on the site", () => {
 		assert.equal(routeOutcome('https://chatgpt.com/redirect-elsewhere', { frame: 'popup' }), 'abort')
+	})
+})
+
+// A fake Playwright context that records how it was confined and closed.
+function fakeContext() {
+	const ctx = { routes: [], closed: false, pageList: [] }
+	ctx.route = async (_pattern, handler) => ctx.routes.push(handler)
+	ctx.on = () => {}
+	ctx.pages = () => []
+	ctx.close = async () => {
+		ctx.closed = true
+	}
+	ctx.newPage = () => {
+		const page = { context: () => ctx }
+		ctx.pageList.push(page)
+		return page
+	}
+	return ctx
+}
+
+// Outcome of a top-level navigation to url under a context's route guard.
+const guardOutcome = (ctx, url) => {
+	const route = fakeRoute(url)
+	ctx.routes.at(-1)(route)
+	return route.calls[0][0]
+}
+
+describe('per-op site check (verifier F1, F2)', () => {
+	const OPS = [
+		{ op: 'goto', args: { url: 'https://chatgpt.com/' } },
+		{ op: 'click', args: { selector: 'button' } },
+		{ op: 'fill', args: { selector: 'input', value: 'x', enter: true } },
+		{ op: 'extract', args: {} },
+		{ op: 'screenshot', args: {} },
+	]
+
+	test('a session with no usable site denies every op type, url-less ones included', () => {
+		for (const site of [undefined, null, '', 'chatgpt.com', 'http://chatgpt.com', ['https://chatgpt.com']]) {
+			for (const op of OPS) {
+				assert.throws(() => assertOp({ session: 's', site, ...op }), /origin_not_allowed/, `${op.op} ${site}`)
+			}
+		}
+		for (const op of OPS) assert.doesNotThrow(() => assertOp({ session: 's', site: SITE, ...op }), op.op)
+	})
+
+	test('a second op with a different site is judged by its own lease record', async () => {
+		const contexts = new Map()
+		const pages = new Map()
+		const first = await sessionContext(contexts, pages, 's1', 'https://a.example', async () => ({ context: fakeContext() }))
+		pages.set('s1:agent', first.context.newPage())
+		const second = await sessionContext(contexts, pages, 's1', SITE, async () => ({ context: fakeContext() }))
+		assert.notEqual(second.context, first.context)
+		assert.equal(first.context.closed, true)
+		assert.equal(pages.has('s1:agent'), false, 'stale page dropped')
+		assert.equal(second.site, SITE)
+		assert.equal(guardOutcome(second.context, 'https://chatgpt.com/'), 'fallback')
+		assert.equal(guardOutcome(second.context, 'https://a.example/'), 'abort')
+		// Same site again: the cached context is reused.
+		assert.equal(await sessionContext(contexts, pages, 's1', SITE, async () => assert.fail('rebuilt')), second)
+	})
+
+	test('a site-less op does not brick the session', async () => {
+		const contexts = new Map()
+		let created = 0
+		const create = async () => (created++, { context: fakeContext() })
+		await assert.rejects(sessionContext(contexts, new Map(), 's2', null, create), /origin_not_allowed/)
+		assert.equal(created, 0)
+		assert.equal(contexts.has('s2'), false)
+		const entry = await sessionContext(contexts, new Map(), 's2', SITE, create)
+		assert.equal(created, 1)
+		assert.equal(guardOutcome(entry.context, 'https://chatgpt.com/x'), 'fallback')
+	})
+})
+
+describe('site and url hardening', () => {
+	test('an array-typed site and an http site deny about:blank too', () => {
+		assert.equal(navAllowed('https://chatgpt.com/', ['https://chatgpt.com']), false)
+		assert.equal(navAllowed('about:blank', ['https://chatgpt.com']), false)
+		assert.equal(navAllowed('about:blank', 'http://chatgpt.com'), false)
+	})
+
+	test('userinfo on the allowed host is denied', () => {
+		assert.equal(navAllowed('https://user:pw@chatgpt.com/', SITE), false)
+		assert.equal(navAllowed('https://user@chatgpt.com/', SITE), false)
 	})
 })

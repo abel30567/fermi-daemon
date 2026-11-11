@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
-import { assertNav, confineContext, guardPage } from './broker-origin.mjs'
+import { assertOp, guardPage, sessionContext } from './broker-origin.mjs'
 
 function loadEnv() {
 	const out = { ...process.env }
@@ -57,31 +57,28 @@ const PROFILE_DIRS = {
 	chatgpt: `${env.HOME}/.macos-mcp/browser-profiles/chatgpt-capture`,
 }
 
-async function contextFor(session, site) {
-	if (contexts.has(session)) return contexts.get(session)
-	const headless = process.env.BROKER_HEADLESS === '1'
-	const profileDir = PROFILE_DIRS[session]
-	if (profileDir && existsSync(profileDir)) {
-		// Persistent profile: no cookie injection — the profile already holds the
-		// login AND the Cloudflare clearance from its headful capture.
-		const context = await chromium.launchPersistentContext(profileDir, {
-			headless,
-			viewport: { width: 1280, height: 900 },
-		})
-		await confineContext(context, site)
-		const entry = { browser: context.browser(), context, persistent: true, site }
-		contexts.set(session, entry)
-		return entry
-	}
-	const res = await admin(`/admin/session/state?name=${encodeURIComponent(session)}`)
-	if (!res.ok) throw new Error(`session_state_${res.status}`)
-	const { storage_state } = await res.json()
-	const browser = await chromium.launch({ headless })
-	const context = await browser.newContext({ storageState: JSON.parse(storage_state) })
-	await confineContext(context, site)
-	const entry = { browser, context, persistent: false, site }
-	contexts.set(session, entry)
-	return entry
+// The session's context, confined to the current op's site (DMN-55). A
+// context confined to another site is closed and rebuilt, pages included.
+function contextFor(session, site) {
+	return sessionContext(contexts, pages, session, site, async () => {
+		const headless = process.env.BROKER_HEADLESS === '1'
+		const profileDir = PROFILE_DIRS[session]
+		if (profileDir && existsSync(profileDir)) {
+			// Persistent profile: no cookie injection — the profile already holds the
+			// login AND the Cloudflare clearance from its headful capture.
+			const context = await chromium.launchPersistentContext(profileDir, {
+				headless,
+				viewport: { width: 1280, height: 900 },
+			})
+			return { browser: context.browser(), context, persistent: true }
+		}
+		const res = await admin(`/admin/session/state?name=${encodeURIComponent(session)}`)
+		if (!res.ok) throw new Error(`session_state_${res.status}`)
+		const { storage_state } = await res.json()
+		const browser = await chromium.launch({ headless })
+		const context = await browser.newContext({ storageState: JSON.parse(storage_state) })
+		return { browser, context, persistent: false }
+	})
 }
 
 // One PERSISTENT page per (session, agent): multi-step UI flows (modals,
@@ -92,9 +89,9 @@ const pages = new Map() // `${session}:${agent_id}` -> page
 
 async function pageFor(p) {
 	const key = `${p.session}:${p.agent_id ?? 'shared'}`
+	const { context, site } = await contextFor(p.session, p.site)
 	let page = pages.get(key)
 	if (page && !page.isClosed()) return page
-	const { context, site } = await contextFor(p.session, p.site)
 	page = await context.newPage()
 	await guardPage(context, page, site)
 	pages.set(key, page)
@@ -104,9 +101,10 @@ async function pageFor(p) {
 async function runOp(op) {
 	const p = JSON.parse(op.payload)
 	// Origin confinement (DMN-55): p.site is the lease record's site. Checked
-	// here before any browser work, and again by the context's route + CDP guard
-	// on every navigation the page then makes (redirects, clicks, downloads).
-	if (p.args.url) assertNav(p.args.url, p.site)
+	// here before any browser work, for every op type, and again by the context's
+	// route + CDP guard on every navigation the page then makes (redirects,
+	// clicks, downloads).
+	assertOp(p)
 	const page = await pageFor(p)
 	// Foreground the tab before every op: ChatGPT's SPA (and other React apps)
 	// throttle/defer rendering in a backgrounded Playwright tab, so a non-active
