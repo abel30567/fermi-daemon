@@ -6,8 +6,7 @@
 // Configuration comes from /etc/fermi/box.env (written by the provisioner's
 // user-data) or the process environment. Required: FERMI_URL, FERMI_BOX_TOKEN.
 // Optional: ROUTE (claude|codex|grok|antigravity), CPA_URL + CPA_TOKEN for proxy routes,
-// CODEX_MODEL / GROK_MODEL / ANTIGRAVITY_MODEL overrides, AGY_ACP_BIN, AGY_HARNESS_BIN,
-// WORKDIR, RUNNER_SELF_SHUTDOWN=1,
+// CODEX_MODEL / GROK_MODEL / ANTIGRAVITY_MODEL overrides, AGY_BIN, WORKDIR, RUNNER_SELF_SHUTDOWN=1,
 // FERMI_ENVELOPE_* (task signatures, lib/task-envelope.mjs) and
 // FERMI_ALLOW_UNSANDBOXED (lib/run-policy.mjs).
 
@@ -80,16 +79,16 @@ for (const sig of ['unhandledRejection', 'uncaughtException']) {
 
 // Inference bootstrap: credentials come from Fermi secrets via the box
 // gateway. claude → a dedicated long-lived OAuth token (claude setup-token).
-// antigravity → a Google OAuth bundle seeded into GEMINI_HOME for headless
-// agy_acp_server.par (no CLIProxyAPI).
+// antigravity → a Google OAuth token seeded into GEMINI_HOME for headless
+// `antigravity acp` (Antigravity CLI v1.5.14+, no CLIProxyAPI).
 // codex/grok → a CLIProxyAPI OAuth bundle; the proxy runs ON THIS BOX,
 // bound to localhost, talking directly to the provider. No shared proxy host.
 const CPA_DIR = cfg.CPA_DIR ?? '/etc/fermi/cli-proxy-api'
 const CPA_AUTH_FILES = { CPA_AUTH_CODEX: 'codex.json', CPA_AUTH_XAI: 'xai.json' }
-const AGY_ACP_BIN = cfg.AGY_ACP_BIN ?? '/opt/fermi/antigravity-acp/agy_acp_server.par'
-const AGY_HARNESS_BIN = cfg.AGY_HARNESS_BIN ?? '/opt/fermi/antigravity-acp/localharness_external'
+const AGY_BIN = cfg.AGY_BIN ?? cfg.AGY_ACP_BIN ?? '/opt/fermi/antigravity/antigravity'
 const agyHome = () => join(cfg.HOME ?? process.env.HOME ?? '/root', '.fermi-agy')
-const agyTokenPath = () => join(agyHome(), 'antigravity-acp', 'acp_token.json')
+const agyTokenPath = () => join(agyHome(), 'antigravity-acp', 'antigravity-oauth-token')
+const agyLegacyTokenPath = () => join(agyHome(), 'antigravity-acp', 'acp_token.json')
 const inference = { claudeToken: null, cpaKey: null, cpaProc: null, seeded: {}, versions: {}, githubToken: null }
 
 async function bootstrapInference() {
@@ -125,7 +124,12 @@ async function bootstrapInference() {
 		if (!tokenJson) throw new Error('inference auth: missing AGY_ACP_TOKEN')
 		const acpDir = join(agyHome(), 'antigravity-acp')
 		mkdirSync(acpDir, { recursive: true, mode: 0o700 })
-		writeFileSync(agyTokenPath(), tokenJson, { mode: 0o600 })
+		// Antigravity CLI 1.5+ reads `antigravity-oauth-token` ({token, auth_method});
+		// legacy 1.3 tokens ({client_id, refresh_token}) go to `acp_token.json`.
+		let parsed = null
+		try { parsed = JSON.parse(tokenJson) } catch {}
+		const target = parsed && 'client_id' in parsed && !('token' in parsed) ? agyLegacyTokenPath() : agyTokenPath()
+		writeFileSync(target, tokenJson, { mode: 0o600 })
 		writeFileSync(join(acpDir, 'settings.json'), JSON.stringify({ auth: { type: 'oauth-personal' } }) + '\n', { mode: 0o600 })
 		inference.seeded.AGY_ACP_TOKEN = tokenJson
 		return
@@ -160,7 +164,7 @@ async function writebackInferenceAuth() {
 	if (ROUTE === 'claude') return
 	const secrets = {}
 	if (ROUTE === 'antigravity') {
-		const path = agyTokenPath()
+		const path = existsSync(agyTokenPath()) ? agyTokenPath() : agyLegacyTokenPath()
 		if (existsSync(path)) {
 			const current = readFileSync(path, 'utf8')
 			if (current !== inference.seeded.AGY_ACP_TOKEN) secrets.AGY_ACP_TOKEN = current
@@ -263,8 +267,8 @@ function harnessEnv() {
 	if (ROUTE === 'antigravity') {
 		env.GEMINI_HOME = agyHome()
 		env.AGY_ACP_FORCE_FILE_STORAGE = '1'
-		env.ANTIGRAVITY_HARNESS_PATH = AGY_HARNESS_BIN
-		env.PYTHONUNBUFFERED = '1'
+		env.AGY_CLI_DISABLE_AUTO_UPDATE = '1'
+		if (!env.SSH_CONNECTION) env.SSH_CONNECTION = '127.0.0.1 0 127.0.0.1 0'
 		if (process.platform === 'linux' && !env.SSL_CERT_FILE) {
 			for (const ca of ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem']) {
 				if (existsSync(ca)) { env.SSL_CERT_FILE = ca; break }
@@ -331,14 +335,24 @@ function acpErrorStatus(text) {
 	return null
 }
 
-// Drives the native Antigravity ACP server (agy_acp_server.par) headlessly
+// Drives the native Antigravity CLI (`antigravity acp`, v1.5.14+) headlessly
 // over stdio JSON-RPC 2.0, enabling native nested subagents and Fermi /box/mcp.
+const ACP_ASYNC_IDLE_MS = Number(cfg.ACP_ASYNC_IDLE_MS ?? 180_000)
+const ACP_ASYNC_SETTLE_MS = Number(cfg.ACP_ASYNC_SETTLE_MS ?? 3_000)
+
 function runAntigravityAcp(prompt) {
 	return new Promise((resolvePromise) => {
 		const env = harnessEnv()
 		if (policy.sandboxed) mkdirSync((env.TMPDIR = join(env.HOME, '.tmp')), { recursive: true })
-		const acpArgs = process.platform === 'linux' ? ['--uid='] : []
-		const [cmd, argv] = policy.wrap(AGY_ACP_BIN, acpArgs)
+		const acpArgs = [
+			'acp',
+			'--gemini-dir',
+			agyHome(),
+			'--app-data-dir',
+			'antigravity-acp',
+			'--dangerously-skip-permissions',
+		]
+		const [cmd, argv] = policy.wrap(AGY_BIN, acpArgs)
 		child = spawn(cmd, argv, {
 			cwd: WORKDIR,
 			env,
@@ -355,6 +369,12 @@ function runAntigravityAcp(prompt) {
 		let stuckNoted = false
 		let nextId = 0
 		let settled = false
+		let sawAsyncTool = false
+		let lastAsyncIdx = 0
+		let waitingAsync = false
+		let asyncDoneTimer = null
+		let asyncIdleTimer = null
+		let asyncStopReason = 'end_turn'
 		const pending = new Map()
 
 		const reporter = setInterval(() => {
@@ -386,11 +406,48 @@ function runAntigravityAcp(prompt) {
 			if (settled) return
 			settled = true
 			clearInterval(reporter)
+			if (asyncDoneTimer) clearTimeout(asyncDoneTimer)
+			if (asyncIdleTimer) clearTimeout(asyncIdleTimer)
 			for (const [, p] of pending) p.reject(new Error('acp closed'))
 			pending.clear()
 			killProc()
 			if (child === proc) child = null
 			resolvePromise(payload)
+		}
+
+		const finishSuccess = (stopReason) => {
+			const ok = stopReason === 'end_turn' || stopReason === 'stop_sequence'
+			finish({
+				code: ok ? 0 : 1,
+				resultEvent: {
+					type: 'result',
+					subtype: ok ? 'success' : 'error',
+					is_error: !ok,
+					api_error_status: null,
+					result: assistantText.trim() || (ok ? '' : `antigravity stopped: ${stopReason}`),
+					total_cost_usd: 0,
+					stop_reason: stopReason,
+				},
+				err,
+			})
+		}
+
+		const hasResultSinceAsync = () => /(?:^|\n)RESULT:\s*\S/.test(assistantText.slice(lastAsyncIdx))
+
+		const armAsyncTimers = (immediateSettle = false) => {
+			if (!waitingAsync || settled) return
+			if (asyncIdleTimer) clearTimeout(asyncIdleTimer)
+			asyncIdleTimer = setTimeout(() => finishSuccess(asyncStopReason), ACP_ASYNC_IDLE_MS)
+			if (hasResultSinceAsync()) {
+				if (asyncDoneTimer) clearTimeout(asyncDoneTimer)
+				asyncDoneTimer = setTimeout(
+					() => finishSuccess(asyncStopReason),
+					immediateSettle ? Math.min(500, ACP_ASYNC_SETTLE_MS) : ACP_ASYNC_SETTLE_MS,
+				)
+			} else if (asyncDoneTimer) {
+				clearTimeout(asyncDoneTimer)
+				asyncDoneTimer = null
+			}
 		}
 
 		const send = (obj) => {
@@ -405,6 +462,22 @@ function runAntigravityAcp(prompt) {
 				send({ jsonrpc: '2.0', id, method, params })
 			})
 
+		const checkOauthPrompt = (text) => {
+			if (!/https:\/\/accounts\.google\.com\/o\/oauth2\/(?:v2\/)?auth/.test(text)) return false
+			finish({
+				code: 1,
+				resultEvent: {
+					type: 'result',
+					subtype: 'error',
+					is_error: true,
+					api_error_status: 401,
+					result: 'API Error: 401 Antigravity OAuth sign-in required (AGY_ACP_TOKEN expired or invalid)',
+				},
+				err,
+			})
+			return true
+		}
+
 		proc.stdout.on('data', (d) => {
 			buf += d
 			let nl
@@ -415,20 +488,7 @@ function runAntigravityAcp(prompt) {
 				if (!line) continue
 				lastActivity = Date.now()
 				stuckNoted = false
-				if (line.includes('https://accounts.google.com/o/oauth2/v2/auth')) {
-					finish({
-						code: 1,
-						resultEvent: {
-							type: 'result',
-							subtype: 'error',
-							is_error: true,
-							api_error_status: 401,
-							result: 'API Error: 401 Antigravity OAuth sign-in required (AGY_ACP_TOKEN expired or invalid)',
-						},
-						err,
-					})
-					return
-				}
+				if (checkOauthPrompt(line)) return
 				let msg
 				try {
 					msg = JSON.parse(line)
@@ -470,13 +530,23 @@ function runAntigravityAcp(prompt) {
 					if (u.sessionUpdate === 'agent_message_chunk') {
 						const chunk = typeof u.content?.text === 'string' ? u.content.text : (typeof u.text === 'string' ? u.text : '')
 						if (chunk) assistantText += chunk
+						if (waitingAsync) armAsyncTimers(false)
 					} else if (u.sessionUpdate === 'tool_call') {
 						turns++
 						lastTool = u.title || u.toolCall?.title || u.kind || lastTool
+						if (/invoke_subagent|start_subagent|run_workflow/i.test(String(lastTool))) {
+							sawAsyncTool = true
+							lastAsyncIdx = assistantText.length
+						}
+						if (waitingAsync) armAsyncTimers(false)
 					} else if (u.sessionUpdate === 'tool_call_update') {
 						lastTool = u.title || u.toolCall?.title || lastTool
-					} else if (u.sessionUpdate === 'agent_thought_chunk' && turns === 0) {
-						lastTool = 'thinking'
+						if (waitingAsync) armAsyncTimers(false)
+					} else if (u.sessionUpdate === 'agent_thought_chunk') {
+						if (turns === 0) lastTool = 'thinking'
+						if (waitingAsync) armAsyncTimers(false)
+					} else if (u.sessionUpdate === 'usage_update') {
+						if (waitingAsync) armAsyncTimers(true)
 					}
 				}
 			}
@@ -485,6 +555,7 @@ function runAntigravityAcp(prompt) {
 		proc.stderr.on('data', (d) => {
 			err += d
 			process.stderr.write(d)
+			checkOauthPrompt(String(d))
 		})
 		proc.on('error', (e) => finish({ code: 127, resultEvent: null, err: String(e) }))
 		proc.on('close', (code) => {
@@ -512,7 +583,7 @@ function runAntigravityAcp(prompt) {
 				})
 				const sessionId = sess?.sessionId
 				if (!sessionId) throw new Error('session/new returned no sessionId')
-				await rpc('session/set_mode', { sessionId, modeId: 'yolo' }).catch(() => {})
+				await rpc('session/set_config_option', { sessionId, configId: 'mode', value: 'auto' }).catch(() => {})
 				const model = missionModel ?? cfg.ANTIGRAVITY_MODEL
 				if (model) {
 					await rpc('session/set_config_option', { sessionId, configId: 'model', value: model }).catch((e) =>
@@ -525,19 +596,17 @@ function runAntigravityAcp(prompt) {
 				})
 				const stopReason = promptRes?.stopReason ?? 'end_turn'
 				const ok = stopReason === 'end_turn' || stopReason === 'stop_sequence'
-				finish({
-					code: ok ? 0 : 1,
-					resultEvent: {
-						type: 'result',
-						subtype: ok ? 'success' : 'error',
-						is_error: !ok,
-						api_error_status: null,
-						result: assistantText.trim() || (ok ? '' : `antigravity stopped: ${stopReason}`),
-						total_cost_usd: 0,
-						stop_reason: stopReason,
-					},
-					err,
-				})
+				// Antigravity 1.5+ runs invoke_subagent asynchronously: the initial
+				// session/prompt returns end_turn while subagents are still running,
+				// then auto-wakes the parent turn via session/update as they finish.
+				// Stay alive until a RESULT: line arrives after the last subagent call.
+				if (ok && sawAsyncTool && !hasResultSinceAsync()) {
+					waitingAsync = true
+					asyncStopReason = stopReason
+					armAsyncTimers(false)
+					return
+				}
+				finishSuccess(stopReason)
 			} catch (e) {
 				if (settled) return
 				const detail = [

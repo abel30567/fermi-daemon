@@ -35,7 +35,7 @@ async function runBox({ mode = 'success', env = {}, runner = join(ROOT, 'box-run
       calls.push({ path: req.url, body: json ? JSON.parse(body) : body })
       if (calls.at(-1).body.note?.startsWith('⚠️ possibly stuck')) writeFileSync(join(home, 'stuck'), '')
       const reply = (o) => res.end(JSON.stringify(o))
-      if (req.url === '/box/inference-auth') return reply({ ok: true, secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'tok', CPA_API_KEY: 'cpa', AGY_ACP_TOKEN: JSON.stringify({ refresh_token: 'fake-agy-refresh' }) }, versions: { AGY_ACP_TOKEN: 7, CPA_AUTH_CODEX: 3 } })
+      if (req.url === '/box/inference-auth') return reply({ ok: true, secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'tok', CPA_API_KEY: 'cpa', AGY_ACP_TOKEN: JSON.stringify({ token: { refresh_token: 'fake-agy-refresh' }, auth_method: 'oauth-personal' }) }, versions: { AGY_ACP_TOKEN: 7, CPA_AUTH_CODEX: 3 } })
       if (req.url === '/box/inference-auth/update') return reply({ ok: true, updated: Object.keys(calls.at(-1).body.secrets ?? {}), versions: { AGY_ACP_TOKEN: 8 } })
       if (req.url === '/box/poll')
         return reply(polls++ ? {} : { task: { id: 't1', payload: JSON.stringify(payload), ...(envelope && { envelope }) } })
@@ -414,7 +414,7 @@ describe('antigravity headless ACP route', () => {
 
   async function runAgyBox({ mode = 'success', env = {}, payload = { prompt: 'spawn 3 subagents', proof_contract: 'free text' } } = {}) {
     const binDir = realpathSync(mkdtempSync(join(tmpdir(), 'dmn-agy-')))
-    const acpBin = join(binDir, 'agy_acp_server.par')
+    const acpBin = join(binDir, 'antigravity')
     writeFileSync(acpBin, '#!/bin/sh\nexec "' + process.execPath + '" "' + FAKE_ACP + '" "$@"\n')
     chmodSync(acpBin, 0o755)
     try {
@@ -422,9 +422,8 @@ describe('antigravity headless ACP route', () => {
         payload,
         env: {
           ROUTE: 'antigravity',
-          AGY_ACP_BIN: acpBin,
-          AGY_HARNESS_BIN: '/opt/fermi/antigravity-acp/localharness_external',
-          ANTIGRAVITY_MODEL: 'gemini-4-neon-high',
+          AGY_BIN: acpBin,
+          ANTIGRAVITY_MODEL: 'gemini-4-neon',
           FAKE_ACP: mode,
           CLAUDE_CODE_OAUTH_TOKEN: 'leak-claude',
           ANTHROPIC_API_KEY: 'leak-anthropic',
@@ -445,15 +444,22 @@ describe('antigravity headless ACP route', () => {
     assert.deepEqual(r.completes, [{ task_id: 't1', status: 'done', result: 'antigravity swarm ok', inference_cost_usd: 0 }])
     assert.equal(r.acpRuns.length, 1, r.out)
     const run = r.acpRuns[0]
-    assert.deepEqual(run.argv, process.platform === 'linux' ? ['--uid='] : [])
+    assert.deepEqual(run.argv, [
+      'acp',
+      '--gemini-dir',
+      join(r.home, '.fermi-agy'),
+      '--app-data-dir',
+      'antigravity-acp',
+      '--dangerously-skip-permissions',
+    ])
     assert.equal(run.cwd, r.work)
     assert.equal(run.env.GEMINI_HOME, join(r.home, '.fermi-agy'))
     assert.equal(run.env.AGY_ACP_FORCE_FILE_STORAGE, '1')
-    assert.equal(run.env.ANTIGRAVITY_HARNESS_PATH, '/opt/fermi/antigravity-acp/localharness_external')
-    assert.equal(run.env.PYTHONUNBUFFERED, '1')
+    assert.equal(run.env.AGY_CLI_DISABLE_AUTO_UPDATE, '1')
+    assert.ok(run.env.SSH_CONNECTION)
     assert.equal('CLAUDE_CODE_OAUTH_TOKEN' in run.env, false)
     assert.equal('ANTHROPIC_API_KEY' in run.env, false)
-    assert.deepEqual(JSON.parse(run.tokenFile), { refresh_token: 'fake-agy-refresh' })
+    assert.deepEqual(JSON.parse(run.tokenFile), { token: { refresh_token: 'fake-agy-refresh' }, auth_method: 'oauth-personal' })
     assert.deepEqual(JSON.parse(run.settingsFile), { auth: { type: 'oauth-personal' } })
     assert.deepEqual(run.permissionChoice, { outcome: 'selected', optionId: 'opt-always' })
 
@@ -462,7 +468,7 @@ describe('antigravity headless ACP route', () => {
       'initialize',
       'authenticate',
       'session/new',
-      'session/set_mode',
+      'session/set_config_option',
       'session/set_config_option',
       'session/prompt',
     ])
@@ -472,29 +478,38 @@ describe('antigravity headless ACP route', () => {
     assert.match(sessNew.mcpServers[0].url, /\/box\/mcp$/)
     assert.deepEqual(sessNew.mcpServers[0].headers, [{ name: 'Authorization', value: 'Bearer box-token' }])
 
-    const setModel = run.calls.find((c) => c.method === 'session/set_config_option').params
-    assert.deepEqual(setModel, { sessionId: 'sess-fake-1', configId: 'model', value: 'gemini-4-neon-high' })
+    const configCalls = run.calls.filter((c) => c.method === 'session/set_config_option').map((c) => c.params)
+    assert.deepEqual(configCalls, [
+      { sessionId: 'sess-fake-1', configId: 'mode', value: 'auto' },
+      { sessionId: 'sess-fake-1', configId: 'model', value: 'gemini-4-neon' },
+    ])
 
-    // Rotated acp_token.json triggers CAS writeback with the served version.
+    // Rotated antigravity-oauth-token triggers CAS writeback with the served version.
     const updates = r.calls.filter((c) => c.path === '/box/inference-auth/update').map((c) => c.body)
     assert.deepEqual(updates, [
       {
-        secrets: { AGY_ACP_TOKEN: JSON.stringify({ refresh_token: 'rotated-local' }) },
+        secrets: { AGY_ACP_TOKEN: JSON.stringify({ token: { refresh_token: 'rotated-local' }, auth_method: 'oauth-personal' }) },
         versions: { AGY_ACP_TOKEN: 7 },
       },
     ])
   })
 
-  test('per-mission model overrides ANTIGRAVITY_MODEL', async () => {
-    const r = await runAgyBox({
-      payload: { prompt: 'hi', proof_contract: 'free text', model: 'gemini-4-neon-medium' },
-    })
-    assert.equal(r.completes[0].status, 'done', r.out)
-    const setModel = r.acpRuns[0].calls.find((c) => c.method === 'session/set_config_option').params
-    assert.equal(setModel.value, 'gemini-4-neon-medium')
+  test('async subagent wakeup: waits past initial end_turn until RESULT: arrives via session/update', async () => {
+    const r = await runAgyBox({ mode: 'async_sub', env: { ACP_ASYNC_SETTLE_MS: '100' } })
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(r.completes, [{ task_id: 't1', status: 'done', result: 'async swarm ok', inference_cost_usd: 0 }])
   })
 
-  test('OAuth URL line on stdout fails fast with harness api_error 401', async () => {
+  test('per-mission model overrides ANTIGRAVITY_MODEL', async () => {
+    const r = await runAgyBox({
+      payload: { prompt: 'hi', proof_contract: 'free text', model: 'gemini-4-carbon' },
+    })
+    assert.equal(r.completes[0].status, 'done', r.out)
+    const setModel = r.acpRuns[0].calls.find((c) => c.method === 'session/set_config_option' && c.params.configId === 'model').params
+    assert.equal(setModel.value, 'gemini-4-carbon')
+  })
+
+  test('OAuth URL line on stderr fails fast with harness api_error 401', async () => {
     const r = await runAgyBox({ mode: 'oauth_url' })
     assert.equal(r.code, 0, r.out)
     assert.equal(r.completes[0].status, 'failed', r.out)
@@ -511,7 +526,7 @@ describe('antigravity headless ACP route', () => {
   test('progress and stuck notes track ACP tool_call turns and stalls', async () => {
     const r = await runAgyBox({ mode: 'slow', env: { PROGRESS_MS: '100', STUCK_MS: '1500' } })
     assert.equal(r.completes[0].status, 'done', r.out)
-    assert.ok(r.notes.includes('working: turns=1, last tool=invoke_subagent'), r.notes.join('\n'))
+    assert.ok(r.notes.includes('working: turns=1, last tool=Run invoke_subagent'), r.notes.join('\n'))
     const stuck = r.notes.filter((n) => n.startsWith('⚠️ possibly stuck'))
     assert.equal(stuck.length, 1, r.notes.join('\n'))
   })

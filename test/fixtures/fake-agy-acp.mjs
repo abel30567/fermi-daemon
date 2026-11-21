@@ -1,11 +1,12 @@
-// Fake headless Antigravity ACP server (agy_acp_server.par) for box-runner tests.
+// Fake headless Antigravity CLI (`antigravity acp`, v1.5.14+) for box-runner tests.
 // Speaks NDJSON JSON-RPC 2.0 over stdio and records spawn metadata + RPC calls to
 // $FAKE_DIR/acp.log. Modes via FAKE_ACP:
-//   success    full handshake, permission round-trip, tool_call, message chunk, end_turn
-//   oauth_url  prints a Google OAuth URL line on stdout during authenticate and waits
-//   429        returns a JSON-RPC RESOURCE_EXHAUSTED / 429 error on session/prompt
-//   slow       emits tool_call, stalls until FAKE_STALL_FILE appears, then finishes
-//   crash      writes to stderr and exits 3
+//   success       full handshake, permission round-trip, tool_call, message chunk, end_turn
+//   async_sub     spawns invoke_subagent, returns end_turn while waiting, then wakes via session/update with RESULT:
+//   oauth_url     prints a Google OAuth URL line during authenticate and waits
+//   429           returns a JSON-RPC RESOURCE_EXHAUSTED / 429 error on session/prompt
+//   slow          emits tool_call, stalls until FAKE_STALL_FILE appears, then finishes
+//   crash         writes to stderr and exits 3
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -13,8 +14,8 @@ const mode = process.env.FAKE_ACP ?? 'success'
 const ENV_KEYS = [
   'GEMINI_HOME',
   'AGY_ACP_FORCE_FILE_STORAGE',
-  'ANTIGRAVITY_HARNESS_PATH',
-  'PYTHONUNBUFFERED',
+  'AGY_CLI_DISABLE_AUTO_UPDATE',
+  'SSH_CONNECTION',
   'CLAUDE_CODE_OAUTH_TOKEN',
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_BASE_URL',
@@ -27,7 +28,7 @@ if (mode === 'crash') {
 
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\n')
 const geminiHome = process.env.GEMINI_HOME ?? ''
-const tokenPath = join(geminiHome, 'antigravity-acp', 'acp_token.json')
+const tokenPath = join(geminiHome, 'antigravity-acp', 'antigravity-oauth-token')
 const settingsPath = join(geminiHome, 'antigravity-acp', 'settings.json')
 
 const record = {
@@ -66,7 +67,7 @@ async function handle(msg) {
   if (msg.method === 'authenticate') {
     if (mode === 'oauth_url') {
       flushRecord()
-      process.stdout.write('Please sign in at https://accounts.google.com/o/oauth2/v2/auth?client_id=test\n')
+      process.stderr.write('Please sign in at https://accounts.google.com/o/oauth2/auth?client_id=test\n')
       return
     }
     return send({ jsonrpc: '2.0', id: msg.id, result: {} })
@@ -86,12 +87,57 @@ async function handle(msg) {
         error: { code: -32000, message: 'RESOURCE_EXHAUSTED: 429 quota exceeded' },
       })
     }
+    if (mode === 'async_sub') {
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: 'sess-fake-1',
+          update: { sessionUpdate: 'tool_call', title: 'Run invoke_subagent', kind: 'other' },
+        },
+      })
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: 'sess-fake-1',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'Spawned subagents. Waiting for them to finish.' },
+          },
+        },
+      })
+      flushRecord()
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } })
+      setTimeout(() => {
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: 'sess-fake-1',
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: '\n\nAll subagents done.\nRESULT: async swarm ok' },
+            },
+          },
+        })
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: 'sess-fake-1',
+            update: { sessionUpdate: 'usage_update', used: 1000, size: 1000000 },
+          },
+        })
+      }, 150)
+      return
+    }
     send({
       jsonrpc: '2.0',
       method: 'session/update',
       params: {
         sessionId: 'sess-fake-1',
-        update: { sessionUpdate: 'tool_call', title: 'invoke_subagent', kind: 'other' },
+        update: { sessionUpdate: 'tool_call', title: 'Run invoke_subagent', kind: 'other' },
       },
     })
     await new Promise((resolve) => {
@@ -113,7 +159,7 @@ async function handle(msg) {
       while (!existsSync(process.env.FAKE_STALL_FILE)) await new Promise((r) => setTimeout(r, 20))
     }
     if (process.env.FAKE_ACP_ROTATE === '1' && existsSync(tokenPath)) {
-      writeFileSync(tokenPath, JSON.stringify({ refresh_token: 'rotated-local' }))
+      writeFileSync(tokenPath, JSON.stringify({ token: { refresh_token: 'rotated-local' }, auth_method: 'oauth-personal' }))
     }
     send({
       jsonrpc: '2.0',
