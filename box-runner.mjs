@@ -49,14 +49,78 @@ try {
 	process.exit(1)
 }
 
-async function api(path, body = {}) {
-	const res = await fetch(`${FERMI_URL}${path}`, {
-		method: 'POST',
-		headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
-		body: JSON.stringify(body),
-	})
-	if (res.status === 401) throw new Error('revoked')
-	return res.json()
+const API_TIMEOUT_MS = Number(cfg.API_TIMEOUT_MS ?? 30_000)
+const MAX_ERR_BYTES = 512 * 1024
+const SHUTDOWN_ABORT_MS = Number(cfg.SHUTDOWN_ABORT_MS ?? 5 * 60_000)
+const SHUTDOWN_FILE = cfg.SYSTEMD_SHUTDOWN_FILE ?? '/run/systemd/shutdown/scheduled'
+const SESSION_FILE = join(WORKDIR, '.fermi-claude-session')
+
+function appendCapped(cur, chunk, max = MAX_ERR_BYTES) {
+	const next = cur + chunk
+	return next.length > max ? next.slice(-max) : next
+}
+
+/** Remaining ms until a systemd scheduled shutdown, or null if none is armed. */
+function pendingShutdownRemainingMs(file = SHUTDOWN_FILE) {
+	try {
+		if (!existsSync(file)) return null
+		const m = readFileSync(file, 'utf8').match(/^USEC=(\d+)/m)
+		if (!m) return null
+		return Math.floor(Number(m[1]) / 1000) - Date.now()
+	} catch {
+		return null
+	}
+}
+
+function readSavedSessionId() {
+	try {
+		if (!existsSync(SESSION_FILE)) return null
+		const id = readFileSync(SESSION_FILE, 'utf8').trim()
+		return /^[A-Za-z0-9._-]{8,128}$/.test(id) ? id : null
+	} catch {
+		return null
+	}
+}
+
+function saveSessionId(id) {
+	if (typeof id !== 'string' || !/^[A-Za-z0-9._-]{8,128}$/.test(id)) return
+	try {
+		writeFileSync(SESSION_FILE, id + '\n', { mode: 0o600 })
+	} catch {}
+}
+
+async function api(path, body = {}, retries = 0) {
+	let lastErr
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		try {
+			const res = await fetch(`${FERMI_URL}${path}`, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(API_TIMEOUT_MS),
+			})
+			if (res.status === 401) throw new Error('revoked')
+			const text = await res.text()
+			let parsed = null
+			try {
+				parsed = text ? JSON.parse(text) : {}
+			} catch {
+				if (!res.ok) throw new Error(`http ${res.status}: ${text.slice(0, 160)}`)
+				throw new Error(`invalid json from ${path} (${res.status}): ${text.slice(0, 160)}`)
+			}
+			if (res.status >= 500 && attempt < retries) {
+				lastErr = new Error(`http ${res.status}: ${text.slice(0, 160)}`)
+				await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
+				continue
+			}
+			return parsed
+		} catch (e) {
+			if (String(e?.message) === 'revoked') throw e
+			lastErr = e
+			if (attempt < retries) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
+		}
+	}
+	throw lastErr
 }
 
 // Crashes before the harness runs were invisible (box died silently after
@@ -92,7 +156,7 @@ const agyLegacyTokenPath = () => join(agyHome(), 'antigravity-acp', 'acp_token.j
 const inference = { claudeToken: null, cpaKey: null, cpaProc: null, seeded: {}, versions: {}, githubToken: null }
 
 async function bootstrapInference() {
-	const res = await api('/box/inference-auth')
+	const res = await api('/box/inference-auth', {}, 2)
 	if (!res.ok) throw new Error(`inference auth: ${res.error} missing=${res.missing ?? ''}`)
 	inference.versions = { ...(res.versions ?? {}) }
 	// Repo missions receive GITHUB_TOKEN; wire git so clone/push just work.
@@ -226,7 +290,10 @@ function harnessEnv() {
 	// in-process heap error the harness (and its tsc/jest children, which
 	// inherit NODE_OPTIONS) can see and report, instead of a silent box reset.
 	if (!/max-old-space-size/.test(env.NODE_OPTIONS ?? '')) {
-		const mb = Number(cfg.HEAP_LIMIT_MB) || (memTotalMb() ? Math.floor(memTotalMb() * 0.75) : 0)
+		// Cap V8 old-space at <=40% RAM (max 2048 MiB) so build/test tools (pytest,
+		// terraform, trivy) keep ample headroom and the kernel stops OOM-killing box-runner.
+		const totalMb = memTotalMb()
+		const mb = Number(cfg.HEAP_LIMIT_MB) || (totalMb ? Math.min(2048, Math.floor(totalMb * 0.4)) : 0)
 		if (mb > 0) env.NODE_OPTIONS = `${env.NODE_OPTIONS ?? ''} --max-old-space-size=${mb}`.trim()
 	}
 	// The box is a disposable sandbox; this lets the harness accept
@@ -553,7 +620,7 @@ function runAntigravityAcp(prompt) {
 		})
 
 		proc.stderr.on('data', (d) => {
-			err += d
+			err = appendCapped(err, d)
 			process.stderr.write(d)
 			checkOauthPrompt(String(d))
 		})
@@ -631,7 +698,7 @@ function runAntigravityAcp(prompt) {
 	})
 }
 
-function runHarness(prompt) {
+function runHarness(prompt, resumeSessionId = null) {
 	if (ROUTE === 'antigravity') return runAntigravityAcp(prompt)
 	return new Promise((resolvePromise) => {
 		const args = [
@@ -644,6 +711,7 @@ function runHarness(prompt) {
 			join(WORKDIR, '.mcp.json'),
 			'--strict-mcp-config',
 		]
+		if (resumeSessionId) args.push('--resume', resumeSessionId)
 		const env = harnessEnv()
 		// The default TMPDIR is outside the sandbox's write dirs.
 		if (policy.sandboxed) mkdirSync((env.TMPDIR = join(env.HOME, '.tmp')), { recursive: true })
@@ -653,6 +721,7 @@ function runHarness(prompt) {
 			env,
 			stdio: ['pipe', 'pipe', 'pipe'],
 		})
+		child.stdin.on('error', () => {})
 		let err = ''
 		let buf = ''
 		let resultEvent = null
@@ -660,6 +729,7 @@ function runHarness(prompt) {
 		let lastTool = 'starting'
 		let lastActivity = Date.now()
 		let stuckNoted = false
+		let sessionSaved = false
 
 		child.stdout.on('data', (d) => {
 			buf += d
@@ -673,6 +743,10 @@ function runHarness(prompt) {
 				stuckNoted = false
 				try {
 					const ev = JSON.parse(line)
+					if (!sessionSaved && ev.session_id) {
+						sessionSaved = true
+						saveSessionId(ev.session_id)
+					}
 					if (ev.type === 'assistant' || ev.type === 'user') turns++
 					const tool = ev.message?.content?.find?.((c) => c.type === 'tool_use')?.name
 					if (tool) lastTool = tool
@@ -681,7 +755,7 @@ function runHarness(prompt) {
 			}
 		})
 		child.stderr.on('data', (d) => {
-			err += d
+			err = appendCapped(err, d)
 			process.stderr.write(d)
 		})
 
@@ -965,11 +1039,17 @@ async function main() {
 	writeMcpConfig()
 	log(`box-runner up route=${ROUTE} fermi=${FERMI_URL}`)
 
+	let hbInFlight = false
 	setInterval(() => {
-		api('/box/heartbeat').catch((e) => log('heartbeat failed:', String(e)))
-		writebackInferenceAuth()
+		if (!hbInFlight) {
+			hbInFlight = true
+			api('/box/heartbeat')
+				.catch((e) => log('heartbeat failed:', String(e)))
+				.finally(() => { hbInFlight = false })
+		}
+		writebackInferenceAuth().catch((e) => log('auth writeback failed:', String(e)))
 	}, HEARTBEAT_MS)
-	await api('/box/heartbeat')
+	await api('/box/heartbeat', {}, 2)
 	await bootstrapInference()
 
 	const pendingFollowups = []
@@ -1049,6 +1129,25 @@ async function main() {
 			const followups = pendingFollowups.splice(0)
 			const resumed = poll.resumed === true && !ranTask
 			ranTask = true
+			// On AMIs whose fermi-runner.service ExecStopPost arms `shutdown -h +2` on
+			// failure, a restarted runner has <2 min before the kernel halts the box.
+			// Fail fast via /box/complete so the slot releases in seconds instead of
+			// wasting 2 min of turns + 10 min of reaper wait.
+			if (resumed) {
+				const remMs = pendingShutdownRemainingMs()
+				if (remMs !== null && remMs < SHUTDOWN_ABORT_MS) {
+					const why = `runner_restarted_shutdown_pending: scheduled poweroff in ${Math.max(0, Math.round(remMs / 1000))}s`
+					log(why)
+					await api('/box/report', { note: why }).catch(() => {})
+					await api('/box/complete', {
+						task_id: poll.task.id,
+						status: 'failed',
+						result: why,
+						inference_cost_usd: 0,
+					}, 2).catch((e) => log('complete failed:', String(e)))
+					powerOff()
+				}
+			}
 			if (payload.branch != null && !validRef(payload.branch)) {
 				log(`task ${poll.task.id} rejected: invalid branch`)
 				await api('/box/complete', {
@@ -1063,7 +1162,8 @@ async function main() {
 			const sessions = await leaseSessions(payload)
 			await api('/box/report', { note: `leased ${sessions.length}: ${sessions.map((s) => s.name).join(',') || 'none'}; helper=${sessions.length ? existsSync(join(WORKDIR, 'fermi-browser')) : 'n/a'}; spawning` }).catch(() => {})
 			log(`running task ${poll.task.id}${sessions.length ? ` (${sessions.length} session(s) leased)` : ''}`)
-			let { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions, resumed))
+			const resumeSid = resumed && ROUTE === 'claude' ? readSavedSessionId() : null
+			let { code, resultEvent, err } = await runHarness(buildPrompt(payload, followups, sessions, resumed), resumeSid)
 			// One corrective rerun when the harness claims success but the proof
 			// contract mechanically fails locally — honest agents self-correct
 			// here instead of being refused at /box/complete.
@@ -1116,7 +1216,7 @@ async function main() {
 				status,
 				result: code === 0 ? extractResult(resultEvent) || failDetail : failDetail,
 				inference_cost_usd: inferenceCost,
-			}).catch((e) => (log('complete failed:', String(e)), null))
+			}, 2).catch((e) => (log('complete failed:', String(e)), null))
 			if (completion?.error === 'proof_unverified') {
 				// The worker's mechanical check refused our `done` (e.g. an http
 				// contract target is down). We already had our corrective rerun —
