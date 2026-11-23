@@ -538,3 +538,108 @@ describe('antigravity headless ACP route', () => {
     assert.equal(r.completes[0].result, 'harness exited 3: boom: acp crashed\n')
   })
 })
+
+describe('box-runner restart resilience', () => {
+  test('resumed task with imminent systemd shutdown fails fast via /box/complete without spawning', async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'dmn-shut-')))
+    const work = join(home, 'work')
+    mkdirSync(work)
+    const shutFile = join(home, 'scheduled')
+    const soonUsec = (Date.now() + 90_000) * 1000
+    writeFileSync(shutFile, `USEC=${soonUsec}\nWARN_WALL=1\nMODE=poweroff\n`)
+    const bin = join(home, 'claude')
+    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`)
+    chmodSync(bin, 0o755)
+    const completes = []
+    let polls = 0
+    const server = http.createServer((req, res) => {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        const parsed = body ? JSON.parse(body) : {}
+        if (req.url === '/box/complete') completes.push(parsed)
+        const reply = (o) => res.end(JSON.stringify(o))
+        if (req.url === '/box/inference-auth') return reply({ ok: true, secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'tok' } })
+        if (req.url === '/box/poll')
+          return reply(polls++ ? {} : { resumed: true, task: { id: 't-resumed', payload: JSON.stringify({ prompt: 'do it', proof_contract: 'free text' }) } })
+        reply({ ok: true })
+      })
+    })
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    const child = spawn(process.execPath, [join(ROOT, 'box-runner.mjs')], {
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        FERMI_URL: `http://127.0.0.1:${server.address().port}`,
+        FERMI_BOX_TOKEN: 'box-token',
+        WORKDIR: work,
+        CLAUDE_BIN: bin,
+        FAKE_DIR: home,
+        FAKE_ONCE: 'success',
+        POLL_MS: '50',
+        SYSTEMD_SHUTDOWN_FILE: shutFile,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    child.stdout.on('data', (d) => (out += d))
+    child.stderr.on('data', (d) => (out += d))
+    const code = await new Promise((r) => child.on('exit', r))
+    server.close()
+    assert.equal(code, 0, out)
+    assert.equal(existsSync(join(home, 'once.log')), false, 'should not spawn harness when shutdown is imminent')
+    assert.equal(completes.length, 1, out)
+    assert.equal(completes[0].status, 'failed')
+    assert.match(completes[0].result, /^runner_restarted_shutdown_pending:/)
+  })
+
+  test('resumed task without imminent shutdown passes --resume when saved session exists', async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'dmn-res-')))
+    const work = join(home, 'work')
+    mkdirSync(work)
+    writeFileSync(join(work, '.fermi-claude-session'), 'sess-abc12345\n')
+    const shutFile = join(home, 'scheduled')
+    const farUsec = (Date.now() + 3600_000) * 1000
+    writeFileSync(shutFile, `USEC=${farUsec}\nMODE=poweroff\n`)
+    const bin = join(home, 'claude')
+    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`)
+    chmodSync(bin, 0o755)
+    let polls = 0
+    const server = http.createServer((req, res) => {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        const reply = (o) => res.end(JSON.stringify(o))
+        if (req.url === '/box/inference-auth') return reply({ ok: true, secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'tok' } })
+        if (req.url === '/box/poll')
+          return reply(polls++ ? {} : { resumed: true, task: { id: 't-res2', payload: JSON.stringify({ prompt: 'do it', proof_contract: 'free text' }) } })
+        reply({ ok: true })
+      })
+    })
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    const child = spawn(process.execPath, [join(ROOT, 'box-runner.mjs')], {
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        FERMI_URL: `http://127.0.0.1:${server.address().port}`,
+        FERMI_BOX_TOKEN: 'box-token',
+        WORKDIR: work,
+        CLAUDE_BIN: bin,
+        FAKE_DIR: home,
+        FAKE_ONCE: 'success',
+        POLL_MS: '50',
+        SYSTEMD_SHUTDOWN_FILE: shutFile,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    child.stdout.on('data', (d) => (out += d))
+    child.stderr.on('data', (d) => (out += d))
+    const code = await new Promise((r) => child.on('exit', r))
+    server.close()
+    assert.equal(code, 0, out)
+    const spawns = readFileSync(join(home, 'once.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+    assert.ok(spawns[0].argv.includes('--resume'), spawns[0].argv)
+    assert.ok(spawns[0].argv.includes('sess-abc12345'), spawns[0].argv)
+  })
+})
